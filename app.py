@@ -19,7 +19,7 @@ own WHERE clause, and the disagreement would be silent -- so `--check`
 asserts the equality rather than trusting it.
 
     python app.py             open it
-    python app.py --no-update start without checking github
+    python app.py --no-update start without looking at github or the disk
     python app.py --debug     also print the log to the terminal
     python app.py --check   the window and the command line agree
 
@@ -336,6 +336,7 @@ class ImportMixin:
                       borderwidth=0)
         m = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
+        m.add_command(label="Import new hands", command=self.import_new)
         m.add_command(label="Find hands on this computer…",
                       command=self.import_autodetect)
         m.add_separator()
@@ -466,6 +467,31 @@ class ImportMixin:
         paths = [p["path"] for p in found]
         self._run_import("importing", lambda say: self._do_load(paths, say))
 
+    def import_new(self):
+        """
+        Load whatever has appeared in the usual places since last time.
+
+        No dialog and no folder to choose, because the answer to both is
+        always the same: this is the thing you want after a session, and
+        being asked to confirm the same three folders every time is how a
+        one-click action becomes a three-click one. `importer.refresh`
+        already skips a hand that is in the database and already leaves the
+        derived tables alone when nothing was added.
+        """
+        self._run_import("importing new hands", self._do_refresh)
+
+    @staticmethod
+    def _do_refresh(say):
+        say("looking for new hands…")
+        got = importer.refresh(DB, progress=say)
+        if not got["places"]:
+            return ("no hand histories in the usual places -- try "
+                    "Import a folder…")
+        if not got["added"]:
+            return (f"nothing new in {got['files']} files "
+                    f"({got['known']} hands already known)")
+        return f"{got['added']} hands added, and the tables rebuilt"
+
     def import_folder(self):
         folder = filedialog.askdirectory(title="folder of hand histories")
         if folder:
@@ -546,6 +572,45 @@ class App(ImportMixin, ttk.Frame):
             threading.Thread(target=self._look_for_update,
                              daemon=True).start()
             self.after(400, self._say_update)
+        # Whether there is anything to import, asked on a worker for the
+        # same reason: it walks three folders, and the window has to open at
+        # the same speed whether or not a disk is slow today. It only
+        # notices -- importing is a minute of derivation and is nobody's
+        # idea of a thing that should happen while they are looking for a
+        # number.
+        self.fresh = None
+        if check_updates:
+            threading.Thread(target=self._look_for_hands, daemon=True).start()
+            self.after(600, self._say_hands)
+
+    def _look_for_hands(self):
+        try:
+            self.fresh = importer.anything_new(DB)
+        except Exception:
+            diag._report("new-hand check", *sys.exc_info()[1:])
+            self.fresh = 0
+
+    def _say_hands(self):
+        """
+        Say it once, and only when it is true.
+
+        The banner is shared with the updater, which has first claim on it:
+        an update is about the program and this is about the data, and two
+        messages in one label is one message nobody reads. So this waits for
+        the update check to have had its say and then takes the space if it
+        is still empty.
+        """
+        if self.fresh is None:
+            self.after(400, self._say_hands)
+            return
+        diag.event("new hands", files=self.fresh)
+        if not self.fresh or self.banner.winfo_ismapped():
+            return
+        self.banner.configure(
+            text=f"{self.fresh} hand history files written since your last "
+                 f"import — Import ▸ Import new hands",
+            foreground=ACCENT)
+        self.banner.pack(side="left", padx=12)
 
     def _look_for_update(self):
         try:

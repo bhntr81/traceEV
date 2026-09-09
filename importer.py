@@ -12,6 +12,7 @@ So nothing here asks. Every file is sniffed, and a file that cannot be
 identified is counted and skipped rather than guessed at.
 
     python importer.py --scan               where hand histories are
+    python importer.py --refresh            load anything new from those places
     python importer.py <folder-or-file>...  load them, whatever site they are
     python importer.py --merge other.db     take the hands from another database
     python importer.py --check              PASS or FAIL
@@ -20,6 +21,8 @@ identified is counted and skipped rather than guessed at.
 import os
 import sqlite3
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import acr
@@ -110,6 +113,60 @@ def scan():
     return found
 
 
+def anything_new(db_path=DB):
+    """
+    Whether any hand-history file has been written since the newest hand held.
+
+    A heuristic, and cheaply so on purpose: knowing for certain means
+    parsing all three hundred and seventy files on this machine, which is
+    not something to do while a window is trying to open. A file touched
+    after the newest hand in the database MIGHT hold hands that are not in
+    it; one touched before it cannot. So this over-reports and never
+    under-reports, which is the right way round for something whose only
+    consequence is offering to import.
+
+    Returns how many files qualify. Zero means there is genuinely nothing.
+    """
+    con = sqlite3.connect(db_path)
+    newest = con.execute("SELECT MAX(played_at) FROM hands").fetchone()[0]
+    con.close()
+    if not newest:
+        return sum(p["ignition"] + p["acr"] for p in scan())
+    # `played_at` is written as "YYYY-MM-DD HH:MM:SS" in local time, which
+    # is the same clock the filesystem stamps a file with.
+    cutoff = time.mktime(time.strptime(newest[:19], "%Y-%m-%d %H:%M:%S"))
+    fresh = 0
+    for place in scan():
+        got = survey([place["path"]])
+        for f in got["ignition"] + got["acr"]:
+            if f.stat().st_mtime > cutoff:
+                fresh += 1
+    return fresh
+
+
+def refresh(db_path=DB, progress=None):
+    """
+    Load whatever is new in the places this machine keeps hand histories.
+
+    The whole of "auto-import", and it is short because both halves already
+    existed: `scan` finds the folders and `load` already skips a hand that
+    is in the database. So this is safe to run at any time and costs a pass
+    over the files when there is nothing to do -- and, crucially, only
+    rebuilds when a hand was actually added. The derivation is
+    three quarters of a minute; running it to discover nothing changed is
+    how a refresh button becomes one nobody presses.
+    """
+    found = scan()
+    if not found:
+        return {"added": 0, "known": 0, "files": 0, "unknown": 0,
+                "by_site": {}, "places": 0}
+    got = load([p["path"] for p in found], db_path, progress)
+    got["places"] = len(found)
+    if got["added"]:
+        rebuild(db_path, progress)
+    return got
+
+
 def load(paths, db_path=DB, progress=None):
     """
     Load every hand history under these paths, each by its own site's parser.
@@ -182,23 +239,53 @@ def merge(other, db_path=DB, progress=None):
     return {"added": added, "known": len(incoming) - len(new)}
 
 
-def rebuild(progress=None):
-    """
-    Redo the derived tables, which is what makes new hands visible.
+# The derived tables, in the order they depend on each other. A list rather
+# than five calls in a row, because the failure it exists to prevent is a
+# stage being left out of it -- and that failure had already happened.
+#
+# `decisions.build` begins by DROPPING the table, and `lines`, `strength`
+# and `players` each ALTER their own columns onto it afterwards. So a
+# rebuild that stops after `decisions` does not leave the later columns
+# stale, it leaves them GONE. This function ran spots and decisions and
+# nothing else, so importing hands through the window deleted twenty-two
+# columns -- every line string, every named hand, every player class -- and
+# every filter that read one raised "no such column" until somebody thought
+# to run the other three modules by hand.
+#
+# The indexes go last and are part of the chain for the same reason. They
+# are not in `decisions.SCHEMA`, so a rebuild drops them, and thirteen
+# filters go back to reading all ninety thousand rows without anything
+# saying so. Built after the rows are written rather than during: keeping
+# six B-trees up to date while rewriting every row took `lines` from eight
+# seconds to forty-two.
+CHAIN = (
+    ("spots", "one row per player per hand"),
+    ("decisions", "one row per decision -- and this DROPS the table"),
+    ("lines", "the betting written out, onto decisions"),
+    ("strength", "what each hand is, onto decisions"),
+    ("players", "who each player is, onto decisions"),
+)
 
-    Loading writes to `hands`, `seats` and `actions`; every question this
-    program answers is asked of `spots` and `decisions`, which are derived
-    from those. Skipping this leaves an import that appears to have done
-    nothing.
+
+def rebuild(db_path=DB, progress=None):
     """
+    Redo every derived table, in the order they depend on each other.
+
+    This is what makes new hands visible: loading writes `hands`, `seats`
+    and `actions`, and every question the program answers is asked of the
+    tables derived from those. It takes about three quarters of a minute at
+    twelve thousand hands, and all of it has to run -- see `CHAIN`.
+    """
+    import importlib
+
     import decisions
-    import spots
+    for name, _what in CHAIN:
+        if progress:
+            progress(f"deriving {name}…")
+        importlib.import_module(name).build(db_path)
     if progress:
-        progress("deriving spots…")
-    spots.build()
-    if progress:
-        progress("deriving decisions…")
-    decisions.build()
+        progress("indexing…")
+    decisions.index(db_path)
 
 
 def check(db_path=DB):
@@ -243,7 +330,6 @@ def check(db_path=DB):
         print("    (no source files still on disk -- nothing to test against)")
 
     # A file of the wrong kind must be refused, not guessed at.
-    import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         junk = Path(tmp) / "notahand.txt"
         junk.write_text("this is not a poker hand\nnor is this\n")
@@ -251,6 +337,79 @@ def check(db_path=DB):
         print(f"nonsense is refused           {'yes' if got is None else 'NO -> ' + got}")
         if got is not None:
             fails.append("a non-hand-history file was identified as a site")
+
+    # Every module that writes columns onto `decisions` must be in CHAIN,
+    # and after `decisions`, which drops the table. This is the assertion
+    # that would have caught a rebuild running two stages out of five: it
+    # does not ask whether the columns are in the database today, it asks
+    # whether an import would put them back.
+    import decisions
+    import lines
+    import players
+    import strength
+    order = [name for name, _what in CHAIN]
+    con = sqlite3.connect(db_path)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    con.close()
+    for name, owned in (("lines", lines.LINE_COLUMNS),
+                        ("strength", strength.COLUMNS),
+                        ("players", players.NAMES)):
+        placed = name in order and order.index(name) > order.index("decisions")
+        print(f"{name + ' is in the chain':30} "
+              f"{'yes' if placed else 'NO'}   {len(owned)} columns")
+        if not placed:
+            fails.append(f"{name} writes {len(owned)} columns onto decisions "
+                         f"and the rebuild does not run it after decisions, "
+                         f"so an import would delete them")
+        missing = sorted(c for c in owned if c not in cols)
+        if missing:
+            fails.append(f"{name}'s columns are missing from decisions: "
+                         f"{missing[:4]} -- run `python {name}.py`")
+    # The reason the order matters, asserted rather than remembered.
+    if "DROP TABLE IF EXISTS decisions" not in decisions.SCHEMA:
+        fails.append("decisions.SCHEMA no longer drops the table, so the "
+                     "reason CHAIN is ordered is out of date and should be "
+                     "rewritten rather than left as folklore")
+
+    # A file actually loads, through the path the window uses.
+    #
+    # Sniffing was checked and loading was not, and the difference cost
+    # every import there was. `importer.load` hands each parser an explicit
+    # list of files -- it has to, because one folder holds both sites -- and
+    # in both parsers the counter beside that parameter was called `files`
+    # too and was assigned first, so the list was overwritten with 0 before
+    # the loop read it. `python importer.py <folder>` and the window's
+    # Import menu both raised TypeError, and had for as long as the
+    # two-site importer existed. 265 hands were sitting on this machine
+    # unable to get in.
+    #
+    # So this loads a real file into a database of its own and counts what
+    # arrived, which is the only version of this check that would have
+    # noticed.
+    for site in ("ignition", "acr"):
+        sample = next((f for place in scan()
+                       for f in survey([place["path"]])[site]), None)
+        if sample is None:
+            print(f"{site} loads a real file          no {site} file on disk")
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = Path(tmp) / "one.db"
+            got = load([sample], fresh)
+            # Closed rather than left to the garbage collector: Windows will
+            # not delete a file another handle is open on, so a leaked
+            # connection here fails the temporary directory's cleanup and
+            # not the check, which reads as a broken check.
+            con = sqlite3.connect(fresh)
+            held = con.execute("SELECT COUNT(*) FROM hands").fetchone()[0]
+            con.close()
+        ok = got["files"] == 1 and got["added"] == held > 0
+        print(f"{site + ' loads a real file':30} "
+              f"{'yes' if ok else 'NO'}   {got['added']} hands "
+              f"from {sample.name[:28]}")
+        if not ok:
+            fails.append(f"loading one {site} file through importer.load "
+                         f"added {got['added']} hands and left {held} in "
+                         f"the database")
 
     places_found = scan()
     print(f"places holding hands          {len(places_found)}")
@@ -272,6 +431,16 @@ def main(argv):
             return 0
         for p in found:
             print(f"{p['ignition']:>6} ignition {p['acr']:>6} acr   {p['path']}")
+        return 0
+    if "--refresh" in argv:
+        got = refresh(progress=print)
+        if not got["places"]:
+            print("no hand histories found in the usual places")
+            return 0
+        print(f"\n{got['files']} files in {got['places']} places, "
+              f"{got['added']} hands added, {got['known']} already known")
+        if not got["added"]:
+            print("nothing new -- the derived tables were left alone")
         return 0
     if "--merge" in argv:
         got = merge(argv[argv.index("--merge") + 1], progress=print)

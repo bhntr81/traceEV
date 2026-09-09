@@ -358,15 +358,27 @@ def migrate(con):
 
 def build(folder, db_path=DB, files=None):
     con = sqlite3.connect(db_path)
+    # The tables before the columns. `migrate` only ALTERs, so against a
+    # database that does not have them yet it asked SQLite to add a column
+    # to a table that was not there -- which is what an ACR-first import
+    # into a fresh database is, and this machine holds three hundred ACR
+    # files and one Ignition folder. Ignition's loader has always created
+    # them; both write the same tables, so both must be able to.
+    from ignition import SCHEMA
+    con.executescript(SCHEMA)
     migrate(con)
     known = {r[0] for r in con.execute("SELECT hand_id FROM hands")}
 
-    added = skipped = files = 0
-    # iles lets a caller hand over an explicit list, which is what
-    # the importer does when one folder holds two sites and each
-    # file has to go to the parser that wrote it.
+    added = skipped = n_files = 0
+    # `files=` lets a caller hand over an explicit list, which is what the
+    # importer does when one folder holds two sites and each file has to go
+    # to the parser that wrote it. The counter beside it is deliberately not
+    # called `files`: it used to be, and being assigned first it overwrote
+    # the parameter with 0 before the loop could read it -- so the list was
+    # thrown away and the loop tried to iterate the number zero. Every
+    # import through `importer.load` went that way and raised.
     for f in (files if files is not None else sorted(Path(folder).rglob("*.txt"))):
-        files += 1
+        n_files += 1
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -401,12 +413,12 @@ def build(folder, db_path=DB, files=None):
                   a["action"], a["amount"], a["total"], a["allin"])
                  for a in got["actions"]])
             added += 1
-        if files % 25 == 0:
+        if n_files % 25 == 0:
             con.commit()
-            print(f"  ...{files} files, {added} hands", flush=True)
+            print(f"  ...{n_files} files, {added} hands", flush=True)
     con.commit()
     con.close()
-    return files, added, skipped
+    return n_files, added, skipped
 
 
 def stats(db_path=DB):

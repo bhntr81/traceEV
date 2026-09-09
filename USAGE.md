@@ -643,6 +643,43 @@ solutions, which is answering "what is correct" and is a different program.
 
 ---
 
+## Loading hands after a session
+
+```bash
+python importer.py --refresh
+```
+
+Looks in the places this machine keeps hand histories, loads anything that
+is not already in the database, and rebuilds the derived tables **only if
+something was added**. In the window it is **Import → Import new hands**,
+and the window says on launch when there is something to fetch:
+
+```
+30 hand history files written since your last import — Import ▸ Import new hands
+```
+
+That notice is a heuristic and deliberately a cheap one — a file touched
+after the newest hand in the database *might* hold new hands, one touched
+before it cannot. It over-reports rather than parsing every file on the
+machine while the window is trying to open.
+
+**The rebuild is the slow half and all of it has to run.** Loading writes
+`hands`, `seats` and `actions`; everything you can ask is derived from
+those, in this order:
+
+```
+spots → decisions → lines → strength → players → indexes
+```
+
+About three quarters of a minute at twelve thousand hands. `importer.CHAIN`
+is that list, and it is a list rather than five calls in a row because the
+failure it exists to prevent is a stage being missed out of it: `decisions`
+**drops its table**, and `lines`, `strength` and `players` each add their
+columns back afterwards. A rebuild that stops early does not leave those
+columns stale, it leaves them gone.
+
+---
+
 ## Keeping it up to date
 
 The window checks GitHub on every launch, on a worker thread, and says

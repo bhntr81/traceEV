@@ -87,6 +87,11 @@ columns and every line filter silently matches nothing. Run it after.
 python decisions.py && python lines.py
 ```
 
+`importer.CHAIN` is this order written as a list, and `importer.rebuild`
+walks it -- so an import runs all of it. That list and the diagram above are
+the same fact twice; if one changes, change the other. It ran two stages of
+five until 9 Sep 2026 and every import deleted twenty-two columns.
+
 `python decisions.py --index` adds the indexes to a database already built.
 Which indexes exist is a measured question and the reasoning is written
 beside them in `decisions.INDEXES`; two candidates were built, measured and

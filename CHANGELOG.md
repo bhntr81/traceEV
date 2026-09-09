@@ -8,6 +8,110 @@ Newest first.
 
 ---
 
+## Importing hands, which had been broken in three places at once
+
+The next thing on the list was auto-import. Before writing any of it the
+existing path was run, and it did not work -- in three separate ways, none
+of which any check would have caught, and all of which had been true for as
+long as the two-site importer had existed. 265 hands were sitting on this
+machine unable to get in, and the database's newest hand was twelve days old.
+
+### Fixed — every import raised, because a counter and a parameter shared a name
+
+`importer.load` hands each parser an explicit list of files. It has to: one
+folder holds both sites, and each file has to go to the parser that wrote
+it. Both parsers took that list as `files=` and then began
+
+```python
+added = skipped = files = 0
+```
+
+which overwrote the list with 0 before the loop could read it -- and 0 is
+not None, so the loop tried to iterate the number zero. `python importer.py
+<folder>` and the window's whole Import menu raised `TypeError: 'int' object
+is not iterable`. Only calling a parser directly on a folder worked, which
+is the one path a person is least likely to use.
+
+The counter is `n_files` now. The comment above it carried a stray form feed
+where the "f" of "files" should have been, which is the fingerprint of
+whatever edit did this.
+
+### Fixed — the rebuild ran two stages out of five
+
+`importer.rebuild` derived `spots` and `decisions` and stopped. But
+`decisions.build` begins by **dropping the table**, and `lines`, `strength`
+and `players` each ALTER their columns back onto it afterwards. So an import
+did not leave those columns stale -- it deleted twenty-two of them. Measured
+on a copy of the live database: `node`, `line`, every per-street string,
+`made`, `kicker`, `fd`, `sd`, `player_class`, `vs_class`, `n_reg`, `n_fish`,
+`vs_player`, `vs_seat`, all gone, and every filter that reads one raising
+"no such column" until somebody thought to run three more modules by hand.
+
+The indexes went the same way. They are not in `decisions.SCHEMA`, so the
+rebuild dropped them and thirteen filters went back to reading all ninety
+thousand rows.
+
+`importer.CHAIN` is now the build order as a list -- spots, decisions,
+lines, strength, players, then the indexes -- and `rebuild` walks it. A list
+because the failure is a stage being left out of one.
+
+### Fixed — ACR could not create a database
+
+`acr.build` called `migrate`, which only ALTERs. Against a database that did
+not have the tables yet it asked SQLite to add a column to `hands` and got
+"no such table". Ignition's loader has always run the schema first; both
+write the same tables, so both must be able to make them. An ACR-first
+import into a fresh database -- which is what this machine would be, holding
+three hundred ACR files and one Ignition folder -- could not work.
+
+Found by the new check, not by reading.
+
+### Added — `--refresh`, and the window noticing on its own
+
+```bash
+python importer.py --refresh
+```
+
+Scans the usual places, loads what is new, and rebuilds **only if a hand was
+actually added**: the derivation is three quarters of a minute, and running
+it to discover nothing changed is how a refresh button becomes one nobody
+presses. In the window it is **Import → Import new hands**, with no dialog,
+because the answer to "which folder" is always the same one.
+
+The window also says on launch when there is something to fetch. That check
+is a heuristic on file modification times -- a file touched after the newest
+hand in the database might hold new hands, one touched before it cannot --
+because the honest version means parsing three hundred and seventy files
+while the window is trying to open. It over-reports and never under-reports,
+which is the right way round for something whose only consequence is an
+offer.
+
+It only notices. Importing stays a thing you ask for: a minute of derivation
+starting by itself while somebody is reading a number is not a feature.
+
+### Not done — incremental derivation, and the measurement that says why
+
+The plan had been to derive only the new hands. The full chain was timed
+first: spots 7.6s, decisions 17.8s, lines 8.0s, strength 5.7s, players 7.1s
+-- about 46 seconds at 12,000 hands, and the whole chain reproduces the live
+database exactly, which is now checked. Incremental derivation is
+worth building when that number hurts. It does not yet, and four of those
+five stages are per-hand while `players` is inherently global -- a player's
+class changes for every one of their old rows when new hands arrive -- so
+the incremental version would be four fast paths and one full pass anyway.
+
+### Checked
+
+`importer.py --check` tested that the site detector was right and never
+tested that anything loaded, which is the whole difference. It now loads a
+real file of each site into a database of its own and counts what arrived --
+the check that finds all three bugs above. Beside it: every module that
+writes columns onto `decisions` is in `CHAIN` and after `decisions`, its
+columns are present, and `decisions.SCHEMA` still drops the table, so the
+reason the order matters is asserted rather than remembered.
+
+---
+
 ## Multiple Players, and two ways its parser removed somebody else's filter
 
 ### Added — a cohort: filtering by which players, before which spots
