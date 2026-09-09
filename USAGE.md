@@ -659,9 +659,16 @@ and the window says on launch when there is something to fetch:
 ```
 
 That notice is a heuristic and deliberately a cheap one — a file touched
-after the newest hand in the database *might* hold new hands, one touched
-before it cannot. It over-reports rather than parsing every file on the
-machine while the window is trying to open.
+since the loader last read *might* hold new hands, one touched before it
+cannot. It over-reports rather than parsing every file on the machine while
+the window is trying to open, and it goes quiet once you import: the loader
+records how far it has read, in a `meta` table beside the hands.
+
+It compares against that mark and not against the newest hand's `played_at`,
+which was the first attempt and was wrong. The 265 hands recovered above
+were all *older* than hands already in the database, so against `played_at`
+those files stayed "new" after being loaded and the window would have
+offered them on every launch for ever.
 
 **The rebuild is the slow half and all of it has to run.** Loading writes
 `hands`, `seats` and `actions`; everything you can ask is derived from

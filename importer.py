@@ -113,33 +113,61 @@ def scan():
     return found
 
 
+# How far the loader has read, kept in the database beside the hands it
+# came from. Its own table, created on demand, because it is importer's
+# bookkeeping and not part of the schema the parsers share -- and because
+# `decisions.build` drops its table and this must survive that.
+META = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
+
+
+def high_water(db_path=DB, seen=None):
+    """
+    The newest file modification time the loader has already read, or None.
+
+    Passing `seen` records a new one, keeping whichever is later. This is
+    the thing `anything_new` compares against, and it exists because the
+    obvious comparison is wrong: the newest hand's `played_at` is when it
+    was PLAYED, and the two hundred and sixty-five hands the broken loader
+    had been unable to read were all older than hands already held. Against
+    `played_at` those files stayed "new" after they had been loaded, so the
+    window would have offered to import them on every launch for ever --
+    and a notice that says the same thing every launch is one nobody reads.
+    """
+    con = sqlite3.connect(db_path)
+    con.execute(META)
+    row = con.execute("SELECT value FROM meta WHERE key='high_water'"
+                      ).fetchone()
+    was = float(row[0]) if row else None
+    if seen is not None and (was is None or seen > was):
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('high_water', ?)",
+                    (repr(float(seen)),))
+        con.commit()
+        was = float(seen)
+    con.close()
+    return was
+
+
 def anything_new(db_path=DB):
     """
-    Whether any hand-history file has been written since the newest hand held.
+    How many hand-history files have been written since the loader last read.
 
     A heuristic, and cheaply so on purpose: knowing for certain means
     parsing all three hundred and seventy files on this machine, which is
     not something to do while a window is trying to open. A file touched
-    after the newest hand in the database MIGHT hold hands that are not in
-    it; one touched before it cannot. So this over-reports and never
-    under-reports, which is the right way round for something whose only
-    consequence is offering to import.
+    since the last load MIGHT hold hands that are not in the database; one
+    touched before it cannot. So this over-reports and never under-reports,
+    which is the right way round for something whose only consequence is
+    offering to import.
 
-    Returns how many files qualify. Zero means there is genuinely nothing.
+    Before anything has been loaded there is no mark to compare against, so
+    every file counts -- which is correct, since none of them have been read.
     """
-    con = sqlite3.connect(db_path)
-    newest = con.execute("SELECT MAX(played_at) FROM hands").fetchone()[0]
-    con.close()
-    if not newest:
-        return sum(p["ignition"] + p["acr"] for p in scan())
-    # `played_at` is written as "YYYY-MM-DD HH:MM:SS" in local time, which
-    # is the same clock the filesystem stamps a file with.
-    cutoff = time.mktime(time.strptime(newest[:19], "%Y-%m-%d %H:%M:%S"))
+    mark = high_water(db_path)
     fresh = 0
     for place in scan():
         got = survey([place["path"]])
         for f in got["ignition"] + got["acr"]:
-            if f.stat().st_mtime > cutoff:
+            if mark is None or f.stat().st_mtime > mark:
                 fresh += 1
     return fresh
 
@@ -178,6 +206,13 @@ def load(paths, db_path=DB, progress=None):
     got = survey(paths)
     result = {"added": 0, "known": 0, "files": 0, "unknown": len(got["unknown"]),
               "by_site": {}}
+    # Recorded here rather than in `refresh`, so that every road into the
+    # loader marks how far it has read -- Import a folder and Find hands on
+    # this computer read the same files and would otherwise leave the
+    # window still offering to fetch them.
+    read = [f for f in got["ignition"] + got["acr"]]
+    if read:
+        high_water(db_path, max(f.stat().st_mtime for f in read))
     for site, module in (("ignition", ignition), ("acr", acr)):
         files = got[site]
         if not files:
@@ -281,10 +316,10 @@ def rebuild(db_path=DB, progress=None):
     import decisions
     for name, _what in CHAIN:
         if progress:
-            progress(f"deriving {name}…")
+            progress(f"deriving {name}...")
         importlib.import_module(name).build(db_path)
     if progress:
-        progress("indexing…")
+        progress("indexing...")
     decisions.index(db_path)
 
 
@@ -402,6 +437,7 @@ def check(db_path=DB):
             con = sqlite3.connect(fresh)
             held = con.execute("SELECT COUNT(*) FROM hands").fetchone()[0]
             con.close()
+            mark = high_water(fresh)
         ok = got["files"] == 1 and got["added"] == held > 0
         print(f"{site + ' loads a real file':30} "
               f"{'yes' if ok else 'NO'}   {got['added']} hands "
@@ -410,6 +446,12 @@ def check(db_path=DB):
             fails.append(f"loading one {site} file through importer.load "
                          f"added {got['added']} hands and left {held} in "
                          f"the database")
+        # And it has to remember having read it. Without the mark the
+        # window offers to import the same files on every launch for ever,
+        # which is a notice nobody reads by the third time.
+        if abs((mark or 0) - sample.stat().st_mtime) > 1:
+            fails.append(f"loading a {site} file left the high-water mark "
+                         f"at {mark}, so it would be offered again")
 
     places_found = scan()
     print(f"places holding hands          {len(places_found)}")

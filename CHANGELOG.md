@@ -89,6 +89,26 @@ offer.
 It only notices. Importing stays a thing you ask for: a minute of derivation
 starting by itself while somebody is reading a number is not a feature.
 
+### Fixed — the notice would have nagged for ever
+
+The first version of that heuristic compared file times against the newest
+hand's `played_at`, and running it on the real database showed why that is
+wrong: all 265 recovered hands were **older** than hands already held --
+they were backfill the broken loader had never been able to read, not
+recent play. So `played_at` did not move, those thirty files stayed "newer"
+than it after being loaded, and the window would have offered to import
+them on every launch for ever. A notice that says the same thing every
+launch is one nobody reads, which is the argument the update banner already
+makes about itself.
+
+The loader now records how far it has read -- the newest modification time
+among the files it has been through -- in a `meta` table of its own,
+created on demand so that `decisions.build` dropping its table cannot take
+it. Recorded in `load` rather than in `refresh`, so that Import a folder and
+Find hands on this computer mark it too; they read the same files, and
+would otherwise leave the window still offering them. Checked: loading a
+file leaves the mark on that file's time.
+
 ### Not done — incremental derivation, and the measurement that says why
 
 The plan had been to derive only the new hands. The full chain was timed
