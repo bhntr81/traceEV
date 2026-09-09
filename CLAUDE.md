@@ -205,7 +205,7 @@ Facts that stay true, and that have each been got wrong at least once:
 ## Adding a stat
 
 Add a `Stat(...)` to the registry in `stats.py`. Do not write a new module
-and do not write SQL elsewhere — six modules already hardcode their own
+and do not write SQL elsewhere -- six modules already hardcode their own
 queries and that is the mistake this design exists to end. Per
 `AppropriateComplexity` and `PurityAndCleanliness`, the measure of progress
 is that their number goes **down** while the number of answerable questions
@@ -213,6 +213,24 @@ goes up.
 
 If a stat cannot be expressed as two filters over `decisions`, the missing
 thing is a **column on `decisions`**, not a script.
+
+A stat for one person's game rather than for the project goes in
+`stats.json` instead, via `query.py --define` or the window's SAVE AS STAT
+button -- `stats.load_custom` puts it into the same registry, so it is a
+column, a `--by` split and a `--quick` filter with nothing else told about
+it. That file is the user's and is gitignored. Two rules hold there and are
+enforced: a saved stat may not take a built-in's key, because `--show
+cbet_flop` would quietly mean two different things; and the filter that
+defines one may not contain `--aggressive`, `--allin` or `--quick`, because
+a chance that already contains its own action reads 100% for ever and looks
+like a finding.
+
+A filter saved under a name is the same idea one verb over: `query.py
+--save` writes it to `filters.json`, `query.reports()` merges it with
+`SMART_REPORTS`, and it is thereafter a preset like any other. Neither file
+keeps the reporting options (`--by`, `--show`, `--min`) or a player cohort:
+the first would rewrite the columns of every view the report was opened in,
+and the second confuses choosing people with describing a situation.
 
 ## Reporting numbers
 

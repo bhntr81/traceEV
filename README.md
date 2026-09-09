@@ -60,7 +60,7 @@ strength.py     what the hand is against the board    --check
 update.py       fast-forward from github, safely      --check
 players.py      who each player is: reg, fish, unknown  --check
         v
-stats.py        35 stats, defined declaratively      --check
+stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
 opponents.py      what one opponent does differently   --check
 population.py   what the pool does, split-half validated  --check
@@ -73,6 +73,8 @@ check.py        run all seven checks, in dependency order
 python query.py --pool --pot 3bet --street flop --ip
 python query.py --hero --board mono --results
 python query.py --player dblj32 --pos BTN --hands
+python query.py --pot 3bet --ip --street river --define river_barrel3 --do bet
+python query.py --site ignition --quick threebet --chart
 ```
 
 ## The database, as it stands

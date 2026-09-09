@@ -25,13 +25,17 @@ Three rules are built in rather than left to whoever reads the output:
     `compare` enforces it; the reports use `compare`.
 
     python stats.py --list                    every stat, with its definition
+    python stats.py --custom                  the ones saved from a filter
     python stats.py --pool                    both pools side by side
     python stats.py --player NAME             one opponent
     python stats.py --check                   agree with spots, PASS or FAIL
 """
 
+import json
+import re
 import sqlite3
 import sys
+import tempfile
 from math import erfc, sqrt
 from pathlib import Path
 
@@ -53,13 +57,19 @@ class Stat:
     who faces three bets on three streets had three chances to fold. "hand"
     counts players-in-hands, because a player VPIPs once however many times
     they act.
+
+    `custom` says the definition came out of `stats.json` rather than out
+    of the registry below, which is the one thing the rest of the module
+    needs to know about a saved stat: `load_custom` replaces exactly those
+    and leaves the shipped ones alone.
     """
 
     def __init__(self, key, label, chance, action, source="d", per="decision",
-                 group="", note=""):
+                 group="", note="", custom=False):
         self.key, self.label = key, label
         self.chance, self.action = chance, action
         self.source, self.per, self.group, self.note = source, per, group, note
+        self.custom = custom
 
 
 # The registry. Everything below is a definition, not code -- which is the
@@ -189,6 +199,229 @@ STATS = [
 ]
 
 BY_KEY = {s.key: s for s in STATS}
+
+
+# ---- stats nobody had to edit this file to get -------------------------
+#
+# The registry above is the vocabulary this project ships with, and it is
+# not the vocabulary any particular game needs. The question that actually
+# comes up is "how often do I bet the river in a 3-bet pot in position,
+# having been checked to and barrelled twice" -- and there is no list of
+# thirty stats that contains it. There is no list of any length that
+# contains it, because the number of shapes a hand can have is the number
+# of strings the action letters spell.
+#
+# Hand2Note answers that with a stat builder: click the actions on each
+# street, name the result, and it becomes a column like any other. The same
+# thing falls out of what is already here without building a builder,
+# because a stat IS a filter and an action. `query.build` already turns
+#
+#     --pot 3bet --ip --headsup --street river --node '*/XBC/XBC/X'
+#
+# into the chance, and the action is one of the verbs below. So a saved stat
+# is that pair written to a file and loaded back into this registry, after
+# which nothing above it can tell the difference: it appears in the stats
+# table, in `--show`, in `--by position`, in the opponent leaderboard and as
+# a one-click filter, and not one of those had to learn it exists.
+#
+# The file sits beside the database rather than in the code because it is
+# the user's and not the project's -- a stat somebody built has to survive a
+# `git pull`, and must not turn up in anybody else's checkout.
+CUSTOM = Path(__file__).parent / "stats.json"
+CUSTOM_GROUP = "custom"
+
+# A key is looked up by name in three places -- `--show a,b,c`, a report's
+# columns, `--quick` -- and one of them splits on commas. So the characters
+# a key may contain are the ones that survive all three.
+KEY_OK = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# What a numerator can be. Written out rather than left as raw SQL because
+# these are what a stat's action ever is, and because bet and raise are the
+# pair everybody runs together: an aggressive action with nothing to call is
+# a bet, with something to call it is a raise, and `agg=1` alone silently
+# means both at once.
+#
+# A call has to name the all-in that is a call. 95 of the 236 all-ins here
+# are a player putting their last chips in to CALL, and `action='C'` alone
+# misses every one of them -- the same defect `lines.letter` exists to
+# correct, arrived at from the other direction.
+ACTIONS = {
+    "bet": ("agg=1 AND to_call=0", "bet, with nothing to call"),
+    "raise": ("agg=1 AND to_call>0", "raised a bet"),
+    "aggressive": ("agg=1", "bet or raised"),
+    "call": ("action IN ('C','A') AND agg=0", "called, all-in calls included"),
+    "check": ("action='X'", "checked"),
+    "fold": ("action='F'", "folded"),
+    "continue": ("action<>'F'", "called or raised rather than folding"),
+    "allin": ("allin=1", "put the last of a stack in"),
+}
+
+# Saved definitions the database will not accept, kept rather than dropped.
+# A stat that quietly vanishes because a column it names was renamed is a
+# stat whose absence from a report nobody notices; one that is listed as
+# broken is a thing somebody fixes.
+BROKEN = []
+
+
+def definitions(path=None):
+    """The saved definitions exactly as they are on disk."""
+    path = Path(path or CUSTOM)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_custom(defs, path=None):
+    """Write the definitions back, indented, because people read this file."""
+    path = Path(path or CUSTOM)
+    path.write_text(json.dumps(defs, indent=2) + "\n", encoding="utf-8")
+
+
+def _sql_error(chance, action, db=None):
+    """
+    Whether SQLite will accept the pair, asked of the real table.
+
+    EXPLAIN compiles the statement and runs none of it, which is exactly the
+    question being asked: a chance naming a column that does not exist has
+    to be caught when it is written, not on the next report, where it
+    arrives as a stack trace on top of somebody's stats table.
+
+    Returns None when there is no database to ask. A definition cannot be
+    checked against a table that is not there, and refusing to load it would
+    leave a fresh install unable to open its own saved stats until the first
+    import had finished.
+    """
+    path = Path(db or DB)
+    if not path.exists():
+        return None
+    con = sqlite3.connect(str(path))
+    try:
+        con.execute(f"EXPLAIN SELECT 1 FROM decisions "
+                    f"WHERE ({chance}) AND ({action})")
+        return None
+    except sqlite3.Error as e:
+        return str(e)
+    finally:
+        con.close()
+
+
+def _refuse(d):
+    """Why this definition cannot become a stat, in a sentence, or None."""
+    key = str(d.get("key", ""))
+    if not KEY_OK.match(key):
+        return (f"{key!r} is not a usable key -- lowercase letters, digits "
+                f"and underscores, because `--show` splits its argument on "
+                f"commas and columns are selected by this name")
+    if key in BY_KEY:
+        if BY_KEY[key].custom:
+            return f"{key!r} is defined twice in the same file"
+        return (f"{key!r} is already a built-in stat, and shadowing one "
+                f"would make `--show {key}` quietly mean something else")
+    if not d.get("chance") or not d.get("action"):
+        return "a stat is a chance and an action, and needs both"
+    if d.get("per", "decision") not in ("decision", "hand"):
+        return "`per` is 'decision' or 'hand'"
+    return None
+
+
+def load_custom(path=None, db=None):
+    """
+    Replace the saved stats in the registry with whatever the file now holds.
+
+    The registry is mutated in place and never rebuilt. Every other module
+    did `from stats import STATS` at import time, so binding a new list here
+    would leave all of them holding the old one, and the saved stats would
+    exist in this module alone -- present in `stats.py --list` and absent
+    from every report, which is the worse of the two ways to be wrong.
+
+    Idempotent, because it is called twice: once here, and again by the
+    packaged application once it knows where the user's files actually are.
+    Frozen, that is beside the executable and not beside code that
+    PyInstaller deletes on the way out.
+    """
+    global CUSTOM
+    if path is not None:
+        CUSTOM = Path(path)
+    BROKEN[:] = []
+    for s in [s for s in STATS if s.custom]:
+        STATS.remove(s)
+        BY_KEY.pop(s.key, None)
+    try:
+        saved = definitions()
+    except (OSError, ValueError) as e:
+        BROKEN.append(("(the file itself)", f"{CUSTOM}: {e}"))
+        return []
+    loaded = []
+    for d in saved:
+        why = _refuse(d) or _sql_error(d.get("chance"), d.get("action"), db)
+        if why:
+            BROKEN.append((str(d.get("key")) or "(unnamed)", why))
+            continue
+        st = Stat(d["key"], d.get("label") or d["key"],
+                  d["chance"], d["action"],
+                  per=d.get("per", "decision"),
+                  group=d.get("group") or CUSTOM_GROUP,
+                  note=d.get("note", ""), custom=True)
+        STATS.append(st)
+        BY_KEY[st.key] = st
+        loaded.append(st)
+    return loaded
+
+
+def define(key, label, chance, action, per="decision", group=CUSTOM_GROUP,
+           note="", path=None, db=None):
+    """
+    Save a stat, having first made the database agree that it is one.
+
+    The check is not ceremony, and it is the same thing Hand2Note's own
+    manual tells you to press before putting a stat in a HUD: a definition
+    that does not compile is not discovered when it is written, it is
+    discovered weeks later, on top of a report, by somebody who no longer
+    remembers writing it.
+
+    Returns (n, k): how often the chance came up and how often the action
+    was taken. A saved stat with n=0 describes nothing, and the moment to
+    find that out is while the filter that made it is still on the screen.
+    """
+    d = {"key": key, "label": label or key.replace("_", " "),
+         "chance": chance, "action": action, "per": per, "group": group,
+         "note": note}
+    # Redefining is allowed and shadowing a built-in is not, so the name
+    # being replaced comes out of the registry before the new definition is
+    # judged -- otherwise a saved stat could never be corrected, its own
+    # previous version being the thing that refused it.
+    was = BY_KEY.pop(key, None) if key in BY_KEY and BY_KEY[key].custom else None
+    try:
+        why = _refuse(d) or _sql_error(chance, action, db)
+    finally:
+        if was is not None:
+            BY_KEY[key] = was
+    if why:
+        raise ValueError(why)
+    save_custom([e for e in definitions(path) if e.get("key") != key] + [d],
+                path)
+    load_custom(path, db)
+    con = sqlite3.connect(str(db or DB))
+    try:
+        n, k, _p, _lo, _hi = rate(con, BY_KEY[key])
+    finally:
+        con.close()
+    return n, k
+
+
+def forget(key, path=None):
+    """Remove a saved stat. A built-in is not the file's to remove."""
+    if key in BY_KEY and not BY_KEY[key].custom:
+        raise ValueError(f"{key!r} is built in, and lives in this file")
+    saved = definitions(path)
+    remaining = [d for d in saved if d.get("key") != key]
+    if len(remaining) == len(saved):
+        raise ValueError(f"no saved stat named {key!r}")
+    save_custom(remaining, path)
+    load_custom(path)
+
+
+load_custom()
 
 
 def wilson(k, n, z=1.96):
@@ -564,6 +797,61 @@ def check(db_path=DB):
     print(f"one pass agrees with thirty   {counted - off}/{counted}")
     if off:
         fails.append("the batched and per-stat counts disagree")
+
+    # A saved stat must be indistinguishable from a shipped one, and the way
+    # it would fail to be is silent: `load_custom` mutating a copy of the
+    # registry rather than the registry itself leaves it listed here and
+    # missing from every report. So the round trip is driven end to end --
+    # define it, find it in the registry, count it both ways, forget it --
+    # against a file of its own, because a check that writes to the user's
+    # saved stats is a check nobody dares run twice. In a fresh directory
+    # rather than under a fixed name: `check.py` runs sixteen of these, and
+    # two of them sharing a scratch file would fail for a reason that has
+    # nothing to do with stats.
+    scratch = Path(tempfile.mkdtemp()) / "stats.json"
+    was_custom, saved_before = CUSTOM, definitions()
+    trips = []
+    try:
+        n, k = define("roundtrip_check", "round trip",
+                      "street='flop' AND facing='check'",
+                      ACTIONS["aggressive"][0], path=scratch, db=db_path)
+        trips.append(("saved stat reaches the registry",
+                      "roundtrip_check" in BY_KEY
+                      and BY_KEY["roundtrip_check"] in STATS))
+        trips.append(("it has a chance to occur", n > 0))
+        one = rate(con, "roundtrip_check")
+        batch = rates(con, "1=1")["roundtrip_check"]
+        trips.append(("one at a time agrees with one pass",
+                      (one[0], one[1]) == batch == (n, k)))
+        shadow = True
+        try:
+            define("cbet_flop", "shadow", "1=1", "agg=1", path=scratch,
+                   db=db_path)
+            shadow = False
+        except ValueError:
+            pass
+        trips.append(("a built-in name cannot be shadowed", shadow))
+        forget("roundtrip_check", path=scratch)
+        trips.append(("forgetting removes it everywhere",
+                      "roundtrip_check" not in BY_KEY
+                      and not [s for s in STATS if s.key == "roundtrip_check"]))
+    finally:
+        scratch.unlink(missing_ok=True)
+        scratch.parent.rmdir()
+        load_custom(was_custom)
+    print(f"a saved stat behaves like a built-in   "
+          f"{sum(1 for _, ok in trips if ok)}/{len(trips)}")
+    for what, ok in trips:
+        if not ok:
+            print(f"    {what}: NO")
+            fails.append(what)
+    if definitions() != saved_before:
+        fails.append("the check disturbed the saved stats")
+    if BROKEN:
+        print("saved definitions the database will not accept:")
+        for key, why in BROKEN:
+            print(f"    {key}: {why}")
+
     con.close()
 
     print()
@@ -576,12 +864,32 @@ def main(argv):
     if "--list" in argv:
         for s in STATS:
             print(f"\n{s.key:18} {s.label}   [{s.group}, per {s.per}, "
-                  f"{'decisions' if s.source == 'd' else 'spots'}]")
+                  f"{'decisions' if s.source == 'd' else 'spots'}"
+                  f"{', saved' if s.custom else ''}]")
             if s.note:
                 print(f"  {s.note}")
             print(f"  chance: {s.chance}")
             print(f"  action: {s.action}")
         return 0
+    if "--custom" in argv:
+        # Where the file is, said out loud. Frozen it sits beside the
+        # executable and not beside the code, and somebody looking for their
+        # saved stats should not have to work out which of those they have.
+        print(f"saved stats: {CUSTOM}")
+        mine = [s for s in STATS if s.custom]
+        if not mine and not BROKEN:
+            print("  none yet -- `python query.py <filter> --define KEY` "
+                  "makes one")
+        for s in mine:
+            n, k, p, lo, hi = rate(con, s)
+            print(f"\n  {s.key:18} {s.label}   {fmt(n, k, p, lo, hi)}")
+            if s.note:
+                print(f"    from: {s.note}")
+            print(f"    chance: {s.chance}")
+            print(f"    action: {s.action}")
+        for key, why in BROKEN:
+            print(f"\n  {key:18} BROKEN -- {why}")
+        return 1 if BROKEN else 0
     if "--check" in argv:
         return 0 if check() else 1
     if "--player" in argv:

@@ -122,6 +122,151 @@ they did next. `--line` is the whole hand and includes it.
 
 ---
 
+### The 13x13 chart
+
+`--range` says what the hands *became* — top pair, a flush draw. `--chart`
+says what they *were*:
+
+```bash
+python query.py --site ignition --quick threebet --chart
+python query.py --site ignition --pos BTN --chart --show rfi
+```
+
+Without `--show` each cell is that combo's share of the range that reached
+the spot — H2N's range diagram. With `--show` each cell is that stat for
+that combo: `--show rfi` on the button is an opening range, read off the
+hands themselves rather than assumed.
+
+Aces top left, suited above the diagonal, offsuit below. In the window it is
+the **chart** tab, with a *chart of* box beside it to switch between the two.
+
+```
+      A    K    Q    J    T    9    8 ...
+  A  3.9  3.3  2.0  1.2  1.9  1.1  1.4
+  K  5.6  3.6  2.2  1.7  0.8  0.6  0.5
+  Q  5.1  2.6  2.8  1.4  0.3  0.5  0.5
+```
+
+Two things to know before trusting one:
+
+- **It is the range that was SEEN.** Ignition shows every hand at showdown
+  including the folds; ACR shows 23%. The fraction is printed above every
+  chart, and on ACR a chart is of the hands that got to showdown, which is a
+  stronger set than the hands that reached the spot. `--site ignition` is
+  the filter that fixes it.
+- **Composition counts each player-hand once, not each decision.** A hand
+  that reached the river has four rows in `decisions` and one that folded
+  preflop has one, so counting rows would draw a range visibly stronger than
+  the one that actually arrived — in a picture nobody would think to doubt.
+  `query.py --check` asserts the cells sum to the hands seen.
+
+A rate cell is left blank below three occurrences: one hand dealt twice is
+not a frequency. A composition cell is not, because a combo dealt twice
+really is 0.1% of the range.
+
+---
+
+### Saving the filter as a report
+
+The five reports in the box are the ones this project guessed at. The sixth
+is whatever you were looking at last Tuesday:
+
+```bash
+python query.py --pot 3bet --ip --street river --save "my river spot"
+python query.py --preset "my river spot" --by position
+python query.py --presets                 # every report, built in and saved
+python query.py --forget "my river spot"
+```
+
+A saved report is a preset, in the same list as the built-in ones, so it
+turns up in `--preset`, in `--presets` and in the window's report box
+without anything being told about it. In the window it is the **SAVE AS
+REPORT** button at the foot of the filter dialog.
+
+`--forget` takes either a saved stat or a saved report; it refuses if you
+somehow have both under one name rather than guessing which you meant.
+
+Two things are deliberately not saved with a report:
+
+- **The reporting options.** `--by`, `--show` and `--min` say how to draw an
+  answer, not which rows it is about. A report that remembered `--show
+  vpip,pfr` would rewrite the columns of every view it was opened in.
+- **The player cohort.** A cohort chooses people and a report describes a
+  situation. Save the situation and pick the players beside it.
+
+Reports live in `filters.json` beside the database, gitignored, next to
+`stats.json`. Both are yours rather than the project's.
+
+---
+
+### Making a stat of your own
+
+The built-in stats are the ones everybody wants. The one *you* want this
+week is probably not among them, because the number of spots a hand can be
+in is the number of strings those letters spell.
+
+So any filter can be saved as a stat. The filter becomes the chance to do
+something, and `--do` says what the doing is:
+
+```bash
+python query.py --pot 3bet --ip --headsup --street river --node "*/XBC/XBC/X" \
+    --define river_barrel3_ip --label "river 3rd barrel, 3bet IP" --do bet
+```
+
+That is Hand2Note's "continued bet on the river in a 3-bet pot in position"
+written in one line: a 3-bet pot, heads up, our player in position, both
+earlier streets checked to them and bet, and now the river checked to them
+again.
+
+It prints the definition and tests it against the database on the spot,
+which is what H2N's manual means by pressing *Test Stat* before using one:
+
+```
+saved 'river_barrel3_ip' -- river 3rd barrel, 3bet IP
+  from:   pot 3bet, ip, headsup, street river, node */XBC/XBC/X, bet, with nothing to call
+  chance: pot_type IN ('3bet') AND is_ip = 1 AND n_live = 2 AND street IN ('river') AND node GLOB '*/XBC/XBC/X'
+  action: agg=1 AND to_call=0
+    52.6%   +/-20 ? n=19
+```
+
+From then on it is a stat like any other — a column, a split, a filter:
+
+```bash
+python query.py --show river_barrel3_ip --by position
+python query.py --quick river_barrel3_ip --hands
+python stats.py --custom              # the ones you have saved
+python query.py --forget river_barrel3_ip
+```
+
+`--do` is one of `bet`, `raise`, `aggressive`, `call`, `check`, `fold`,
+`continue`, `allin`. `--per hand` counts a player once however often they
+acted, the way VPIP does; the default counts every decision.
+
+In the window it is the **SAVE AS STAT** button at the foot of the filter
+dialog, and the same window forgets them again.
+
+Two things it will not let you do, both because the result would look like a
+stat rather than like a mistake:
+
+- **`--aggressive`, `--allin` and `--quick` cannot be in the filter.** They
+  say what the player *did*, and a stat whose chance already contains its
+  own action reads 100% for ever.
+- **A saved stat cannot take a built-in's name**, or `--show cbet_flop`
+  would quietly start meaning something else.
+
+The definitions live in `stats.json` beside the database. That file is
+yours, not the project's: it is gitignored, and survives a `git pull`.
+
+One limitation worth knowing. The action strings record the order of play
+and not *who* played it. Heads up that is unambiguous — with `--headsup
+--ip`, a flop of `XBC` can only be villain checks, you bet, villain calls.
+Multiway it is not, and there a `--node` pattern means "the betting went
+like this" rather than "this player did this". Positions are deliberately
+kept out of the strings, because eight-handed tables are recorded against
+six position names and 1,076 hands have one label covering two seats.
+
+---
+
 ### Comparing two populations
 
 ```bash
@@ -226,6 +371,49 @@ decisions out of 94,017 — every Ignition hand including the ones that
 folded, and 23% of ACR's. So they narrow hard, and a small `n` here is the
 data rather than the filter. A `board pair` is a pair on the board that the
 player does not hold; four hearts on the board is not a flush draw.
+
+---
+
+### Filtering by which players, not which spots
+
+Every filter above narrows *situations*. This one narrows *people* first, and
+then the situation filters apply inside what is left:
+
+```bash
+python query.py --cohort --hands ">=500" --site acr
+python query.py --cohort --vpip ">=35" --pfr "<12" --pos BTN --street flop
+python query.py --cohort --class reg --durable 1 --pot 3bet --by position
+```
+
+`--cohort` turns the flags after it into a player filter: `--hands`,
+`--vpip`, `--pfr`, `--gap`, `--threebet`, `--fold-to-threebet`, `--wwsf`,
+`--wtsd`, `--wsd`, `--bb100`, each taking a comparator and a number
+(`>=500`, `<12`, `28`), plus `--site`, `--class` (reg, fish, unknown) and
+`--durable` (1 for a named player, 0 for a session-only seat). In the window
+it is the **Players** button.
+
+The heading says which players, not just how many:
+
+```
+filter: pos BTN, cohort: hands >=500, site acr (8 players)
+```
+
+Two of these words already mean something else, and both work anyway:
+
+- **`--hands`** is a player's hand count here and the name of a view in
+  `query.py`. The first one after `--cohort` is the cohort's; a second is
+  the view. `--cohort --hands ">=500" --hands` means "players with 500
+  hands, listed as hands".
+- **`--site`** picks the pool a player belongs to. The cohort is joined on
+  site as well as name, so the situations are narrowed to that site too.
+
+**A cohort is not a saved report and cannot be part of one.** A cohort
+chooses people and a report describes a situation; save the situation and
+pick the players beside it.
+
+Bear the sample size in mind before reading anything into a small cohort. 85
+ACR players have 100+ hands and eight have 500+, so `--hands ">=500"` is
+eight people, and eight people are not a pool.
 
 ---
 
@@ -359,7 +547,8 @@ named flags run out. `--help` prints the full list with the SQL each becomes.
 ### `stats.py` — the stat engine
 
 ```bash
-python stats.py --list              # all 35 stats and their definitions
+python stats.py --list              # every stat and its definition
+python stats.py --custom            # just the ones you saved yourself
 python stats.py --pool              # both pools, side by side
 python stats.py --player NAME       # one opponent, every stat
 python stats.py --check             # engine vs. the old derivation

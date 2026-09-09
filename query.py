@@ -31,6 +31,8 @@ money is summed over the hands those decisions happened in.
     python query.py --hero --pos BB --vs BTN --vs-pool --pot 3bet
     python query.py --pool --pot 3bet --street flop --ip
     python query.py --player dblj32 --pos BTN --stats
+    python query.py --cohort --hands ">=500" --vpip ">=28" --pfr "<18" \
+        --street flop --stats
     python query.py --hero --board mono --results
     python query.py --hero --pot 3bet --hands
     python query.py --where "eff_bb > 150 AND fl_paired=1" --stats
@@ -41,9 +43,13 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import json
 import shlex
+import tempfile
 
 import lines
+import players
+import stats
 import strength
 from stats import (BY_KEY, STATS, detectable, difference, fmt, holm,
                    rate, rates as stat_rates, rates_by, wilson)
@@ -125,7 +131,12 @@ LINE_FLAGS = {
 }
 
 # Not filters -- they change what is shown, not what is selected.
-OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus")
+OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
+           "--preset",
+           # Naming a stat rather than selecting rows: the filter beside
+           # these becomes the stat's chance, so they are skipped by `build`
+           # exactly as the reporting options are.
+           "--define", "--forget", "--label", "--do", "--per", "--save")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -194,7 +205,194 @@ DIMENSIONS = {
         if k in ("UTG", "HJ", "CO", "BTN", "SB", "BB") else 99)),
     "players": ("n_players", lambda k: float(k or 0)),
     "hi": ("fl_hi", str),
+    # These are the first MDA dimensions: they describe the spot around a
+    # decision rather than the player alone, so the same report can say what
+    # the pool does by texture, stack depth, or opponent class.
+    "texture": ("CASE WHEN street = 'preflop' THEN NULL "
+                "WHEN fl_mono = 1 THEN 'monotone' "
+                "WHEN fl_twotone = 1 THEN 'two-tone' "
+                "WHEN fl_paired = 1 THEN 'paired' "
+                "WHEN fl_conn = 1 THEN 'connected' ELSE 'dry' END", str),
+    "stack": ("CASE WHEN eff_bb < 40 THEN 'short (<40bb)' "
+              "WHEN eff_bb < 100 THEN 'medium (40-99bb)' "
+              "WHEN eff_bb < 200 THEN 'deep (100-199bb)' "
+              "ELSE 'very deep (200bb+)' END", lambda k: (
+                  ["short (<40bb)", "medium (40-99bb)",
+                   "deep (100-199bb)", "very deep (200bb+)"]
+                  .index(k) if k in ("short (<40bb)", "medium (40-99bb)",
+                                     "deep (100-199bb)",
+                                     "very deep (200bb+)") else 99)),
+    "class": ("player_class", str),
+    "vs_class": ("vs_class", str),
+    "hand": ("made", str),
+    "flush_draw": ("fd", str),
+    "straight_draw": ("sd", str),
 }
+
+SMART_REPORTS = {
+    "3-bet pots": ("--pot", "3bet"),
+    "Flop c-bets": ("--street", "flop", "--pfa", "--facing", "check"),
+    "Blind defense": ("--pos", "SB,BB", "--facing", "open"),
+    "River bets": ("--street", "river", "--facing", "bet"),
+    "All-in decisions": ("--allin",),
+}
+
+# Where a filter somebody built keeps its name.
+#
+# The five above are the reports this project guessed at. The sixth is
+# whatever you were looking at last Tuesday, and there is no list of five
+# that contains it -- the same argument that put custom stats in
+# `stats.json`, and the same answer. A saved filter IS a preset, so it goes
+# into the same namespace: `--preset`, the window's report box and
+# `preset_argv` all pick it up without being told anything.
+SAVED = Path(__file__).parent / "filters.json"
+
+# Saved filters that no longer build, kept rather than dropped, for the
+# reason `stats.BROKEN` exists: a report that quietly stops appearing in the
+# box is a report whose absence nobody notices.
+UNREADABLE = []
+
+
+def raw_saved(path=None):
+    """The saved filters exactly as they are on disk, unvalidated."""
+    path = Path(path or SAVED)
+    if not path.exists():
+        return {}
+    return {str(k): list(v) for k, v in
+            json.loads(path.read_text(encoding="utf-8")).items()}
+
+
+def write_saved(saved, path=None):
+    """Write them back, indented, because people read this file."""
+    path = Path(path or SAVED)
+    path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+
+
+def saved_filters(path=None):
+    """
+    The saved filters, each one proved to still build.
+
+    Proved rather than trusted: a filter is a list of flags, and a flag
+    renamed here turns every report that used it into a stack trace over
+    somebody's window. The ones that fail are named in `UNREADABLE` and the
+    rest are usable, because one bad entry taking the report box with it is
+    the worse failure of the two.
+    """
+    UNREADABLE[:] = []
+    try:
+        raw = raw_saved(path)
+    except (OSError, ValueError) as e:
+        UNREADABLE.append(("(the file itself)", str(e)))
+        return {}
+    out = {}
+    for name, argv in raw.items():
+        if name in SMART_REPORTS:
+            UNREADABLE.append((name, "shadows a report that is built in"))
+            continue
+        try:
+            build(list(argv))
+        except SystemExit as e:
+            UNREADABLE.append((name, str(e)))
+            continue
+        out[name] = list(argv)
+    return out
+
+
+def reports(path=None):
+    """Every named report: the ones built in, then the ones saved here."""
+    known = dict(SMART_REPORTS)
+    known.update(saved_filters(path))
+    return known
+
+
+def preset_argv(name):
+    """Return the validated situation filters for a named report."""
+    known = reports()
+    try:
+        return list(known[name])
+    except KeyError:
+        raise SystemExit(f"unknown report {name!r} -- choose from: "
+                         f"{', '.join(known)}")
+
+
+def situation_only(argv):
+    """
+    The filter flags alone, with the reporting options taken out.
+
+    `--by`, `--show`, `--min` and the rest say how to draw an answer, not
+    which rows it is about. A report that remembered `--show vpip,pfr` would
+    silently rewrite the columns of every view it was opened in, which reads
+    as the window having forgotten what you asked for rather than as the
+    report having an opinion.
+    """
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a in OPTIONS:
+            i += 2
+        elif a in VALUE_FLAGS:
+            out += argv[i:i + 2]
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    return out
+
+
+def save_filter(name, argv, path=None, db=None):
+    """
+    The filter on the screen, saved under a name beside the built-in reports.
+
+    Returns (n, description): how many decisions it selects, and the filter
+    in words. The count is there for the same reason `--define` counts a new
+    stat -- a report that matches nothing saves exactly as happily as one
+    that matches everything, and the moment to find out is now.
+
+    A cohort is refused rather than saved. A cohort chooses PEOPLE and a
+    report describes a SITUATION, and one that quietly carried "regs with
+    over 500 hands" inside it would describe a different population from the
+    one its own name claims. It is also the wrong shape: presets are
+    expanded after the cohort flags have already been taken off the command
+    line, so a saved one would arrive too late to be read at all.
+    """
+    name = " ".join(str(name).split())
+    if not name:
+        raise ValueError("a report needs a name")
+    if name in SMART_REPORTS:
+        raise ValueError(f"{name!r} is one of the reports built in, and two "
+                         f"things under one name in the report box is one "
+                         f"thing nobody can pick")
+    if "--cohort" in argv:
+        raise ValueError("a player cohort cannot be part of a report -- a "
+                         "cohort chooses people and a report describes a "
+                         "situation. Save the situation and pick the players "
+                         "beside it.")
+    keep = situation_only(argv)
+    if not keep:
+        raise ValueError("that filter is empty, and a report of every hand "
+                         "is the view you already get without one")
+    where, described, _parts = build(keep)
+    saved = raw_saved(path)
+    saved[name] = keep
+    write_saved(saved, path)
+    con = sqlite3.connect(str(db or DB))
+    try:
+        n = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    finally:
+        con.close()
+    return n, described
+
+
+def forget_filter(name, path=None):
+    """Remove a saved report. The ones built in are not the file's to remove."""
+    if name in SMART_REPORTS:
+        raise ValueError(f"{name!r} is built in, and lives in this file")
+    saved = raw_saved(path)
+    if name not in saved:
+        raise ValueError(f"no saved report called {name!r}")
+    del saved[name]
+    write_saved(saved, path)
 
 # Eight columns is what fits and what gets read. Anything else is available
 # with --show.
@@ -270,7 +468,65 @@ def quick_filters():
     return out
 
 
-QUICK_BY_KEY = {q["key"]: q for q in quick_filters()}
+def quick_by_key():
+    """
+    The quick filters by name, worked out each time rather than held.
+
+    A saved stat brings a one-click filter with it, and saved stats can
+    arrive after this module is imported -- the packaged application loads
+    them once it knows where the user's files are, which is not where the
+    code is. A dict built at import time would have been built before they
+    existed, so `--quick` would refuse the very filter the window had just
+    offered.
+    """
+    return {q["key"]: q for q in quick_filters()}
+
+
+# The switches that say what the player DID rather than what they could have
+# done. A filter is a situation; these are outcomes, and a stat defined over
+# one of them is 100% by construction -- see `define_stat`.
+ACTION_FLAGS = ("--aggressive", "--allin", "--quick")
+
+
+def define_stat(argv, key, label=None, do="aggressive", per="decision",
+                path=None):
+    """
+    A filter and an action, saved together under a name.
+
+    This is the whole of the custom-stat feature and it is small, because
+    both halves already existed: `build` turns the flags into the chance,
+    and `stats.ACTIONS` names the action. What the name adds is the one
+    thing a query cannot do. `--show`, `--by position` and the opponent
+    leaderboard all pick their columns by key, so an unnamed filter can be
+    looked at once and a named one can be compared -- across positions,
+    between players, against the pool, over months.
+
+    The filter must not contain the action it is about to count.
+    `--aggressive --define x --do bet` saves a stat that reads 100% for
+    ever, because its chance is already the times somebody bet -- and it
+    looks exactly like a stat rather than like a mistake, which is why the
+    flags that would do it are refused here rather than explained in a
+    document.
+
+    Returns (n, k) from `stats.define`, which has already tested the
+    definition against the database.
+    """
+    banned = [a for a in argv if a in ACTION_FLAGS]
+    if banned:
+        raise SystemExit(
+            f"{' and '.join(banned)} says what the player did, and a stat's "
+            f"chance is what they could have done -- a stat defined over it "
+            f"would read 100% by construction. Say it with --do instead.")
+    if do not in stats.ACTIONS:
+        raise SystemExit(f"unknown action {do!r} -- one of: "
+                         f"{', '.join(stats.ACTIONS)}")
+    chance, described, _parts = build(argv)
+    action, doing = stats.ACTIONS[do]
+    try:
+        return stats.define(key, label, chance, action, per=per,
+                            note=f"{described}, {doing}", path=path, db=DB)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
 
 def q(value):
@@ -308,11 +564,12 @@ def build(argv):
                 described.append(v)
                 continue
             if a == "--quick":
+                known = quick_by_key()
                 for name in v.split(","):
-                    if name not in QUICK_BY_KEY:
+                    if name not in known:
                         raise SystemExit(f"unknown quick filter {name!r}")
-                    parts.append("(" + QUICK_BY_KEY[name]["sql"] + ")")
-                    described.append(QUICK_BY_KEY[name]["label"])
+                    parts.append("(" + known[name]["sql"] + ")")
+                    described.append(known[name]["label"])
                 continue
             if a in LINE_FLAGS:
                 # Normalised rather than taken as typed, because the columns
@@ -687,6 +944,123 @@ def show_range(con, where, label, parts=()):
           "including folds; ACR shows 23%,")
     print("so an ACR-heavy filter here describes the hands that reached "
           "showdown, which is the stronger half.")
+
+
+# The 13x13 chart, in the order every range chart has ever been drawn:
+# aces top left, suited above the diagonal, offsuit below. Descending,
+# because a chart with the deuces in the corner is not one anybody can read.
+# `population.py` draws the same shape from its own hardcoded SQL over
+# `spots`; this one is over `decisions` and takes the whole filter
+# vocabulary, and that copy is the next one to retire.
+CHART_RANKS = "AKQJT98765432"
+
+
+def combo_at(i, j):
+    """The combo in row i, column j of the chart."""
+    hi, lo = CHART_RANKS[i], CHART_RANKS[j]
+    if i == j:
+        return hi + hi
+    return (hi + lo + "s") if i < j else (lo + hi + "o")
+
+
+def chart_of(con, where, stat=None, min_n=3):
+    """
+    The preflop chart: what the range that reached this spot is made of.
+
+    `range_of` answers what the hands BECAME -- top pair, a flush draw --
+    which is the postflop half of the same question. This is the other half
+    and the one a chart is for: not "he bets the river 40%" and not "55% of
+    it cannot call", but which 169 squares that 40% is.
+
+    Two charts, from the same shape. With no stat it is the range's
+    COMPOSITION -- each combo's share of the hands that got here, which is
+    the diagram H2N draws. Given a stat it is that stat per combo -- how
+    often each hand 3-bet, folded, barrelled -- which is the chart you read
+    to decide whether he can have it.
+
+    **Composition counts each player-hand once, not each decision.** A hand
+    that went to the river has four rows in `decisions` and one that folded
+    preflop has one, so counting rows would weight the chart towards the
+    hands that went furthest and quietly draw a range far stronger than the
+    one that actually arrived. The DISTINCT is the whole correctness of this
+    function. A stat does not need it: `rates_by` already counts per
+    decision or per hand as the stat itself says.
+
+    **And it is the range that was SEEN.** Ignition shows every hand at
+    showdown including the folds; ACR shows 23%. The fraction is returned
+    beside the chart and every view prints it, because 169 confident squares
+    drawn from a quarter of a range is the most convincing wrong picture
+    this program can produce.
+    """
+    total = con.execute(
+        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE {where})").fetchone()[0]
+    seen = con.execute(
+        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE ({where}) AND combo IS NOT NULL)").fetchone()[0]
+
+    if stat is None:
+        rows = con.execute(
+            f"SELECT combo, COUNT(*) FROM (SELECT DISTINCT hand_id, seat, "
+            f"combo FROM decisions WHERE ({where}) AND combo IS NOT NULL) "
+            f"GROUP BY combo").fetchall()
+        cells = {c: (n, None) for c, n in rows}
+    else:
+        stat = BY_KEY[stat] if isinstance(stat, str) else stat
+        cells = {c: (n, k) for c, (n, k)
+                 in rates_by(con, stat, "combo", where).items() if c}
+
+    return {"mode": "composition" if stat is None else "rate",
+            "stat": None if stat is None else stat.label,
+            "cells": cells, "seen": seen, "total": total, "min_n": min_n,
+            "peak": max((n for n, _k in cells.values()), default=0)}
+
+
+def show_chart(con, where, label, stat=None, parts=(), min_n=3):
+    """The chart, as 169 numbers, in the shape it is always drawn in."""
+    print(f"\nfilter: {label}")
+    print("=" * (len(label) + 8))
+    g = chart_of(con, where, stat, min_n)
+    if not g["total"]:
+        print("  " + why_empty(con, parts))
+        return
+    if not g["seen"]:
+        print(f"  {g['total']:,} player-hands match and none of them showed "
+              f"cards, so there is no range to draw.")
+        print("  (Ignition shows every hand; ACR shows 23%. --site ignition "
+              "is the filter that fixes this.)")
+        return
+
+    share = 100.0 * g["seen"] / g["total"]
+    print(f"{g['seen']:,} of {g['total']:,} player-hands showed cards "
+          f"({share:.1f}%)")
+    if g["mode"] == "composition":
+        print("each cell is that combo's share of the range, in percent\n")
+    else:
+        print(f"each cell is {g['stat']}, in percent, for that combo\n")
+
+    print("      " + " ".join(f"{r:>4}" for r in CHART_RANKS))
+    for i, hi in enumerate(CHART_RANKS):
+        row = []
+        for j in range(len(CHART_RANKS)):
+            n, k = g["cells"].get(combo_at(i, j), (0, None))
+            if g["mode"] == "composition":
+                # No minimum here, and deliberately: a combo dealt twice
+                # really is 0.1% of the range. The minimum belongs to a
+                # RATE, where two hands cannot say how often anything is
+                # done.
+                row.append("   ." if not n else f"{100.0 * n / g['seen']:4.1f}")
+            else:
+                row.append("   ." if n < min_n else f"{100.0 * k / n:4.0f}")
+        print(f"  {hi:>2}  " + " ".join(row))
+
+    if g["mode"] == "composition":
+        top = sorted(g["cells"].items(), key=lambda kv: -kv[1][0])[:6]
+        print("\n  most of it: " + ", ".join(
+            f"{c} {100.0 * n / g['seen']:.1f}%" for c, (n, _k) in top))
+    else:
+        print(f"\n  (blank = dealt fewer than {min_n} times in this spot -- "
+              f"one hand dealt twice is not a frequency)")
 
 
 def show_stats(con, where, label, parts=()):
@@ -1152,6 +1526,28 @@ def select_into(con, pairs):
     con.execute("ANALYZE _sel")
 
 
+def select_cohort(con, spec):
+    """
+    Park a cohort's players in a temp table for every report to join against.
+
+    Built the same way as `select_into` above, and for the same reason: a
+    second call on one connection used to raise "table _cohort already
+    exists". Nothing does that today because every view opens its own
+    connection, which makes it a trap rather than a bug -- the first caller
+    to reuse one would meet it, and would have no reason to look here.
+    """
+    conditions, site, klass, durable = spec
+    rows = players.cohort(con, conditions, site, klass, durable)
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS _cohort "
+                "(site TEXT, player TEXT)")
+    con.execute("DELETE FROM _cohort")
+    con.executemany("INSERT INTO _cohort VALUES (?, ?)",
+                    [(row[0], row[1]) for row in rows])
+    con.execute("CREATE INDEX IF NOT EXISTS _cohort_ix "
+                "ON _cohort(site, player)")
+    return len(rows)
+
+
 def results_of(con, pairs):
     """The money over a set of (hand, seat) pairs, tournaments excluded."""
     select_into(con, pairs)
@@ -1243,8 +1639,22 @@ def usage():
             print(f"    {k:14} {v}")
     print(f"    {'--board':14} one of: {', '.join(BOARDS)}")
     print(f"    {'--quick':14} named filters: "
-          f"{', '.join(sorted(QUICK_BY_KEY)[:6])}, ... (see --quick-list)")
+          f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
     print(f"    {'--where':14} raw SQL over `decisions`, for anything above")
+    print("\n  Multiple Players cohort filters:")
+    print("    --cohort       select players before filtering situations")
+    print("    --hands VALUE  player hand count, e.g. >=500")
+    print("    --vpip VALUE   player VPIP percentage, e.g. >=28")
+    print("    --pfr VALUE    player PFR percentage, e.g. <18")
+    print("    --gap VALUE    player VPIP-PFR gap, e.g. >=10")
+    print("    --threebet VALUE  player 3-bet percentage")
+    print("    --fold-to-threebet VALUE  player fold-to-3-bet percentage")
+    print("    --wwsf VALUE    player WWSF percentage")
+    print("    --wtsd VALUE    player WTSD percentage")
+    print("    --wsd VALUE     player W$SD percentage")
+    print("    --bb100 VALUE  player win rate, e.g. >=0")
+    print("    --class VALUE  reg, fish, or unknown")
+    print("    --durable 0|1  durable named player identity")
     print("\n  reports (not filters):")
     print(f"    {'--by':14} split into a table by one of: "
           f"{', '.join(DIMENSIONS)}")
@@ -1252,6 +1662,20 @@ def usage():
           f"(default: {','.join(DEFAULT_COLUMNS)})")
     print(f"    {'--min':14} mark cells below this many chances (default 30)")
     print(f"    {'--hand':14} replay one hand by id, ignoring every filter")
+    print(f"    {'--chart':14} the 13x13 chart: what the range holds, or "
+          f"one stat per combo with --show")
+    print("\n  saving the filter as a stat of its own:")
+    print(f"    {'--define':14} a key to save this filter under, so it can "
+          f"be a column")
+    print(f"    {'--label':14} what to call it in a report (default: the key)")
+    print(f"    {'--do':14} what it counts: {', '.join(stats.ACTIONS)}")
+    print(f"    {'--per':14} decision (default) or hand -- once per player "
+          f"per hand")
+    print(f"    {'--forget':14} delete a saved stat or report by name")
+    print("\n  saving the filter as a report of its own:")
+    print(f"    {'--save':14} a name to keep this filter under")
+    print(f"    {'--preset':14} open a saved or built-in report: "
+          f"{', '.join(list(reports())[:3])}, ... (see --presets)")
     print("\n  positions: " + ", ".join(POSITIONS))
     print("  streets:   " + ", ".join(STREETS))
     print("  pot types: " + ", ".join(POT_TYPES))
@@ -1401,7 +1825,7 @@ def check(db_path=DB):
     empty, _, _ep = build(["--pos", "BTN", "--street", "preflop",
                            "--facing", "check"])
     for mode, fn in (("stats", show_stats), ("results", show_results),
-                     ("hands", show_hands)):
+                     ("hands", show_hands), ("chart", show_chart)):
         try:
             import io
             import contextlib
@@ -1440,6 +1864,82 @@ def check(db_path=DB):
     print(f"modes survive an empty result "
           f"{'yes' if not any('empty filter' in f for f in fails) else 'NO'}")
 
+    # The chart's composition must count each player-hand once. Counting
+    # decisions instead is the one way this function can be wrong without
+    # looking wrong: a hand that reached the river has four rows and one
+    # that folded preflop has one, so the chart would be drawn from a
+    # population weighted towards the hands that went furthest -- a range
+    # visibly stronger than the one that actually arrived, in a picture
+    # nobody would think to doubt. If the cells sum to the number of
+    # player-hands seen, each was counted once.
+    charted = 0
+    for name, argv in (("everything", []),
+                       ("one position", ["--pos", "BTN"]),
+                       ("a spot that spans streets", ["--pot", "3bet"])):
+        g = chart_of(con, build(argv)[0])
+        total = sum(n for n, _k in g["cells"].values())
+        charted += 1
+        if total != g["seen"]:
+            fails.append(f"the chart of {name} counts {total} where "
+                         f"{g['seen']} player-hands were seen")
+    print(f"the chart counts each player-hand once  "
+          f"{charted - len([f for f in fails if 'the chart of' in f])}"
+          f"/{charted}")
+
+    # Every square of the chart must be a real combo and every real combo
+    # must have a square. 169 of them, and a chart that quietly omits one
+    # row of offsuit hands still looks like a chart.
+    squares = {combo_at(i, j) for i in range(13) for j in range(13)}
+    dealt = {c for (c,) in con.execute(
+        "SELECT DISTINCT combo FROM decisions WHERE combo IS NOT NULL")}
+    print(f"squares on the chart          {len(squares)}/169")
+    if len(squares) != 169 or not dealt <= squares:
+        fails.append(f"the chart has {len(squares)} squares and misses "
+                     f"{sorted(dealt - squares)[:5]}")
+
+    # A saved report must come back as the filter that was saved. Saved to a
+    # file of its own: a check that writes to somebody's own reports is a
+    # check they stop running.
+    scratch = Path(tempfile.mkdtemp()) / "filters.json"
+    trips = []
+    try:
+        want = ["--pot", "3bet", "--ip"]
+        n, _described = save_filter("check round trip", want, path=scratch)
+        back = saved_filters(scratch)
+        trips.append(("a saved report comes back",
+                      back.get("check round trip") == want))
+        trips.append(("and it selects what it selected", n > 0))
+        # The reporting options are not part of a filter, or a report would
+        # rewrite the columns of every view it was opened in.
+        save_filter("with options", want + ["--by", "position", "--show",
+                                            "vpip"], path=scratch)
+        trips.append(("reporting options are left out",
+                      saved_filters(scratch).get("with options") == want))
+        shadowed = True
+        try:
+            save_filter("3-bet pots", want, path=scratch)
+            shadowed = False
+        except ValueError:
+            pass
+        trips.append(("a built-in report cannot be shadowed", shadowed))
+        forget_filter("check round trip", path=scratch)
+        trips.append(("forgetting removes it",
+                      "check round trip" not in saved_filters(scratch)))
+    finally:
+        scratch.unlink(missing_ok=True)
+        scratch.parent.rmdir()
+        saved_filters()
+    print(f"a saved report behaves like a built-in  "
+          f"{sum(1 for _w, ok in trips if ok)}/{len(trips)}")
+    for what, ok in trips:
+        if not ok:
+            print(f"    {what}: NO")
+            fails.append(what)
+    if UNREADABLE:
+        print("saved reports that no longer build:")
+        for name, why in UNREADABLE:
+            print(f"    {name}: {why}")
+
     con.close()
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
@@ -1450,6 +1950,16 @@ def main(argv):
     if not argv or "--help" in argv or "-h" in argv:
         usage()
         return 0
+    if "--presets" in argv:
+        known = reports()
+        for name, flags in known.items():
+            where, described, _p = build(list(flags))
+            print(f"\n  {name}" + ("" if name in SMART_REPORTS else "   (saved)"))
+            print(f"      {' '.join(flags)}")
+            print(f"      {described}")
+        for name, why in UNREADABLE:
+            print(f"\n  {name}   BROKEN -- {why}")
+        return 1 if UNREADABLE else 0
     if "--quick-list" in argv:
         group = None
         for f in quick_filters():
@@ -1460,8 +1970,10 @@ def main(argv):
         return 0
     if "--check" in argv:
         return 0 if check() else 1
+    cohort_spec, argv = players.parse_cohort(argv)
     mode = "--stats"
-    for m in ("--stats", "--hands", "--results", "--graph", "--range"):
+    for m in ("--stats", "--hands", "--results", "--graph", "--range",
+              "--chart"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -1473,6 +1985,75 @@ def main(argv):
         if i >= len(argv):
             raise SystemExit(f"{name} needs a value")
         return argv[i]
+
+    preset = opt("--preset") if "--preset" in argv else None
+    if preset:
+        argv = preset_argv(preset) + argv
+
+    # Naming a stat and asking a question are different verbs, so both of
+    # these return rather than falling through into a report. Printing a
+    # table under a definition would bury the only number that matters at
+    # that moment, which is whether the definition ever occurs at all.
+    if "--forget" in argv:
+        name = opt("--forget")
+        # One verb for two namespaces, because a name is a name. They can
+        # only collide if somebody deliberately used the same one twice --
+        # a stat key cannot contain a space and a report name usually does
+        # -- and guessing which was meant would delete the other.
+        is_stat = name in BY_KEY and BY_KEY[name].custom
+        is_report = name in saved_filters()
+        if is_stat and is_report:
+            raise SystemExit(f"{name!r} is both a saved stat and a saved "
+                             f"report. Rename one of them; deleting the "
+                             f"wrong one is not recoverable.")
+        try:
+            if is_report:
+                forget_filter(name)
+            else:
+                stats.forget(name)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"forgot the {'report' if is_report else 'stat'} {name!r}")
+        return 0
+    if "--save" in argv:
+        name = opt("--save")
+        try:
+            n, described = save_filter(name, argv)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"saved the report {name!r}")
+        print(f"  filter: {described}")
+        if n:
+            print(f"  {n:,} decisions match it today")
+        else:
+            print("  NOTHING MATCHES -- it is saved, and every view opened "
+                  "under it will be empty")
+        print(f"  open it with --preset {name!r}, or from the report box in "
+              f"the window")
+        return 0
+    if "--define" in argv:
+        key = opt("--define")
+        n, k = define_stat(argv, key, opt("--label"), opt("--do", "aggressive"),
+                           opt("--per", "decision"))
+        st = BY_KEY[key]
+        print(f"saved {key!r} -- {st.label}")
+        print(f"  from:   {st.note}")
+        print(f"  chance: {st.chance}")
+        print(f"  action: {st.action}")
+        if n:
+            pct, lo, hi = wilson(k, n)
+            print(f"  {fmt(n, k, pct, lo, hi)}")
+        else:
+            # This is what Hand2Note's own manual means by pressing Test
+            # Stat before using one. A definition nothing matches saves
+            # perfectly happily and then reads as a blank column in every
+            # report, which looks like a broken report rather than like a
+            # filter that describes a spot nobody has played.
+            print("  NOTHING MATCHES -- the chance never came up in this "
+                  "database, so the stat will be blank wherever it is shown")
+        print(f"  it is a column now (--show {key}) and a filter "
+              f"(--quick {key})")
+        return 0
 
     dim = opt("--by")
     if dim is not None and dim not in DIMENSIONS:
@@ -1499,13 +2080,28 @@ def main(argv):
         return 0
 
     where, label, _parts = build(argv)
+    if preset:
+        label = f"{preset}: {label}"
     con = sqlite3.connect(DB)
+    if cohort_spec is not None:
+        count = select_cohort(con, cohort_spec)
+        label += (f", cohort: {players.describe_cohort(cohort_spec)} "
+                  f"({count} players)")
+        where = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
+                 "WHERE c.site = decisions.site AND "
+                 "c.player = decisions.player)")
     if mode == "--graph":
         show_graph(con, where, label, opt("--out", "graph.html"))
     elif mode == "--hands":
         show_hands(con, where, label, parts=_parts)
     elif mode == "--range":
         show_range(con, where, label, _parts)
+    elif mode == "--chart":
+        # `--show` names the columns of a report, and here it names the one
+        # stat the chart is of. Without it the chart is the range itself,
+        # which is the question a chart is usually asked.
+        show_chart(con, where, label, columns[0] if opt("--show") else None,
+                  _parts)
     elif mode == "--results":
         if dim:
             show_results_by(con, where, label, dim)

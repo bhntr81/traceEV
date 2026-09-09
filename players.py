@@ -38,6 +38,7 @@ on the other.
 
 import sqlite3
 import sys
+import re
 from pathlib import Path
 
 from stats import wilson
@@ -86,6 +87,188 @@ COLUMNS = (("player_class", "TEXT"), ("vs_player", "TEXT"),
             ("vs_class", "TEXT"), ("vs_seat", "INT"),
             ("n_reg", "INT"), ("n_fish", "INT"))
 NAMES = tuple(c for c, _t in COLUMNS)
+
+COHORT_FIELDS = {
+    "hands": "hands",
+    "vpip": "vpip",
+    "pfr": "pfr",
+    "gap": "vpip - pfr",
+    "threebet": "threebet",
+    "fold_to_threebet": "fold_to_threebet",
+    "wwsf": "wwsf",
+    "wtsd": "wtsd",
+    "wsd": "wsd",
+    "bb100": "bb100",
+}
+CONDITION = re.compile(r"^\s*(>=|<=|=|>|<)?\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*$")
+
+
+def cohort(con, conditions=(), site=None, klass=None, durable=None):
+    """Return players matching safe, player-level Multiple Players filters."""
+    where, params = ["1=1"], []
+    for field, value in conditions:
+        column = COHORT_FIELDS.get(field)
+        match = CONDITION.fullmatch(value)
+        if column is None or match is None:
+            raise ValueError(f"invalid cohort condition: {field} {value}")
+        operator = match.group(1) or "="
+        where.append(f"{column} {operator} ?")
+        params.append(float(match.group(2)))
+    if site:
+        where.append("site = ?")
+        params.append(site)
+    if klass:
+        if klass not in ("reg", "fish", "unknown"):
+            raise ValueError(f"invalid player class: {klass}")
+        where.append("class = ?")
+        params.append(klass)
+    if durable is not None:
+        where.append("durable = ?")
+        params.append(int(durable))
+    # The columns are listed rather than starred because `select_cohort`
+    # reads the first two by position. Under `SELECT *` that is a promise
+    # the `players` schema is making without knowing it: a column inserted
+    # ahead of `site` would silently fill the cohort with hand counts and
+    # match nothing, and nothing would raise. Named here, a schema change
+    # breaks loudly instead.
+    return con.execute(
+        "SELECT site, player, durable, hands, vpip, pfr, threebet, "
+        "fold_to_threebet, wwsf, wtsd, wsd, bb100, class FROM players "
+        "WHERE " + " AND ".join(where) +
+        " ORDER BY hands DESC, site, player", params).fetchall()
+
+
+def cohort_summary(rows):
+    """Combine player rates by their underlying opportunity counts."""
+    hands = sum(row["hands"] for row in rows)
+
+    def weighted(name):
+        known = [row for row in rows if row[name] is not None]
+        denominator = sum(row["hands"] for row in known)
+        return (sum(row["hands"] * row[name] for row in known) / denominator
+                if denominator else None)
+
+    vpip = weighted("vpip")
+    pfr = weighted("pfr")
+    return {
+        "players": len(rows),
+        "hands": hands,
+        "vpip": vpip,
+        "pfr": pfr,
+        "gap": vpip - pfr if vpip is not None and pfr is not None else None,
+        "bb100": weighted("bb100"),
+    }
+
+
+def show_cohort(conditions=(), site=None, klass=None, durable=None,
+                db_path=DB):
+    """List a Multiple Players cohort and its pooled base statistics."""
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    rows = cohort(con, conditions, site, klass, durable)
+    summary = cohort_summary(rows)
+    print(f"{summary['players']:,} players - {summary['hands']:,} hands")
+    print("player                  site       hands    VPIP    PFR     gap  class")
+    for row in rows:
+        print(f"{row['player'][:22]:22} {row['site']:9} {row['hands']:7,} "
+              f"{row['vpip']:6.1f} {row['pfr']:6.1f} "
+              f"{row['vpip'] - row['pfr']:6.1f}  {row['class']}")
+    print("\ncombined cohort")
+    for label, key, suffix in (("VPIP", "vpip", "%"),
+                               ("PFR", "pfr", "%"),
+                               ("VPIP-PFR", "gap", "%"),
+                               ("bb/100", "bb100", "")):
+        value = summary[key]
+        print(f"  {label:10} {'-' if value is None else f'{value:.1f}{suffix}'}")
+    con.close()
+    return rows, summary
+
+
+# The flags that describe a player, and what each one is called in the
+# `players` table.
+#
+# Two of these words already mean something else. `--hands` is a player's
+# hand count here and the name of a VIEW in `query.py`; `--site` picks the
+# pool a player belongs to here and filters situations there. Both
+# collisions are reachable, which is why the parser below walks the list
+# instead of searching it.
+COHORT_FLAGS = {
+    "--hands": "hands", "--vpip": "vpip", "--pfr": "pfr", "--gap": "gap",
+    "--threebet": "threebet", "--fold-to-threebet": "fold_to_threebet",
+    "--wwsf": "wwsf", "--wtsd": "wtsd", "--wsd": "wsd", "--bb100": "bb100",
+}
+COHORT_OPTIONS = ("--site", "--class", "--durable")
+
+
+def parse_cohort(argv):
+    """
+    Split the Multiple Players options off a command line, positionally.
+
+    One token at a time, because the two vocabularies share words. The old
+    parser searched instead: it collected the TOKENS it had used into a set
+    and then dropped every argv entry equal to one of them, which is
+    filtering a positional list by value. `--cohort --hands 6 --players 6`
+    deleted both sixes and left `--players` with nothing after it, and a
+    second `--hands` meaning "show me the hands" was deleted along with the
+    first, so the hands view could not be asked for at all under a cohort.
+    Neither failure had anything to do with what was typed.
+
+    Each of these flags is therefore read exactly once, the first time it
+    appears, and every later copy is passed through untouched. That is the
+    only reading under which `--cohort --hands ">=500" --hands` can mean
+    what it plainly means: players with 500 hands, shown as a list of hands.
+    """
+    if "--cohort" not in argv:
+        return None, list(argv)
+    conditions, remaining, seen = [], [], set()
+    site = klass = durable = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--cohort":
+            i += 1
+            continue
+        if (a in COHORT_FLAGS or a in COHORT_OPTIONS) and a not in seen:
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{a} needs a value")
+            value = argv[i + 1]
+            seen.add(a)
+            if a in COHORT_FLAGS:
+                conditions.append((COHORT_FLAGS[a], value))
+            elif a == "--site":
+                site = value
+            elif a == "--class":
+                klass = value
+            else:
+                if value not in ("0", "1"):
+                    raise SystemExit("--durable must be 0 or 1")
+                durable = int(value)
+            i += 2
+            continue
+        remaining.append(a)
+        i += 1
+    return (conditions, site, klass, durable), remaining
+
+
+def describe_cohort(spec):
+    """
+    The cohort in words, for the heading over the report it narrowed.
+
+    Without this the heading read "cohort (8 players)" over a report that
+    had also been cut to one site and to players with five hundred hands,
+    and a report whose heading does not say what was filtered is one that
+    will eventually be read as though it covered everything. The size alone
+    does not say it: eight players is the same eight whatever picked them.
+    """
+    conditions, site, klass, durable = spec
+    said = [f"{field} {value}" for field, value in conditions]
+    if site:
+        said.append(f"site {site}")
+    if klass:
+        said.append(klass + "s")
+    if durable is not None:
+        said.append("named players" if durable else "session-only seats")
+    return ", ".join(said) if said else "every player"
 
 
 def classify(hands, vpip, pfr):
@@ -396,12 +579,83 @@ def check(db_path=DB):
         fails.append(f"{bad} decisions where the liveness walk and n_live "
                      f"disagree for no reason")
 
+    # ---- the cohort, which nothing used to check ----------------------
+    #
+    # A cohort narrows every report in the program and had no test of any
+    # kind. What it gets wrong is not arithmetic, it is argument splitting:
+    # the vocabulary here shares two words with `query.py`, and a parser
+    # that mishandles them removes somebody else's filter without saying so.
+    # Both cases below were real and both were reproduced before they were
+    # fixed.
+    splits = [
+        # A value the cohort used, appearing again as another flag's value.
+        # The old parser dropped every token equal to one it had consumed,
+        # so this deleted both sixes and left `--players` dangling.
+        (["--cohort", "--hands", "6", "--players", "6"],
+         [("hands", "6")], ["--players", "6"]),
+        # `--hands` twice: the player's hand count, then the hands VIEW.
+        # The old parser deleted both and the view could not be reached.
+        (["--cohort", "--hands", ">=500", "--hands"],
+         [("hands", ">=500")], ["--hands"]),
+        # Everything that is not the cohort's survives in order.
+        (["--cohort", "--vpip", ">=28", "--pos", "BTN", "--street", "flop"],
+         [("vpip", ">=28")], ["--pos", "BTN", "--street", "flop"]),
+        (["--pos", "BTN"], None, ["--pos", "BTN"]),
+    ]
+    for argv, want_conditions, want_rest in splits:
+        spec, rest = parse_cohort(list(argv))
+        got = None if spec is None else spec[0]
+        if got != want_conditions or rest != want_rest:
+            fails.append(f"parse_cohort{argv} -> {got}, {rest}")
+    print(f"the cohort takes only its own flags  "
+          f"{len(splits) - len([f for f in fails if 'parse_cohort' in f])}"
+          f"/{len(splits)}")
+
+    # A condition is a comparator and a number and nothing else. It reaches
+    # SQL as a column name and an operator chosen from a fixed list, with
+    # the number bound -- but the column and the operator are interpolated,
+    # so the day that stops being true is the day this matters.
+    refused = 0
+    for field, value in (("hands", "; DROP TABLE players"),
+                         ("hands", "500 OR 1=1"),
+                         ("nonsense", ">=500")):
+        try:
+            cohort(con, [(field, value)])
+        except ValueError:
+            refused += 1
+    print(f"conditions that are not conditions   {refused}/3 refused")
+    if refused < 3:
+        fails.append("a cohort condition that is not a comparator and a "
+                     "number was accepted")
+
+    # And it has to actually narrow. A cohort that quietly matches everybody
+    # is the failure mode of every filter in this project: it returns a
+    # number, and the number describes a population nobody asked for.
+    everyone = len(cohort(con))
+    heavy = len(cohort(con, [("hands", ">=500")]))
+    named = len(cohort(con, durable=1))
+    print(f"cohorts narrow                       "
+          f"{heavy} with 500+ hands and {named} named, of {everyone}")
+    if not everyone or heavy >= everyone or named >= everyone:
+        fails.append("a cohort selects everybody, so it is not filtering")
+
+    # The heading has to say which players, not just how many. Eight players
+    # is the same eight whatever picked them.
+    said = describe_cohort(([("hands", ">=500")], "acr", None, None))
+    print(f"the cohort says what it is           {said!r}")
+    if "hands" not in said or "acr" not in said:
+        fails.append(f"describe_cohort left the filter out of {said!r}")
+
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
     return not fails
 
 
 def main(argv):
+    if "--cohort" in argv:
+        spec, _remaining = parse_cohort(argv)
+        show_cohort(*spec)
+        return 0
     if "--check" in argv:
         return 0 if check() else 1
     if "--help" in argv:

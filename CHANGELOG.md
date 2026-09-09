@@ -8,6 +8,281 @@ Newest first.
 
 ---
 
+## Multiple Players, and two ways its parser removed somebody else's filter
+
+### Added — a cohort: filtering by which players, before which spots
+
+Every filter in this program narrowed situations. This one narrows people:
+`--cohort --hands ">=500" --site acr` selects the players first, materialises
+them into a temp table, and every view then joins against it. In the window
+it is the **Players** button. Hand2Note calls the same thing Multiple
+Players, and it is the difference between "how does the pool play this" and
+"how do the eight people I keep sitting with play this".
+
+The feature had been written and left uncommitted, undocumented and — this
+being the part that mattered — **unchecked**. No `check()` in any of the
+four modules that could have tested it mentioned it. `check.py` passed
+sixteen out of sixteen around it.
+
+### Fixed — the parser filtered a positional list by value
+
+`parse_cohort` collected the tokens it had consumed into a **set of
+strings** and then dropped every argv entry equal to one of them. That is
+not argument parsing, and it removed things nobody had asked it to remove:
+
+```bash
+python query.py --cohort --hands 6 --players 6      # --players needs a value
+```
+
+Both sixes matched a consumed token, both were deleted, and `--players` was
+left dangling. The same mechanism silently strips any legitimate filter
+whose value happens to collide with a cohort value -- and a filter that
+quietly disappears is the failure this project is built against, not the one
+that raises.
+
+It also made the hands view unreachable under a cohort. `--hands` is a
+player's hand count to the cohort and the name of a view to `query.py`, so
+`--cohort --hands ">=500" --hands` deleted **both** copies and the view
+could never be asked for.
+
+The parser now walks the list one token at a time and reads each of its
+flags exactly once, the first time it appears. Every later copy passes
+through untouched, which is the only reading under which that command means
+what it plainly means.
+
+### Fixed — the heading did not say which players
+
+`--cohort --hands ">=500" --site acr --pos BTN` printed
+
+```
+filter: pos BTN, cohort (8 players)
+```
+
+over a report that had also been cut to one site and to players with five
+hundred hands. The numbers were right -- the cohort join carries the site --
+but eight players is the same eight whatever picked them, and a report whose
+heading does not say what was filtered is one that will eventually be read
+as though it covered everything. `describe_cohort` now names the filter and
+both front ends print it.
+
+### Fixed — two traps rather than bugs
+
+`cohort()` selected `SELECT *` and `select_cohort` read the first two
+columns by position, which made the `players` schema a promise it did not
+know it was making: a column inserted ahead of `site` would have filled the
+cohort with hand counts, matched nothing, and raised nothing. The columns
+are named in the query now, so a schema change breaks loudly.
+
+`select_cohort` also created its temp table without `IF NOT EXISTS`, so a
+second call on one connection raised. Nothing does that today because every
+view opens its own connection -- which is what makes it a trap: the first
+caller to reuse one would meet it and would have no reason to look here.
+
+### Checked
+
+`players.py --check` now covers the cohort, and covers the argument
+splitting first because that is where the silence was. Both failures above
+are in it as cases, with the command that produced them. Beside them: a
+condition that is not a comparator and a number is refused (three ways,
+including the two that look like SQL), a cohort actually narrows rather than
+quietly selecting everybody, and the heading names the filter and not just
+its size.
+
+---
+
+## The chart, and a report that remembers what you asked
+
+### Added — the 13x13 chart, over the whole filter vocabulary
+
+`range_of` already answered the postflop half of "what does he have" -- top
+pair, a flush draw, how much of it cannot call. The preflop half is a shape
+and not a list, and there was no way to draw it. `--chart` draws it.
+
+Two charts out of one function. With no stat it is the range's
+**composition**: each combo's share of the hands that reached the spot,
+which is the diagram H2N draws. With `--show` it is that stat per combo --
+`--pos BTN --chart --show rfi` is a button opening range read off the hands
+themselves rather than assumed. In the window it is a tab with a *chart of*
+box, drawn on a canvas rather than tabulated, because a range is a shape and
+169 numbers in rows is the same information in the one form nobody can read.
+
+The Ignition pool's 3-bet range comes out as AKo 5.6%, AQo 5.1%, JJ 4.5%,
+AA 3.9% -- which is what a 3-bet range looks like, and is the first thing
+this program has drawn that can be checked against knowing how poker works.
+
+**Composition counts each player-hand once and not each decision.** This is
+the whole correctness of the function and the one way it could have been
+wrong without looking wrong: a hand that reached the river has four rows in
+`decisions` and one that folded preflop has one, so counting rows would draw
+the chart from a population weighted towards the hands that went furthest --
+a range visibly stronger than the one that actually arrived, in a picture
+nobody would think to doubt. `query.py --check` asserts the cells sum to the
+number of player-hands seen, over three filters including one that spans
+streets.
+
+The seen-fraction is printed above every chart, terminal and window. On ACR
+a chart is of the hands that got to showdown, and 169 confident squares
+drawn from a quarter of a range is the most convincing wrong picture this
+program can produce.
+
+`population.py` has drawn the same shape for months from its own hardcoded
+SQL over `spots`, pinned to the Ignition pool. This one is over `decisions`
+and takes every filter, so that copy is the next one to retire -- the
+measure of progress being that the number of modules writing their own SQL
+goes down.
+
+### Added — a filter, saved as a report
+
+`SMART_REPORTS` was five reports this project guessed at. A saved filter
+goes into the same namespace, so it is a preset: `--preset`, `--presets` and
+the window's report box all pick it up without being told, exactly as a
+saved stat becomes a column and a `--quick` filter. `--save` names one,
+`--forget` takes either a saved stat or a saved report, and refuses rather
+than guessing if a name is somehow both.
+
+Two things a report does not keep, and both would be quietly wrong:
+
+**The reporting options.** `--by`, `--show` and `--min` say how to draw an
+answer, not which rows it is about. A report that remembered `--show
+vpip,pfr` would rewrite the columns of every view it was opened in, which
+reads as the window forgetting what you asked rather than as the report
+having an opinion. `situation_only` strips them before anything is written.
+
+**The cohort.** A cohort chooses PEOPLE and a report describes a SITUATION
+-- the same line already drawn for saved stats. It is also the wrong shape:
+presets are expanded after the cohort flags have been taken off the command
+line, so a saved one would arrive too late to be read at all.
+
+Saved reports are proved to still build every time they are loaded, not
+trusted. A flag renamed in `query.py` would otherwise turn every report that
+used it into a stack trace over somebody's window; the ones that no longer
+build are named in `UNREADABLE`, printed by `--presets`, and the rest still
+work.
+
+### Changed — one word for one thing
+
+The window's tab, the flag and the function had drifted into calling the
+same 13x13 picture a chart and a grid. Renamed to `chart` throughout, which
+is the whole of the reason three front ends over one database stay agreeing.
+
+### Checked
+
+`query.py --check` gained the composition assertion above, that the chart
+has 169 squares and that every combo the database contains has one of them,
+and the saved-report round trip -- saved, read back identical, options
+stripped, a built-in name refused, forgotten -- against a file of its own.
+
+`app.py --check` draws every view including the chart, asserts the report
+window would save the filter on the screen, and asserts the report box
+offers every report that exists. A report saved to the file and missing from
+the box is indistinguishable from a save that failed.
+
+---
+
+## A stat you can define without being able to edit the code
+
+### Added — any filter, saved as a stat of its own
+
+Hand2Note's manual has a page on building "continued bet on the river in a
+3-bet pot in position": click the actions street by street, name the result,
+press *Test Stat*, and it becomes a column. Nothing here could do that. The
+registry in `stats.py` is a list in a Python file, so a stat this project
+had not thought of was a stat you could not have without editing the
+project — and the thirty-five in there will never be the right
+thirty-five, because the number of spots a hand can be in is the number of
+strings the action letters spell.
+
+The question was already answerable. `--node "*/XBC/XBC/X" --pot 3bet --ip
+--headsup --street river` selects exactly those decisions and always did.
+What was missing was the *name*, and the name is not decoration: `--show`,
+`--by position` and the opponent leaderboard all pick their columns by key,
+so an unnamed filter can be looked at once and a named one can be compared
+— across positions, between players, against the pool, month by month.
+
+So a stat is a filter and an action, and saving one is saying both:
+
+```bash
+python query.py --pot 3bet --ip --headsup --street river --node "*/XBC/XBC/X" \
+    --define river_barrel3_ip --label "river 3rd barrel, 3bet IP" --do bet
+```
+
+It prints the compiled definition and immediately counts it — 10 of 19,
+52.6%, ±20 — because a definition nothing matches saves perfectly happily
+and then reads as a blank column for ever, which looks like a broken report
+rather than like a spot nobody has played. That is the whole of what
+H2N's *Test Stat* button is for.
+
+Saved stats are loaded back into the registry at import and are then
+indistinguishable from the shipped ones: a column, a `--by` split, a
+one-click `--quick` filter, a row in the window's stats tab, a column in the
+leaderboard. Not one of those had to learn they exist. `--do` names the
+action — `bet`, `raise`, `aggressive`, `call`, `check`, `fold`, `continue`,
+`allin` — because `agg=1` alone silently means bet *and* raise, and because
+a call has to include the all-in that is a call, which is the same defect
+`lines.letter` exists to correct.
+
+They live in `stats.json` beside the database, gitignored. It is the user's
+file: a stat somebody built has to survive a `git pull`, and must not turn
+up in anybody else's checkout.
+
+### Added — two refusals, because both mistakes look like stats
+
+**An action flag cannot be in the filter.** `--aggressive --define x --do
+bet` would save a stat whose chance is already the times somebody bet, so it
+reads 100% for ever and looks like a finding. `--aggressive`, `--allin` and
+`--quick` are refused with the reason.
+
+**A saved stat cannot take a built-in's name.** Otherwise `--show cbet_flop`
+quietly starts meaning something else in one person's copy, and every number
+under that heading is about a different thing than it says.
+
+A definition the database will not compile does not silently vanish either
+— it goes into `stats.BROKEN` and is printed by `stats.py --custom` and by
+`--check`. A stat that disappears because a column was renamed is a stat
+whose absence from a report nobody notices.
+
+### Added — SAVE AS STAT, at the foot of the filter dialog
+
+The window already had the builder: the Lines tab writes the betting out
+street by street, and the other five tabs say everything else. What it did
+not have was the last step, so it now opens a small window that names what
+is on the screen, offers the same eight actions, tests the definition and
+says what it found — and forgets one again from the same place.
+
+There is deliberately no second builder in it. A builder would be another
+way to describe a situation, and two ways to say "3-bet pot in position"
+start meaning different things the first time either one changes.
+
+The player cohort is left out of a saved definition on purpose. A cohort
+chooses PEOPLE and a stat describes a SITUATION; one that quietly carried
+"regs with over 500 hands" inside it would report a different population
+from the one its own column heading claims, in every report it was ever put
+in.
+
+### Fixed — the quick-filter index was built before the stats existed
+
+Every stat is also a one-click filter, and the index from name to filter was
+a dict built at import. Saved stats arrive after that — the packaged
+application loads them once it knows where the user's files are, which is
+beside the executable and not beside code PyInstaller deletes on the way out
+— so `--quick` would have refused the very filter the window had just
+offered. It is worked out on demand now.
+
+### Checked
+
+`stats.py --check` drives the round trip end to end against a file of its
+own: define, find it in the registry, count it one at a time and in the
+batched pass and get the same answer, fail to shadow a built-in, forget it,
+and leave the user's own saved stats untouched. The failure that is worth a
+check is silent — `load_custom` mutating a copy of the registry rather than
+the registry itself would leave a saved stat listed by `--list` and missing
+from every report, which is the worse of the two ways to be wrong.
+
+`app.py --check` asserts the naming window would save the filter that is on
+the screen, and that it offers every action the engine defines.
+
+---
+
 ## A range you can read, an updater, and four bugs from one screenshot
 
 ### Added — the range breakdown, `--range` and its own tab

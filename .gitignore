@@ -11,6 +11,11 @@ dist/
 *.spec
 hands.db.bak*
 
+# stats and reports somebody defined for their own game,
+# not the project's
+stats.json
+filters.json
+
 # runtime log
 poker_analysis.log*
 

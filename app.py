@@ -45,7 +45,9 @@ import sqlite3
 
 import diag
 import importer
+import players
 import query
+import stats
 import update
 from stats import BY_KEY, STATS
 
@@ -57,6 +59,14 @@ HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
         else Path(__file__).parent)
 DB = HERE / "hands.db"
 query.DB = DB
+# The saved stats are the user's as much as the database is, so they sit
+# beside it rather than beside the code -- which, frozen, is a directory
+# PyInstaller deletes on the way out. Loading them again here is what puts
+# them into the registry every view already reads: the copy loaded when
+# `stats` was imported looked next to the code and found nothing there.
+stats.DB = DB
+stats.load_custom(HERE / "stats.json")
+query.SAVED = HERE / "filters.json"
 
 # One palette, so a colour is changed in one place. The line colours are the
 # same four the graph has always used.
@@ -70,6 +80,22 @@ LINE = {"total": "#22a35a", "showdown": "#2f7fd6",
 # agree -- which they do exactly when nothing could be adjusted -- the green
 # line was invisible and looked missing. It was underneath.
 DRAW_ORDER = ("allin_ev", "nonshowdown", "showdown", "total")
+
+def blend(a, b, t):
+    """
+    A colour t of the way from a to b, both written "#rrggbb".
+
+    The range chart needs a hundred and sixty-nine shades of one colour and
+    a palette cannot hold them, so they are mixed. Clamped, because a weight
+    computed from a ratio arrives slightly over 1.0 often enough to matter
+    and an out-of-range colour is a TclError rather than a wrong shade.
+    """
+    t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+    pa = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    pb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}"
+                         for x, y in zip(pa, pb))
+
 
 # The fonts a machine actually has. "Segoe UI" and "Consolas" ship with
 # Windows and with nothing else; asking Tk for a font that is not installed
@@ -505,6 +531,7 @@ class App(ImportMixin, ttk.Frame):
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river")}
         self.options = {"sites": [], "stakes": [], "players": []}
+        self.cohort_spec = None
 
         self.results = queue.Queue()
         self.pending = 0
@@ -569,6 +596,19 @@ class App(ImportMixin, ttk.Frame):
         bar.pack(fill="x", padx=18, pady=(0, 8))
         ttk.Button(bar, text="＋  Filter", style="Accent.TButton",
                    command=self.open_filters).pack(side="left")
+        self.cohort_btn = ttk.Button(bar, text="Players",
+                         command=self.open_cohort)
+        self.cohort_btn.pack(side="left", padx=(6, 0))
+        ttk.Label(bar, text="report", style="Dim.TLabel").pack(
+            side="left", padx=(18, 6))
+        self.preset = tk.StringVar(value="")
+        self.preset_box = ttk.Combobox(
+            bar, textvariable=self.preset,
+            values=["" ] + list(query.reports()), state="readonly",
+            width=22)
+        self.preset_box.pack(side="left")
+        self.preset_box.bind("<<ComboboxSelected>>",
+                             lambda _e: self.refresh())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
@@ -588,7 +628,28 @@ class App(ImportMixin, ttk.Frame):
             self.multi[g] = set()
         for v in self.vals.values():
             v.set("")
+        self.cohort_spec = None
+        self.cohort_btn.configure(text="Players")
+        self.preset.set("")
         self.refresh()
+
+    def open_cohort(self):
+        CohortDialog(self)
+
+    def reload_reports(self):
+        """
+        Put a newly saved report into the box without restarting.
+
+        The values of a Combobox are a snapshot taken when it was made. A
+        report saved from the filter dialog would otherwise be in the file,
+        in `--preset` and on the command line, and missing from the one
+        place it was saved from -- which reads as the save having silently
+        failed.
+        """
+        keep = self.preset.get()
+        known = list(query.reports())
+        self.preset_box.configure(values=["" ] + known)
+        self.preset.set(keep if keep in known else "")
 
 
     def _views(self, right):
@@ -599,6 +660,16 @@ class App(ImportMixin, ttk.Frame):
         self.by.current(0)
         self.by.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         self.by_label = ttk.Label(bar, text="split by", style="Dim.TLabel")
+        # What the chart is of. Empty means the range itself -- which combos
+        # got here -- and a stat means that stat per combo. They answer
+        # different questions and both are wanted, so it is a choice and not
+        # a second tab.
+        self.of = ttk.Combobox(bar, state="readonly", width=22,
+                               values=["the range itself"] +
+                               [st.label for st in STATS if st.source == "d"])
+        self.of.current(0)
+        self.of.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.of_label = ttk.Label(bar, text="chart of", style="Dim.TLabel")
 
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
@@ -609,7 +680,8 @@ class App(ImportMixin, ttk.Frame):
         self.filter_line.pack(anchor="w", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("stats", "range", "report", "results", "graph", "hands"):
+        for name in ("stats", "range", "chart", "report", "results", "graph",
+                     "hands"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
@@ -620,6 +692,14 @@ class App(ImportMixin, ttk.Frame):
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self._draw_graph())
         self.series = None
+        # The chart is drawn and not tabulated, so like the graph it gets a
+        # canvas rather than a Treeview. A range is a shape; 169 numbers in
+        # rows is the same information in the one form nobody can read it in.
+        self.chart_canvas = tk.Canvas(self.tabs["chart"], bg=BG,
+                                      highlightthickness=0)
+        self.chart_canvas.pack(fill="both", expand=True)
+        self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
+        self.chart = None
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
 
@@ -651,7 +731,20 @@ class App(ImportMixin, ttk.Frame):
 
     def argv(self):
         """The window's state as the argument list `query.build` understands."""
-        argv = [fl for fl, v in self.flags.items() if v.get()]
+        argv = query.preset_argv(self.preset.get()) if self.preset.get() else []
+        argv += [fl for fl, v in self.flags.items() if v.get()]
+        if self.cohort_spec is not None:
+            conditions, site, klass, durable = self.cohort_spec
+            argv.append("--cohort")
+            flags = {"fold_to_threebet": "--fold-to-threebet"}
+            for field, value in conditions:
+                argv += [flags.get(field, "--" + field), value]
+            if site:
+                argv += ["--site", site]
+            if klass:
+                argv += ["--class", klass]
+            if durable is not None:
+                argv += ["--durable", str(durable)]
         for group, flag in (("pos", "--pos"), ("vs", "--vs"),
                             ("street", "--street"), ("pot", "--pot"),
                             ("board", "--board"), ("quick", "--quick"),
@@ -689,9 +782,16 @@ class App(ImportMixin, ttk.Frame):
         else:
             self.by_label.pack_forget()
             self.by.pack_forget()
+        if view == "chart":
+            self.of_label.pack(side="left", padx=(0, 6))
+            self.of.pack(side="left")
+        else:
+            self.of_label.pack_forget()
+            self.of.pack_forget()
         try:
             argv = self.argv()
-            where, label, parts = query.build(argv)
+            cohort_spec, query_argv = players.parse_cohort(argv)
+            where, label, parts = query.build(query_argv)
         except SystemExit as e:
             self.filter_line.configure(text=str(e))
             return
@@ -707,9 +807,19 @@ class App(ImportMixin, ttk.Frame):
         self.status.configure(text="working…")
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
-                               self.by.get())).start()
+                               self.by.get(), cohort_spec, self.chart_stat())
+                         ).start()
 
-    def _work(self, token, view, where, label, parts, dim):
+    def chart_stat(self):
+        """Which stat the chart is of, or None for the range itself."""
+        chosen = self.of.get()
+        for st in STATS:
+            if st.label == chosen and st.source == "d":
+                return st.key
+        return None
+
+    def _work(self, token, view, where, label, parts, dim, cohort_spec,
+              stat=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -721,11 +831,21 @@ class App(ImportMixin, ttk.Frame):
         """
         con = sqlite3.connect(DB)
         try:
+            if cohort_spec is not None:
+                count = query.select_cohort(con, cohort_spec)
+                label += (f", cohort: "
+                          f"{players.describe_cohort(cohort_spec)} "
+                          f"({count} players)")
+                where = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
+                         "WHERE c.site = decisions.site AND "
+                         "c.player = decisions.player)")
             out = {"view": view}
             if view == "stats":
                 out["n"], out["rows"] = query.stats_of(con, where)
             elif view == "range":
                 out.update(query.range_of(con, where))
+            elif view == "chart":
+                out.update(query.chart_of(con, where, stat))
             elif view == "report":
                 expr, order = query.DIMENSIONS[dim]
                 cols = query.DEFAULT_COLUMNS
@@ -766,7 +886,8 @@ class App(ImportMixin, ttk.Frame):
     @staticmethod
     def _any(out):
         return bool(out.get("n") or out.get("rows") or out.get("totals")
-                    or out.get("keys") or out.get("series"))
+                    or out.get("keys") or out.get("series")
+                    or out.get("cells"))
 
     def _series(self, con, where):
         pairs = query.matching_seats(con, where)
@@ -810,6 +931,10 @@ class App(ImportMixin, ttk.Frame):
         if view == "graph":
             self.series = out.get("series")
             self._draw_graph(out.get("why") or out.get("error"))
+            return
+        if view == "chart":
+            self.chart = out if out.get("cells") else None
+            self._draw_chart(out.get("why") or out.get("error"))
             return
         tv = self.tree[view]
         tv.delete(*tv.get_children())
@@ -975,6 +1100,90 @@ class App(ImportMixin, ttk.Frame):
         hid, seat = self._hand_ids[sel[0]]
         HandWindow(self, self.con, hid, seat)
 
+    def _draw_chart(self, message=None):
+        """
+        The 13x13 chart, in the shape every range chart is drawn in.
+
+        Shaded against the biggest cell rather than against 100%, and the
+        caption says so. A range's combos are each under three percent of
+        it, so shading them on an absolute scale produces a chart that is
+        uniformly almost black -- technically honest and completely
+        unreadable, which is a worse kind of dishonest.
+
+        A rate is shaded absolutely, because there 100% means something.
+        """
+        c = self.chart_canvas
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 80 or h < 80:
+            return
+        g = self.chart
+        if not g:
+            c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
+                          justify="center",
+                          text=message or "no hand in this filter showed its "
+                                          "cards, so there is no range to draw")
+            return
+
+        rate = g["mode"] == "rate"
+        top, foot = 16, 52
+        size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
+        left = (w - size * 13) / 2.0
+        peak = max(1e-9, g["peak"] / max(1, g["seen"]))
+        # Below this the two lines of text collide, so the value is
+        # dropped and the label kept. It was set by measuring the window:
+        # at 1360x880 the chart gets about 530 pixels of height and so 40 to
+        # a cell, and a threshold above that hid the numbers on every chart
+        # anybody would actually see.
+        small = size < 32
+
+        for i in range(13):
+            for j in range(13):
+                combo = query.combo_at(i, j)
+                n, k = g["cells"].get(combo, (0, None))
+                if rate:
+                    value = None if n < g["min_n"] else k / n
+                    weight = value or 0.0
+                else:
+                    value = (n / g["seen"]) if n and g["seen"] else None
+                    weight = (value or 0.0) / peak
+                x, y = left + j * size, top + i * size
+                c.create_rectangle(
+                    x, y, x + size, y + size, width=1, outline=BG,
+                    fill=PANEL if value is None else blend(PANEL, ACCENT,
+                                                           weight))
+                # Ink that stays legible over both ends of the shading. Dark
+                # text on the deepest cells and light on the rest; one
+                # colour for all of them made either the strongest squares
+                # or the empty ones unreadable, and the strongest squares
+                # are the ones being looked at.
+                ink = DIM if value is None else (BG if weight > 0.6 else INK)
+                c.create_text(x + size / 2, y + size / 2 - (0 if small else 7),
+                              text=combo, fill=ink,
+                              font=(UI, 7 if small else 9))
+                if not small and value is not None:
+                    c.create_text(x + size / 2, y + size / 2 + 8, fill=ink,
+                                  font=(UI, 8),
+                                  text=(f"{100 * value:.0f}%" if rate
+                                        else f"{100 * value:.1f}"))
+
+        seen, total = g["seen"], g["total"]
+        share = 100.0 * seen / total if total else 0.0
+        c.create_text(left, top + size * 13 + 12, anchor="nw", fill=DIM,
+                      font=(UI, 9),
+                      text=(f"{g['stat']} per combo, shaded 0-100%."
+                            f"  Blank: dealt fewer than {g['min_n']} times."
+                            if rate else
+                            f"Each combo's share of the range, shaded "
+                            f"against the biggest cell ({100 * peak:.1f}%)."))
+        c.create_text(left, top + size * 13 + 30, anchor="nw", fill=DIM,
+                      font=(UI, 9),
+                      text=f"{seen:,} of {total:,} player-hands showed cards "
+                           f"({share:.0f}%)"
+                           + ("" if share > 90 else
+                              " -- this is the range that was SEEN, which on "
+                              "ACR is the hands that got to showdown"))
+
     # ---- the graph, drawn rather than served ---------------------------
     def _draw_graph(self, message=None):
         c = self.canvas
@@ -1048,10 +1257,373 @@ class App(ImportMixin, ttk.Frame):
     def describe_filter(self):
         """The active filter as a sentence, for the bar above the answer."""
         try:
-            _w, label, _p = query.build(self.argv())
+            cohort_spec, query_argv = players.parse_cohort(self.argv())
+            _w, label, _p = query.build(query_argv)
         except SystemExit:
             return "…"
+        if cohort_spec is not None:
+            label += ", player cohort"
         return "all hands" if label == "everything" else label
+
+
+class CohortDialog(tk.Toplevel):
+    """Choose a player cohort before applying the ordinary situation filters."""
+
+    FIELDS = (("hands", "Hands", ""),
+              ("vpip", "VPIP", ""),
+              ("pfr", "PFR", ""),
+              ("gap", "VPIP-PFR", ""),
+              ("threebet", "3-bet", ""),
+              ("fold_to_threebet", "Fold to 3-bet", ""),
+              ("wwsf", "WWSF", ""),
+              ("wtsd", "WTSD", ""),
+              ("wsd", "W$SD", ""),
+              ("bb100", "bb/100", ""))
+
+    def __init__(self, app):
+        super().__init__(app.master)
+        self.app = app
+        self.title("Players")
+        self.configure(background=BG)
+        self.geometry("520x430")
+        self.transient(app.master)
+        self.grab_set()
+
+        current = {field: value for field, value in
+                   (app.cohort_spec[0] if app.cohort_spec else [])}
+        self.values = {field: tk.StringVar(value=current.get(field, default))
+                       for field, _label, default in self.FIELDS}
+        current_spec = app.cohort_spec or ([], None, None, None)
+        _conditions, site, klass, durable = current_spec
+        self.site = tk.StringVar(value=site or "")
+        self.klass = tk.StringVar(value=klass or "")
+        self.durable = tk.StringVar(
+            value="" if durable is None else str(durable))
+
+        ttk.Label(self, text="PLAYER COHORT", style="Title.TLabel").pack(
+            anchor="w", padx=24, pady=(22, 4))
+        ttk.Label(self, text="Filter players first; the selected cohort is "
+                  "then used by every report tab.",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 18))
+        body = ttk.Frame(self)
+        body.pack(fill="x", padx=24)
+        for field, label, _default in self.FIELDS:
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=4)
+            ttk.Label(row, text=label, width=14).pack(side="left")
+            ttk.Entry(row, textvariable=self.values[field], width=18).pack(
+                side="left")
+            ttk.Label(row, text="blank or comparator value, e.g. >=500",
+                      style="Dim.TLabel").pack(side="left", padx=10)
+        for label, variable, values in (
+                ("Site", self.site, ("", "acr", "ignition")),
+                ("Class", self.klass, ("", "reg", "fish", "unknown")),
+                ("Durable", self.durable, ("", "1", "0"))):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=4)
+            ttk.Label(row, text=label, width=14).pack(side="left")
+            ttk.Combobox(row, textvariable=variable, values=values,
+                         state="readonly", width=16).pack(side="left")
+
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=24, pady=22)
+        ttk.Button(foot, text="CLEAR", command=self.clear).pack(side="left")
+        ttk.Button(foot, text="CANCEL", command=self.destroy).pack(
+            side="right")
+        ttk.Button(foot, text="APPLY", style="Accent.TButton",
+                   command=self.apply).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Return>", lambda _e: self.apply())
+
+    def clear(self):
+        for value in self.values.values():
+            value.set("")
+        self.site.set("")
+        self.klass.set("")
+        self.durable.set("")
+
+    def apply(self):
+        argv = ["--cohort"]
+        for field, _label, _default in self.FIELDS:
+            value = self.values[field].get().strip()
+            if value:
+                argv += ["--" + field, value]
+        for flag, value in (("--site", self.site.get()),
+                            ("--class", self.klass.get()),
+                            ("--durable", self.durable.get())):
+            if value:
+                argv += [flag, value]
+        try:
+            spec, _remaining = players.parse_cohort(argv)
+            # Validate the conditions before changing the live application.
+            con = sqlite3.connect(DB)
+            players.cohort(con, *spec)
+            con.close()
+        except (SystemExit, ValueError) as error:
+            messagebox.showerror("Invalid player filter", str(error),
+                                 parent=self)
+            return
+        self.app.cohort_spec = spec
+        self.app.cohort_btn.configure(text="Players: active")
+        self.destroy()
+        self.app.refresh()
+
+
+class ReportDialog(tk.Toplevel):
+    """
+    The filter on the screen, kept under a name in the report box.
+
+    The sibling of `StatDialog`, and the two are deliberately separate
+    windows rather than one with two buttons: saving a stat and saving a
+    report are different verbs on the same filter, and a window offering
+    both would have to explain which SAVE was which.
+
+    A report is only the situation. The reporting options -- which columns,
+    what to split by -- are stripped by `query.situation_only` before
+    anything is written, because a report that remembered `--show vpip,pfr`
+    would rewrite the columns of every view it was opened in, and that reads
+    as the window forgetting what you asked it rather than as the report
+    having an opinion.
+    """
+
+    def __init__(self, app):
+        super().__init__(app.master)
+        self.app = app
+        self.title("Save as report")
+        self.configure(background=BG)
+        self.geometry("620x420")
+        self.transient(app.master)
+        self.grab_set()
+
+        self.argv = players.parse_cohort(app.argv())[1]
+        try:
+            _where, described, _parts = query.build(self.argv)
+        except SystemExit as error:
+            described = str(error)
+        self.name = tk.StringVar()
+
+        ttk.Label(self, text="SAVE AS REPORT", style="Title.TLabel").pack(
+            anchor="w", padx=24, pady=(22, 4))
+        ttk.Label(self, text="It joins the report box at the top of the "
+                             "window, beside the ones built in.",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
+        ttk.Label(self, text="filter: " + described, style="Dim.TLabel",
+                  wraplength=560, justify="left").pack(
+                      anchor="w", padx=24, pady=(0, 16))
+
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=24, pady=4)
+        ttk.Label(row, text="Name", width=11).pack(side="left")
+        ttk.Entry(row, textvariable=self.name, width=30).pack(side="left")
+
+        self.result = ttk.Label(self, text="", style="Dim.TLabel",
+                                wraplength=560, justify="left")
+        self.result.pack(anchor="w", padx=24, pady=(18, 0))
+
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=24, pady=(18, 0))
+        ttk.Label(row, text="Saved", width=11).pack(side="left")
+        self.saved = ttk.Combobox(row, values=self._saved_names(),
+                                  state="readonly", width=28)
+        self.saved.pack(side="left")
+        ttk.Button(row, text="FORGET", command=self.forget).pack(
+            side="left", padx=8)
+
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=24, pady=20, side="bottom")
+        ttk.Button(foot, text="CLOSE", command=self.close).pack(side="right")
+        ttk.Button(foot, text="SAVE", style="Accent.TButton",
+                   command=self.save).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Return>", lambda _e: self.save())
+
+    def _saved_names(self):
+        return list(query.saved_filters())
+
+    def save(self):
+        try:
+            n, _described = query.save_filter(self.name.get(), self.argv)
+        except (ValueError, SystemExit) as error:
+            messagebox.showerror("Not a report yet", str(error), parent=self)
+            return
+        self.result.configure(
+            text=(f"Saved. {n:,} decisions match it today. It is in the "
+                  f"report box now." if n else
+                  "Saved -- but NOTHING MATCHES. Every view opened under it "
+                  "will be empty."))
+        self.saved.configure(values=self._saved_names())
+        self.app.reload_reports()
+
+    def forget(self):
+        name = self.saved.get()
+        if not name:
+            return
+        try:
+            query.forget_filter(name)
+        except ValueError as error:
+            messagebox.showerror("Cannot forget that", str(error), parent=self)
+            return
+        self.saved.set("")
+        self.saved.configure(values=self._saved_names())
+        self.result.configure(text=f"Forgot {name}.")
+        self.app.reload_reports()
+        self.app.refresh()
+
+    def close(self):
+        self.grab_release()
+        self.destroy()
+
+
+class StatDialog(tk.Toplevel):
+    """
+    The filter on the screen, saved as a stat with a name of its own.
+
+    Hand2Note builds a custom stat by clicking the actions street by street
+    and then naming what comes out. This window is the naming and none of
+    the clicking, because the filter dialog has already said what the
+    situation is -- position, pot type, the betting written out on its Lines
+    tab. All that is left is what to count inside it and what to call the
+    answer.
+
+    Which is exactly why there is no builder here. A builder would be a
+    second way to describe a situation, and two ways to say "3-bet pot in
+    position" start meaning different things the first time either changes.
+    """
+
+    def __init__(self, app):
+        super().__init__(app.master)
+        self.app = app
+        self.title("Save as stat")
+        self.configure(background=BG)
+        self.geometry("640x520")
+        self.transient(app.master)
+        self.grab_set()
+
+        # The player cohort is deliberately left out. A cohort chooses
+        # PEOPLE and a stat describes a SITUATION, so a stat that quietly
+        # carried "regs with over 500 hands" inside it would report a
+        # different population from the one its own column heading claims,
+        # in every report anybody ever put it in.
+        self.argv = players.parse_cohort(app.argv())[1]
+        try:
+            self.chance, described, _parts = query.build(self.argv)
+        except SystemExit as error:
+            self.chance, described = "1=1", str(error)
+
+        self.key = tk.StringVar()
+        self.label = tk.StringVar()
+        self.do = tk.StringVar(value="aggressive")
+        self.per = tk.StringVar(value="decision")
+
+        ttk.Label(self, text="SAVE AS STAT", style="Title.TLabel").pack(
+            anchor="w", padx=24, pady=(22, 4))
+        ttk.Label(self, text="The filter becomes the chance to do something. "
+                             "What you pick below is the doing of it.",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
+        ttk.Label(self, text="filter: " + described, style="Dim.TLabel",
+                  wraplength=580, justify="left").pack(
+                      anchor="w", padx=24, pady=(0, 16))
+
+        body = ttk.Frame(self)
+        body.pack(fill="x", padx=24)
+        for text, variable, note in (
+                ("Name", self.key,
+                 "lowercase, no spaces -- reports pick columns by it"),
+                ("Shown as", self.label, "blank uses the name")):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=4)
+            ttk.Label(row, text=text, width=11).pack(side="left")
+            ttk.Entry(row, textvariable=variable, width=22).pack(side="left")
+            ttk.Label(row, text=note, style="Dim.TLabel").pack(
+                side="left", padx=10)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=4)
+        ttk.Label(row, text="Counts", width=11).pack(side="left")
+        self.do_box = ttk.Combobox(row, textvariable=self.do,
+                                   values=list(stats.ACTIONS),
+                                   state="readonly", width=20)
+        self.do_box.pack(side="left")
+        self.do_note = ttk.Label(row, text="", style="Dim.TLabel")
+        self.do_note.pack(side="left", padx=10)
+        self.do_box.bind("<<ComboboxSelected>>", lambda _e: self._explain())
+        self._explain()
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=4)
+        ttk.Label(row, text="Once per", width=11).pack(side="left")
+        ttk.Combobox(row, textvariable=self.per, values=("decision", "hand"),
+                     state="readonly", width=20).pack(side="left")
+        ttk.Label(row, text="a player VPIPs once however often they act",
+                  style="Dim.TLabel").pack(side="left", padx=10)
+
+        self.result = ttk.Label(self, text="", style="Dim.TLabel",
+                                wraplength=580, justify="left")
+        self.result.pack(anchor="w", padx=24, pady=(18, 0))
+
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=24, pady=(18, 0))
+        ttk.Label(row, text="Saved", width=11).pack(side="left")
+        self.saved = ttk.Combobox(row, values=self._saved_keys(),
+                                  state="readonly", width=20)
+        self.saved.pack(side="left")
+        ttk.Button(row, text="FORGET", command=self.forget).pack(
+            side="left", padx=8)
+
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=24, pady=20, side="bottom")
+        ttk.Button(foot, text="CLOSE", command=self.close).pack(side="right")
+        ttk.Button(foot, text="SAVE", style="Accent.TButton",
+                   command=self.save).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Return>", lambda _e: self.save())
+
+    def _explain(self):
+        self.do_note.configure(text=stats.ACTIONS[self.do.get()][1])
+
+    def _saved_keys(self):
+        return [st.key for st in STATS if st.custom]
+
+    def save(self):
+        try:
+            n, k = query.define_stat(self.argv, self.key.get().strip(),
+                                     self.label.get().strip() or None,
+                                     self.do.get(), self.per.get())
+        except SystemExit as error:
+            messagebox.showerror("Not a stat yet", str(error), parent=self)
+            return
+        # The count is the whole point of showing anything back. A stat that
+        # nothing in the database has ever had the chance to do saves
+        # perfectly happily and then reads as an empty column for ever,
+        # which looks like a broken report rather than like a spot nobody
+        # has played.
+        self.result.configure(
+            text=(f"Saved. {k} of {n} ({100 * k / n:.1f}%). It is a column "
+                  f"in every report now, and a one-click filter on the Quick "
+                  f"tab." if n else
+                  "Saved -- but NOTHING MATCHES. Nobody in this database has "
+                  "ever been in that spot, so the stat will be blank "
+                  "wherever it is shown."))
+        self.saved.configure(values=self._saved_keys())
+        self.app.refresh()
+
+    def forget(self):
+        key = self.saved.get()
+        if not key:
+            return
+        try:
+            stats.forget(key)
+        except ValueError as error:
+            messagebox.showerror("Cannot forget that", str(error), parent=self)
+            return
+        self.saved.set("")
+        self.saved.configure(values=self._saved_keys())
+        self.result.configure(text=f"Forgot {key}.")
+        self.app.refresh()
+
+    def close(self):
+        self.grab_release()
+        self.destroy()
 
 
 class FilterDialog(tk.Toplevel):
@@ -1106,6 +1678,10 @@ class FilterDialog(tk.Toplevel):
         ttk.Button(foot, text="RESET", command=self.reset).pack(side="right",
                                                                 padx=8)
         ttk.Button(foot, text="CANCEL", command=self.cancel).pack(side="right")
+        ttk.Button(foot, text="SAVE AS STAT",
+                   command=self.save_as_stat).pack(side="right", padx=8)
+        ttk.Button(foot, text="SAVE AS REPORT",
+                   command=self.save_as_report).pack(side="right")
         self.bind("<Escape>", lambda e: self.cancel())
         self.bind("<Return>", lambda e: self.apply())
         # Closing the window keeps what was clicked. The dialog edits the
@@ -1460,6 +2036,23 @@ class FilterDialog(tk.Toplevel):
         self.destroy()
         self.app.refresh()
 
+    def save_as_stat(self):
+        """
+        Keep the filter, then name it.
+
+        The naming window is opened from the main window and not from this
+        one, which holds a grab: a modal dialog on top of a modal dialog is
+        how a window ends up unreachable behind the thing that will not let
+        go of the mouse.
+        """
+        self.apply()
+        StatDialog(self.app)
+
+    def save_as_report(self):
+        """Keep the filter, then name it -- the same two steps, one verb over."""
+        self.apply()
+        ReportDialog(self.app)
+
     def cancel(self):
         flags, multi, vals = self.was
         for f, v in flags.items():
@@ -1604,13 +2197,15 @@ def check(db_path=DB):
     # that matches nothing -- which is one click away at all times.
     con = sqlite3.connect(db_path)
     broke = []
-    views = ("stats", "range", "report", "results", "hands", "graph")
+    views = ("stats", "range", "chart", "report", "results", "hands",
+             "graph")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:
             where, _l, parts = query.build(argv)
             try:
-                app._work(app.pending, view, where, _l, parts, "position")
+                app._work(app.pending, view, where, _l, parts, "position",
+                          None)
                 app.results.get_nowait()
             except Exception as e:
                 broke.append(f"{view}: {type(e).__name__}: {e}")
@@ -1679,6 +2274,57 @@ def check(db_path=DB):
           f"{'yes' if not stale else 'NO -- ' + stale[:60]}")
     if stale:
         fails.append("a mousewheel binding survived the dialog that made it")
+
+    # A stat saved from the window and one saved from the command line have
+    # to be the same stat. Both reach `query.define_stat` from the same argv,
+    # and the way that stops being true is a window that assembles its own
+    # filter -- which is the failure every other check in here exists to
+    # prevent, arriving by a new road.
+    for f, var in app.flags.items():
+        var.set(f == "--ip")
+    for g in app.multi:
+        app.multi[g] = {"3bet"} if g == "pot" else set()
+    for _n, var in app.vals.items():
+        var.set("")
+    naming = StatDialog(app)
+    naming.withdraw()
+    same = naming.chance == query.build(["--ip", "--pot", "3bet"])[0]
+    print(f"the stat window names what it shows  "
+          f"{'yes' if same else 'NO -- ' + naming.chance}")
+    if not same:
+        fails.append("the stat window would save a filter other than the one "
+                     "on the screen")
+    offered = set(naming.do_box.cget("values"))
+    print(f"actions a saved stat can count "
+          f"{len(offered & set(stats.ACTIONS))}/{len(stats.ACTIONS)}")
+    if not set(stats.ACTIONS) <= offered:
+        fails.append("the stat window cannot count "
+                     f"{sorted(set(stats.ACTIONS) - offered)}")
+    naming.close()
+
+    # Same argument, one verb over: the report window must save the filter
+    # that is on the screen, and the report box must offer every report that
+    # exists. A report saved into the file and missing from the box is
+    # indistinguishable from a save that failed, and that is the failure
+    # this pair of assertions is for.
+    keeping = ReportDialog(app)
+    keeping.withdraw()
+    same = keeping.argv == ["--ip", "--pot", "3bet"]
+    print(f"the report window names what it shows  "
+          f"{'yes' if same else 'NO -- ' + repr(keeping.argv)}")
+    if not same:
+        fails.append("the report window would save a filter other than the "
+                     "one on the screen")
+    keeping.close()
+
+    app.reload_reports()
+    offered_reports = set(app.preset_box.cget("values")) - {""}
+    known_reports = set(query.reports())
+    print(f"reports the box offers        "
+          f"{len(offered_reports & known_reports)}/{len(known_reports)}")
+    if not known_reports <= offered_reports:
+        fails.append("the report box is missing "
+                     f"{sorted(known_reports - offered_reports)}")
 
     theme = ttk.Style(root).theme_use()
     print(f"theme in use                   {theme}")
