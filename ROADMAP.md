@@ -895,3 +895,16 @@ acr        money adds up   99.92%  (8277/8284, in - house = won)
 **Also found, not fixed here:** `opponents.py` still decides a deviation
 by whether two intervals overlap, the test CLAUDE.md retired on 5 Sep in
 favour of `stats.difference`. It is goal 3 above.
+
+## Run 10 — PokerStars, the registry's first test
+
+**Goal:** the third site for one parser module and one registry entry,
+proved by the same three checks.
+
+**Result: PASS.** `pokerstars.py` and one `Site(...)`; 9,961 NL100 6-max
+hands; money 9,961/9,961, positions 5,648 each, blinds by blinds 99.7%;
+431 named opponents, 104 with 100+. Two things the money check caught
+before the load: PokerStars' "raises $1 to $2" names the increment, not
+the amount added; and an All-in Cash Out leaves no "collected" line. The
+database is 22,165 hands and 173,549 decisions. Goal 1 of Part III is
+demonstrated, not just claimed.

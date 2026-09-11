@@ -491,29 +491,38 @@ def check(db_path=DB):
 
     # Seeing a flop is not a decision -- a player already all in sees one
     # and has nothing to decide -- so the two tables are expected to differ
-    # here, by exactly the number of players who were all in beforehand.
-    # Ring only. The 50 tournament hands include histories that begin part
-    # way through a hand, so a player can have a turn decision and no preflop
-    # one; that is a property of the export, not of this derivation, and
-    # letting it sit in the check would mean the check never goes green and
-    # therefore never gets read.
-    RING = "fmt IN ('RING','BLITZ','ZONE')"
+    # here, and every player in the gap has to be accounted for: either
+    # all in before the flop, or dealt a flop nobody ever bet on because
+    # everyone else open-folded before it was their turn. The second case
+    # took a limped PokerStars pot to appear -- the small blind folded to
+    # no bet and the big blind collected without a decision -- and the
+    # check, written for a gap of all-ins alone, read it as a defect.
+    # Cash only. The tournament hands include histories that begin part
+    # way through a hand, so a player can have a turn decision and no
+    # preflop one; that is a property of the export, not of this
+    # derivation, and letting it sit in the check would mean the check
+    # never goes green and therefore never gets read.
     saw = con.execute(
-        f"SELECT SUM(saw_flop) FROM spots WHERE {RING}").fetchone()[0] or 0
+        f"SELECT SUM(saw_flop) FROM spots WHERE {sites.CASH}").fetchone()[0] or 0
     acted = con.execute(
         f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat FROM decisions "
-        f"WHERE street='flop' AND {RING})").fetchone()[0]
-    allin = con.execute(
-        f"SELECT COUNT(*) FROM spots s WHERE s.saw_flop=1 AND {RING} "
-        "AND NOT EXISTS ("
-        "SELECT 1 FROM decisions d WHERE d.hand_id=s.hand_id AND d.seat=s.seat "
-        "AND d.street='flop') AND EXISTS (SELECT 1 FROM decisions d WHERE "
-        "d.hand_id=s.hand_id AND d.seat=s.seat AND d.street='preflop' "
-        "AND d.allin=1)").fetchone()[0]
-    same = (saw - acted) == allin
-    print(f"{'saw flop (ring)':28} spots {saw:>7}   decisions {acted:>7}   "
+        f"WHERE street='flop' AND {sites.CASH})").fetchone()[0]
+    silent = con.execute(
+        f"SELECT s.hand_id, s.seat FROM spots s WHERE s.saw_flop=1 AND {sites.CASH} "
+        "AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.hand_id=s.hand_id "
+        "AND d.seat=s.seat AND d.street='flop')").fetchall()
+    allin = sum(1 for hid, seat in silent if con.execute(
+        "SELECT 1 FROM decisions WHERE hand_id=? AND seat=? AND street='preflop' "
+        "AND allin=1", (hid, seat)).fetchone())
+    unbet = sum(1 for hid, seat in silent if not con.execute(
+        "SELECT 1 FROM decisions WHERE hand_id=? AND seat=? AND street='preflop' "
+        "AND allin=1", (hid, seat)).fetchone() and not con.execute(
+        "SELECT 1 FROM decisions WHERE hand_id=? AND street='flop' "
+        "AND action != 'F'", (hid,)).fetchone())
+    same = (saw - acted) == allin + unbet
+    print(f"{'saw flop (cash)':28} spots {saw:>7}   decisions {acted:>7}   "
           f"{'OK' if same else 'DISAGREE'}  (gap {saw - acted}, "
-          f"all-in preflop {allin})")
+          f"all-in preflop {allin}, flop open-folded to them {unbet})")
     if not same:
         fails.append("saw flop")
 

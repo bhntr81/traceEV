@@ -711,7 +711,7 @@ def by_position(con, keys, where, title):
         print("  " + pos.ljust(6) + "".join(cells))
 
 
-POOL = "is_hero=0 AND fmt IN ('RING','BLITZ') AND n_players>=5 AND standard=1"
+POOL = f"is_hero=0 AND {sites.CASH} AND n_players>=5 AND standard=1"
 
 
 def check(db_path=DB):

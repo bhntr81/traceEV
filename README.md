@@ -51,7 +51,7 @@ that already exists — is using the first as the prior for the second.
 
 ```
 sites.py        what each site is, decided once      --check
-acr.py, ignition.py   the parsers, one per format
+acr.py, ignition.py, pokerstars.py   the parsers, one per format
 importer.py     find, identify and load hand histories   --check
         v
 spots.py        one row per player per hand          --check
@@ -82,10 +82,10 @@ python query.py --site ignition --quick threebet --chart
 
 | | |
 |---|---|
-| hands | 12,294 (May 2025 – Aug 2026) |
-| decisions | 96,377 |
-| ACR / Ignition | 8,284 / 4,010 |
-| named opponents with 100+ hands | 85 |
+| hands | 22,165 (May 2025 – Aug 2026) |
+| decisions | 173,549 |
+| PokerStars / ACR / Ignition | 9,961 / 8,284 / 4,010 |
+| named opponents with 100+ hands | 189 |
 
 ## Requirements
 

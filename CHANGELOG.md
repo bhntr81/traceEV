@@ -8,6 +8,56 @@ Newest first.
 
 ---
 
+## PokerStars, the third site -- one parser and one registry entry
+
+9,961 hands of NL100 6-max from `Downloads
+l100stars.txt`, loaded the
+day after the registry was built, and the claim held: `pokerstars.py`
+providing `HEADER`, `split_hands` and `parse_hand`, one `Site(...)` in
+`sites.py`, and nothing else in the program touched. The database is
+22,165 hands and 173,549 decisions; PokerStars brings 431 named
+opponents, 104 of them with 100+ hands and 17 with 500+, which is more
+people to profile than ACR had.
+
+The money check earned its keep twice before a single hand was loaded:
+
+  * **"raises $1 to $2" is not "added $1".** On PokerStars the first
+    figure is how much the bet went UP by; a player with nothing in yet
+    put in the whole $2. WPN writes the added amount first and `acr.py`
+    takes it as it comes; the same reading here left every open a big
+    blind short and the identity at 0% on the first hand it saw. The
+    parser keeps a per-street ledger and a raise adds its total less what
+    the seat already had in.
+  * **All-in Cash Out.** A player who takes it is paid by the house, the
+    "collected" line never appears, and the summary says the pot was "not
+    awarded". Eight hands. The pot still went where the cards said and
+    the summary names the amount, so it is read from there when the body
+    gave nobody anything.
+
+Two checks failed on the three-site database, and both were the checks'
+expectations rather than the derivation:
+
+  * `decisions --check` expected every player who saw a flop without a
+    flop decision to have been all in preflop. A limped PokerStars pot
+    produced the other way: the small blind open-folded on the flop and
+    the big blind collected without ever having to act. The check now
+    accounts for both. It also kept its own list of fast-fold format
+    names -- `fmt IN ('RING','BLITZ','ZONE')` -- as did `stats.POOL`,
+    which is a site fact spelled by hand; both now use `sites.CASH`,
+    which is "not a tournament" and nothing else.
+  * `opponents --check` re-derived every deviation against the pool of
+    all named sites together, while the report measures a player against
+    their own site's pool. The same thing while ACR was the only site
+    with names; 29 of PokerStars' 430 deviations "wrong" once there were
+    two. The check uses the report's baseline now.
+
+Zoom hands are `fmt='ZOOM'`; a name persists across them, so a Zoom seat
+is still a person. The file was a single export, so the client's folders
+under `%LOCALAPPDATA%\PokerStars*\HandHistory` are registered on trust
+and will be confirmed the first time the client writes to one.
+
+---
+
 ## A site is a fact in one place, and the third site costs a parser
 
 The decision that prompted this: ACR stays, and the tracker should cover as

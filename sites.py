@@ -39,6 +39,7 @@ from pathlib import Path
 
 import acr
 import ignition
+import pokerstars
 
 DB = Path(__file__).parent / "hands.db"
 
@@ -83,10 +84,22 @@ SITES = (
                  r"%USERPROFILE%\Documents\AmericasCardroom"),
          about="ACR -- the Winning Poker Network, shared with Black Chip, "
                "YaPoker and True Poker"),
+    Site("pokerstars", pokerstars, names=True, reveals=False, rake=True,
+         places=(r"%LOCALAPPDATA%\PokerStars\HandHistory",
+                 r"%LOCALAPPDATA%\PokerStars.EU\HandHistory",
+                 r"%LOCALAPPDATA%\PokerStars.UK\HandHistory"),
+         about="PokerStars -- the same text whichever licence the client is"),
 )
 
 KEYS = tuple(s.key for s in SITES)
 BY_KEY = {s.key: s for s in SITES}
+
+# A cash hand, whichever site and whichever of its formats. Every site names
+# its fast-fold game differently -- Zone, Blitz, Zoom -- and two modules
+# kept their own list of the names, so the third site's fast-fold hands
+# were cash to one and invisible to the other. Tournament chips are not
+# dollars, and that is the only line that matters here.
+CASH = "fmt != 'MTT'"
 
 
 def of(key):

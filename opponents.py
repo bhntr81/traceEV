@@ -244,17 +244,21 @@ def check(db_path=DB):
     fails = []
     # Only a site with names has opponents to profile; the registry says
     # which those are, and each is held to the same test.
-    rows = [r for site in sites.named()
+    # A player is measured against THEIR site's pool, and so must the
+    # check be. Re-deriving against the pool of every named site together
+    # agreed with the report for as long as there was one named site, and
+    # called 29 of PokerStars' deviations wrong the day there were two.
+    rows = [(site, r) for site in sites.named()
             for r in leaderboard(con, site, limit=0)]
 
     # (a) re-derive every reported deviation the long way and confirm the
     #     intervals really are disjoint. The report is not trusted to have
     #     applied its own rule.
     checked = bad = 0
-    for count, h, p, devs in rows:
+    for site, (count, h, p, devs) in rows:
         for s, n, pr, bp, way, _gap in devs:
             _, _, _, lo, hi = rate(con, s, "player=? AND standard=1", (p,))
-            _, _, _, blo, bhi = rate(con, s, f"{POOL} AND {sites.sql_in(sites.named())}")
+            _, _, _, blo, bhi = rate(con, s, f"{POOL} AND site='{site}'")
             checked += 1
             if not (lo > bhi or hi < blo):
                 bad += 1
@@ -272,7 +276,7 @@ def check(db_path=DB):
     print(f"opponents seen          {total}")
     print(f"profiled ({MIN_HANDS}+ hands)  {len(rows)}")
     print(f"excluded as too thin    {total - len(rows)}")
-    with_reads = sum(1 for r in rows if r[0])
+    with_reads = sum(1 for _site, r in rows if r[0])
     print(f"with at least one read  {with_reads}")
 
     # A profile that fires on everybody is not measuring a player, it is
