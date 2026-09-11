@@ -50,8 +50,9 @@ that already exists — is using the first as the prior for the second.
 ## What is in here
 
 ```
-ignition.py     load Ignition hand histories
-acr.py    load ACR hand histories        --check
+sites.py        what each site is, decided once      --check
+acr.py, ignition.py   the parsers, one per format
+importer.py     find, identify and load hand histories   --check
         v
 spots.py        one row per player per hand          --check
 decisions.py    one row per decision, 50 columns     --check
@@ -64,7 +65,7 @@ stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
 opponents.py      what one opponent does differently   --check
 population.py   what the pool does, split-half validated  --check
-check.py        run all seven checks, in dependency order
+check.py        run every check, in dependency order
 ```
 
 `query.py` is the one you will use most:
@@ -81,27 +82,26 @@ python query.py --site ignition --quick threebet --chart
 
 | | |
 |---|---|
-| hands | 11,961 (May 2025 – Aug 2026) |
-| decisions | 93,600 |
-| ACR / Ignition | 8,019 / 3,942 |
-| named opponents with 150+ hands | 51 |
-| cached solver nodes | 1,510 |
+| hands | 12,294 (May 2025 – Aug 2026) |
+| decisions | 96,377 |
+| ACR / Ignition | 8,284 / 4,010 |
+| named opponents with 100+ hands | 85 |
 
 ## Requirements
 
-Python 3.11 and **nothing else** for everything above — the core is standard
-library only, and the database is one SQLite file. Only the GTO Wizard
-modules need anything installed (Playwright, and a GTO Wizard subscription).
+Python 3.11 and **nothing else** — standard library only, and the database
+is one SQLite file. `build.py --check` asserts it stays that way.
 
 ## Quick start
 
 ```bash
-python ignition.py  "path/to/ignition/histories"
-python acr.py "path/to/acr/histories"
-python spots.py
-python decisions.py
+python importer.py "path/to/your/hand/histories"     # any site, any mix
 python check.py
 ```
+
+The importer identifies each file by its header, loads it with that site's
+parser, and derives every table. Which sites exist is `sites.py`; adding
+one is a parser module and a registry entry there.
 
 Then ask it something:
 
@@ -125,8 +125,8 @@ hands still carries a ±15 point interval. Every claim here gets sharper with
 volume and with nothing else, which is why loading another session is often
 worth more than another feature.
 
-Every rate this project prints carries its `n` and a Wilson interval, and
-`opponents.py` will only call a player unusual when their interval and the
-pool's do not overlap. That throws away a lot of true differences. It also
-throws away every false one, which at these sample sizes is the trade worth
-making.
+Every rate this project prints carries its `n` and a Wilson interval, two
+rates are compared by an interval on their difference rather than by
+whether their own intervals overlap, and a family of comparisons is charged
+for its size. "No difference" and "not enough hands to see one" are printed
+as different findings, because the second is usually the true one.

@@ -8,6 +8,102 @@ Newest first.
 
 ---
 
+## A site is a fact in one place, and the third site costs a parser
+
+The decision that prompted this: ACR stays, and the tracker should cover as
+many sites as Hand2Note does. The codebase knew about exactly two sites by
+name -- "ignition" or "acr" spelled out in 38 places across 14 modules --
+and the third site would have been the moment that stopped working. Not
+loudly: the way `fmt='RING'` stopped naming one pool when ACR arrived and
+four modules kept averaging two pools into a number describing neither.
+
+### Added — `sites.py`
+
+One entry per site: the parser module, whether a label is a person,
+whether folded hands are shown, whether the history states the rake, where
+the client keeps its files, and a line for humans. Everything that used to
+spell a site's name now asks: `spots.identify` asks `Site.names` to decide
+who a seat is, `players.durable` carries the same answer onto each row,
+`population.POOL` is `sites.revealing()`, `opponents` and `stats` run per
+`sites.named()` and per `sites.KEYS`, the window's Site menu and the
+import summaries read the registry, and `build.py` derives the parser
+module list from it rather than keeping a second one.
+
+What still spells a site by name: three test fixtures that feed a literal
+`--site acr` to the filter parser, and the migration default for a
+database written before the column existed. Data, not facts.
+
+### Changed — a parser is a parser, and the loader is one loader
+
+Each parser carried a private copy of the loading loop with its own
+`INSERT`, and the two had drifted: Ignition's wrote fewer columns, Ignition
+read `fmt`, `sb` and `bb` from the filename inside `build` while ACR read
+them from the text inside `parse_hand`, and both had the same `files`
+counter bug on the same line. `importer.load` is now the only place a row
+is written; the schema and `migrate` moved there with it. A parser
+provides `HEADER(line)`, `split_hands(text)` and `parse_hand(block,
+source)` and nothing else -- `acr.py` and `ignition.py` lost `build`,
+`stats`, `check`, `migrate`, `SCHEMA` and their command lines.
+`python importer.py <folder>` is the one command; `python sites.py
+--stats` is what `acr.py --stats` was.
+
+Proved two ways, on purpose separately. Every file on disk loaded through
+the new loader gave `hands` / `seats` / `actions` byte-identical to the
+old loaders' (12,294 hands). Then the whole derivation chain rebuilt on a
+copy of the live database gave `spots`, `bets`, `decisions` and `players`
+identical to the live ones. So the refactor changed nothing -- which is the
+only claim a refactor gets to make, and the one that has to be shown
+rather than said.
+
+### Added — every site proves its import the same way
+
+`sites.py --check` replaces `acr.py --check` and generalises it: money,
+positions and blinds for every site loaded, names recurring for the sites
+that have names. ACR had these tests from the day it was loaded and they
+caught the jackpot fee and the bare `posts`. Ignition never had them.
+
+The money identity differs by site and the registry says which. ACR
+writes its rake, so `in - house = won` (8,277 of 8,284). Ignition never
+does, but its `Total Pot(...)` is gross, so `in = stated pot` and
+`won <= pot`. MTT is out of the money test: chips are not dollars, and a
+tournament history can begin mid-hand. The blinds threshold is 5% rather
+than 2% because a returning player's dead post is a real post from a
+non-blind seat -- measured 1.0% on ACR and 1.5% on Ignition -- and the
+failure the test exists for, positions read one seat out, shows as ~100%.
+
+### Fixed — Ignition dropped the dead post
+
+The first time the money test ran against Ignition it found the thing it
+exists to find. `UTG+1 : Posts dead chip $0.15` -- a returning player's
+dead post -- was not in `ignition.POSTS`, so the line fell through the
+verb parser and was dropped without a sound, and four cash hands had money
+come out of the pot that never went in. It is ACR's bare-`posts` bug on
+the other site, uncaught for exactly as long as there was no check. Four
+hands does not move a report; that is luck, and the next one need not be.
+`ignition.py` knows the verb, the four `seats.posted` values are
+corrected, and Ignition's money is 3,892 of 3,892.
+
+### Documents
+
+`ROADMAP.md` opened by saying it was the archived log of a different
+project -- the header from the folder it was copied out of -- and carried
+the CEO plan twice. Fixed, and Part III added: the multi-site vision,
+where Part II's plan actually ended up (steps 8 and 9 cut on 5 Sep, step
+10 arrived unplanned), the site contract, and this run. `README.md` still
+advertised 1,510 cached solver nodes and a Playwright requirement, and
+described the interval-overlap rule retired on 5 Sep; `CONTRIBUTING.md`
+had the same rule and the old "write a loader" advice for a new site;
+`CLAUDE.md` had a PAF about solver nodes that no longer exist. All brought
+up to date, and the registry is now a PAF.
+
+### Not done
+
+`opponents.py` still decides a deviation by whether two intervals overlap,
+which `stats.difference` replaced everywhere else on 5 Sep. `USAGE.md`
+describes it accurately as it stands. It is the next thing.
+
+---
+
 ## Importing hands, which had been broken in three places at once
 
 The next thing on the list was auto-import. Before writing any of it the

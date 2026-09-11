@@ -1,19 +1,16 @@
-# Archived — the hand-history analysis project
+# poker_analysis — roadmap and run log
 
-This is the run log of a DIFFERENT project. On 1 Sep 2026 the hand-history
-and database work (`spots`, `decisions`, `population`, `leaks`, `poptree`,
-`stats`, `walk`, `bestresponse`, `postflop`, `profile`, `acr`,
-`ignition`) moved to `Desktop/poker_analysis` with its own git history.
-None of those modules exist in this repo any more.
-
-It is kept because it records real measurements and three post-mortems that
-cost a day to learn, and because its standing rules on evidence are worth
-reading whatever the project. But nothing in it describes this repo, and its
-stated long-term goal is not this one -- see ROADMAP.md for that.
+Three parts, in the order they happened. Part I is the run log of the
+analysis work this repository grew out of: real measurements, three
+post-mortems that cost a day each to learn, and standing rules on evidence
+that still bind. Its long-term goal is not this project's any more, and the
+solver modules it describes were removed on 5 Sep 2026. Part II is the
+decision to build a tracker, and the plan. **Part III is the current
+vision and the current state** -- start there.
 
 ---
 
-# AI hand analysis — roadmap and run log
+# Part I — AI hand analysis, the run log
 
 **Long-term goal.** A tool that reads the Ignition hand history database and
 finds, with evidence: (1) exploits against the population pool, (2) seats
@@ -775,59 +772,126 @@ away from it, and the analysis is where the money is.
 Every phase-3 claim gets sharper with volume and with nothing else. Loading
 more ACR sessions is worth more than any single iteration above.
 
+
 ---
 
-## CEO — the plan, with estimates
+# Part III — every site, one tracker
 
-An **iteration** is one focused working session ending in a check that
-passes or fails. Iterations 1-3 took roughly one session each, so the
-estimates below are calibrated against real ones rather than guessed.
+## The vision, restated on 10 Sep 2026
 
-Two numbers per step: iterations, and what could make it take longer.
+The user's decision, in two sentences: **ACR stays.** And the tracker
+should cover **as many sites as Hand2Note does.**
 
-### Phase 1 — foundation (3 iterations) — DONE
+That changes what the next step is. It is not a third parser. The codebase
+knew about exactly two sites by name, in thirty-eight places across
+fourteen modules, and the third site would have been the moment that
+stopped working -- not loudly, but the way `fmt='RING'` stopped naming one
+pool when ACR arrived and four modules kept averaging two pools into a
+number that described neither.
 
-| # | step | est | actual | risk |
-|---|---|---|---|---|
-| 1 | ACR histories into the same schema | 1 | 1 | none left |
-| 2 | Identity and derivation across both sites | 1 | 1 | none left |
-| 3 | Decision layer -- the stat vocabulary | 1 | 1 | none left |
+## Where Part II's plan ended up
 
-### Phase 2 — the engine (3 iterations)
+| goal / step | state |
+|---|---|
+| 1. Both sites in one schema, checked | done |
+| 2. Decision layer | done -- 96,377 decisions |
+| 3. Stat engine, n and error bars | done -- 36 built-in stats, Wilson, Newcombe, Holm, `detectable` |
+| 4. Player and pool reports on the engine | mostly; `opponents.py` and `population.py` still carry their own SQL |
+| 5. Ignition range as prior for a named ACR player | **not started**, and blocked by data: one week of ACR from May 2025, one week of Ignition from Aug 2026 |
+| step 8 -- postflop scoring against a solver | **cut**, 5 Sep 2026: a tracker says what people do, not what is correct |
+| step 9 -- HUD overlay | **cut**, same day, same reason |
+| step 10 -- replayer, notes, filter UI | arrived unplanned: `app.py` / `gui.py` |
 
-| # | step | est | risk |
-|---|---|---|---|
-| 4 | Stat engine: named stats, filters, n and error bars | 1 | low. The hard thinking is done; this is a registry over `decisions` |
-| 5 | Player report -- the numbers a HUD would show, per opponent | 1 | low, but **sample size binds**: 84 ACR opponents have 100+ hands, and 100 hands is a VPIP, not a read |
-| 6 | Pool report rebuilt on the engine, hardcoded SQL retired | 1 | medium. Seven modules exist; the goal is that the count goes DOWN |
+Phases 1-2 are finished. Phase 4's surface arrived early. The thing
+Part II called "the reason this is not a worse copy of software that
+already exists" -- goal 5 -- needs a named opponent with hundreds of hands
+and a pool at a comparable stake, and every week of play sharpens it more
+than any feature would. Nothing in code unblocks it.
 
-**End of phase 2 is the first genuinely usable tool** -- any stat, any
-filter, either site, per player or per pool. Roughly a Hand2Note without
-the overlay.
+## Long-term goals, in order
 
-### Phase 3 — the part nobody else can build (4-5 iterations)
+1. **A site is a fact in one place.** `sites.py` says what each site is;
+   nothing else spells a site's name. A new site is one parser module and
+   one registry entry, and passes the same three checks the first two do.
+2. **One site per iteration, as the hand histories arrive.** A parser
+   without sample files is the silent failure this project is built
+   against, so no site is written from memory of its format. The order is
+   whichever sites the user plays and has files for.
+3. **Goal 4 closed out**: `opponents.py` and `population.py` onto
+   `stats.rates_by`, their SQL deleted, the count of hardcoded modules
+   down as the CEO's own metric demanded.
+4. **Goal 5, tested where it can be tested first**: Ignition alone has
+   both halves -- the counted pool range as prior, a `table:seat:segment`
+   identity as evidence -- at one stake in one pool, which removes the
+   modelling risk step 7 was scored "high" for. If prior-and-update cannot
+   beat the pool rate at predicting a seat's next decision there, it will
+   not across sites either.
 
-| # | step | est | risk |
-|---|---|---|---|
-| 7 | Ignition-measured range as the prior for a named ACR opponent | 2 | **high, and it is a modelling risk, not a coding one.** Two pools at two stakes are not the same population; the join has to be justified, not assumed |
-| 8 | Postflop scoring through the GTO Wizard cache already built | 2-3 | medium. The machinery exists and is proven; the cost is fetch volume and the 1326-combo ordering already solved |
+## What a site is
 
-### Phase 4 — surface (5-8 iterations, and the only genuinely uncertain part)
+Two facts decide how a site's hands are handled, and they are per-site,
+not per-hand:
 
-| # | step | est | risk |
-|---|---|---|---|
-| 9 | Live HUD overlay at the table | 3-5 | **highest in the project.** Needs either the OCR track revived or the client's own data read. This is the one place we are not better placed than Hand2Note |
-| 10 | Replayer, notes, filter UI | 2-3 | low, but it is a lot of surface for a single user |
+  * **whether a label is a person** -- ACR writes the screen name and it
+    is the same player next week; an Ignition seat is whoever is sat in
+    it, and Zone is nobody. `spots.identify` still decides the name; it
+    asks the registry which way to decide it.
+  * **whether folded hands are shown** -- Ignition writes every seat's
+    cards; ACR writes 23%. A pool is the sites that reveal, and
+    `population.py` pins itself to them by asking rather than by spelling
+    a name.
 
-### What the CEO actually recommends
+Plus the mechanics: the header a hand begins with, where the client keeps
+its files, and how money is proved -- by `in - house = won` where the
+history states the rake, by `in = stated pot` where it does not.
 
-**Stop after phase 3 and reassess.** Steps 1-8 are about eleven iterations
-and deliver everything that made this worth doing. Step 9 is where a
-tracker becomes a product, and it is also where three to five iterations
-buy the least: a HUD shows numbers at the table that a report already shows
-away from it, and the analysis is where the money is.
+**The parser contract.** A parser module provides `HEADER(line)`,
+`split_hands(text)` and `parse_hand(block, source)` returning the shared
+dict shape, and nothing else. Loading, the schema and the checks are
+`importer.py` and `sites.py`. Two parsers each carried a private copy of
+the loader until this run, one writing fewer columns than the other.
 
-**The binding constraint is not code, it is hands.** 84 named opponents with
-100+ hands is enough to rank a pool and not enough to profile a person.
-Every phase-3 claim gets sharper with volume and with nothing else. Loading
-more ACR sessions is worth more than any single iteration above.
+**Networks, not sites.** The ACR parser reads the Winning Poker Network
+format, which Black Chip, YaPoker and True Poker share; the Ignition
+parser reads Bodog's, which Bovada shares. Whether a second skin of a
+network is a second `site` value or the same one is decided when the
+files arrive, not before -- it depends on whether the pools are the same
+pool, which is a measured question.
+
+Some of Hand2Note's list -- the app rooms, PPPoker and PokerBros and the
+like -- write no hand history at all; H2N reads them from the screen.
+That is the `gto_pipeline` project's problem, not this one's.
+
+## Run 9 — `sites.py`, and the parser contract
+
+**Goal, set beforehand:** every hardcoded site name outside the parsers
+moved onto a registry, the two parsers reduced to the contract, one loader
+-- with ACR and Ignition behaving exactly as before, proved by the raw
+tables loaded from disk being byte-identical to the old loader's, and the
+derivation chain reproducing the live database exactly. And the import
+check generalised so that Ignition has one, which it never did.
+
+**Result: PASS.** 38 site-name hardcodings across 14 modules are now 3
+test fixtures and a migration default. Raw tables through the new loader:
+identical. Every derived table after a full chain rebuild: identical.
+`check.py`: 16 of 16.
+
+**What the generalised check found.** Applying ACR's money identity to
+Ignition -- `in = stated pot`, since Ignition never writes its rake --
+showed four cash hands with money coming out that never went in. All four
+carried `Posts dead chip`, a returning player's dead post, which was not
+in `ignition.POSTS` and fell through the parser without a sound. It is the
+Ignition twin of ACR's bare `posts $0.05` bug, uncaught for exactly as long
+as the check did not exist. Four hands does not move a report. The next
+one will not necessarily be four.
+
+```
+ignition   money adds up  100.00%  (3892/3892, in = stated pot, won <= pot)
+           positions      100.00%  blinds by blinds  98.47%
+acr        money adds up   99.92%  (8277/8284, in - house = won)
+           positions      100.00%  blinds by blinds  99.02%  786 named, 85 with 100+
+```
+
+**Also found, not fixed here:** `opponents.py` still decides a deviation
+by whether two intervals overlap, the test CLAUDE.md retired on 5 Sep in
+favour of `stats.difference`. It is goal 3 above.

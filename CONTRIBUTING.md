@@ -71,7 +71,7 @@ below it leaves a database that is internally inconsistent in a way no
 single check would catch.
 
 ```
-ignition.py / acr.py      raw hands
+importer.py                     raw hands, by each site's parser (sites.py)
         v
 spots.py                        one row per player per hand
         v
@@ -104,11 +104,24 @@ thing is a **column on `decisions`**, not a script. Add it there, rebuild,
 and the stat becomes a definition like all the others. That is how `was_agg`
 and `vs_pfa` came to exist.
 
-**Adding a site** — write a loader producing the same `hands` / `seats` /
-`actions` rows, with the same position names and the same money convention
-(`won` is what came back from the pot, never profit). Give it a `--check`
-that proves the money adds up. Then it is just another value in `site`, and
-every stat works on it for free.
+**Adding a site** — a parser module and a registry entry, and nothing
+else. The module provides `HEADER(line)`, `split_hands(text)` and
+`parse_hand(block, source)` returning the dict shape `acr.py` and
+`ignition.py` return: every column of `hands`, the seats with `won` being
+what came back from the pot and never profit, the actions with positions
+named as the rest of the program expects. The entry in `sites.SITES` says
+whether a label is a person, whether folded hands are shown, whether the
+history states the rake, and where the client keeps its files. The loader,
+the schema and the checks are `importer.py` and `sites.py`; a parser never
+writes a row. Then `python sites.py --check` -- the new site must pass the
+same money, positions and blinds tests the first two do, and the money
+test has caught a real bug in each of them. Nothing outside the parser and
+the registry should need to know the site exists; if something does, that
+is the bug to fix, not a place to add the name.
+
+Never write a parser from memory of a format. Without sample files there
+is nothing to run the checks against, and a parser that has not been
+checked is one that is dropping lines quietly.
 
 ---
 
@@ -126,8 +139,12 @@ reported that should not have been.
   on the first half of the sessions and the second half separately, and
   report only what agrees. Thousands of hands will happily produce a dozen
   exciting fictions.
-- **Two rates differ only if their intervals do not overlap.** Use
-  `stats.compare`; do not eyeball it.
+- **Two rates are compared by an interval on their difference, never by
+  whether their own intervals overlap.** `stats.difference` gives the
+  Newcombe interval and a p-value; `stats.holm` charges a family of
+  comparisons for its size; `stats.detectable` says what could have been
+  seen when nothing was. The overlap test was the rule until 5 Sep 2026
+  and it hid a real difference in this database.
 - **Check every EV against the bounds of the pot it came from.** An
   impossible number is the only kind that gets caught for free — this rule
   exists because a hand once priced at 11.8bb of EV in a 5.5bb pot, which

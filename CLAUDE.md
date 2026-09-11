@@ -73,9 +73,10 @@ Tables are derived from each other. Rebuilding one and not the ones below it
 leaves a database that is consistent nowhere and looks fine everywhere.
 
 ```
-ignition.py / acr.py  ->  spots.py  ->  decisions.py  ->  lines.py
-                                                        ->  strength.py
-                                 ->  players.py  ->  stats.py, opponents.py
+importer.py (each site's parser, per sites.py)
+          ->  spots.py  ->  decisions.py  ->  lines.py
+                                          ->  strength.py
+                       ->  players.py  ->  stats.py, opponents.py
 ```
 
 `players.py` reads `spots` and writes onto `decisions`, so it goes after
@@ -103,7 +104,7 @@ before any schema change.
 ## Verification — and these are not formalities
 
 ```bash
-python check.py                 # all seven module checks, in dependency order
+python check.py                 # every module's check, in dependency order
 python population.py --check    # split-half validation of the pool findings
 ```
 
@@ -120,14 +121,23 @@ of reason per row.
 
 Facts that stay true, and that have each been got wrong at least once:
 
+- **A site is a fact in `sites.py` and nowhere else.** Whether a label is
+  a person, whether folded hands are shown, whether the rake is written,
+  where the files live, the header a hand begins with -- one registry
+  entry, and the rest of the program asks. Two sites were spelled by name
+  in 38 places across 14 modules until 10 Sep 2026; the third site would
+  have found the one that was missed. A parser provides `HEADER`,
+  `split_hands`, `parse_hand` and never writes a row.
 - **`fmt='RING'` no longer identifies a pool.** ACR ring hands match
-  it too. Every population query needs `site=` as well, or it is averaging
+  it too. Every population query needs a site as well, or it is averaging
   two different games into a number that describes neither.
-- **Only ACR has people.** ACR writes the screen name and it is the same
-  player next week at another stake. An Ignition ring identity is
-  `table:seat:segment` -- one person for as long as they stay sat there, a
-  different one after. Zone is nobody at all. `players.durable` says which,
-  and anything that counts identities as people must respect it.
+  `sites.revealing()` is the pool; `sites.named()` is the people.
+- **Only sites with names have people.** ACR writes the screen name and it
+  is the same player next week at another stake. An Ignition ring identity
+  is `table:seat:segment` -- one person for as long as they stay sat
+  there, a different one after. Zone is nobody at all. `Site.names` says
+  which, `players.durable` carries it onto each row, and anything that
+  counts identities as people must respect it.
 - **The turn and the river are described by what the card DID**, not by
   what the board looks like afterwards, and "straight" therefore means one
   thing on the turn (the board is now a card off one) and another on the
@@ -158,12 +168,16 @@ Facts that stay true, and that have each been got wrong at least once:
   sixteen points wide, so "VPIP 30" and "VPIP 45" are the same measurement.
   53 regs and 134 fish out of 1,295 identities; the rest are `unknown`, and
   unknown is an answer.
-- **Ignition is the only site that shows folded hands.** `population.py`,
-  `population.py` is pinned to `site='ignition'` because its premise is
-  revealed ranges, and ACR reveals 23%.
-- **The cached solver nodes are one gametype**: 6-max NL25 with rake.
-  Pricing a $0.02 or $0.50 ACR hand against them prices it at the
-  wrong stake.
+- **A pool is the sites that show folded hands.** `population.py` pins
+  itself to `sites.revealing()` because its premise is revealed ranges;
+  Ignition shows 100%, ACR 23%, and a quarter of a range presented as the
+  range is worse than none.
+- **A parser proves itself by money, positions and blinds, per site.**
+  `sites.py --check` holds every loaded site to the same three tests. Each
+  parser has had a silent bug the money test found and nothing else would
+  have: ACR's jackpot fee and bare `posts`, Ignition's `Posts dead chip`.
+  Where the history writes the rake the identity is `in - house = won`;
+  where it does not, `in = stated pot`. `Site.rake` says which.
 - **`won` is what came back from the pot, never profit.** Profit is
   `won - posted - invested`. Summing `won` alone once said hero was up
   390bb/100.

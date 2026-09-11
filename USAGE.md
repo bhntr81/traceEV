@@ -6,23 +6,30 @@ Every command, what it does, and how to read what comes back.
 
 ## Loading hands
 
-Both loaders are safe to re-run. Hands are keyed by the site's own hand id,
-so pointing them at a folder that overlaps one already loaded contributes
-only what is new. That is the intended way to use them as you keep playing.
+One loader for every site. Each file is identified by the header its hands
+begin with -- never by which folder it was in or which client is installed
+-- and goes to that site's parser; a file no parser recognises is counted
+and skipped. Safe to re-run: hands are keyed by the site's own hand id, so
+a folder that overlaps one already loaded contributes only what is new.
+That is the intended way to use it as you keep playing.
 
 ```bash
-python ignition.py  "C:/path/to/ignition/HH"      # load, or top up
-python ignition.py  --stats                       # what is in there
+python importer.py "C:/path/to/any/HH"      # load, whatever sites are in it
+python importer.py --scan                   # where hand histories are on this machine
+python importer.py --refresh                # load what is new from those places
 
-python acr.py "C:/path/to/acr/HH"     # load, or top up
-python acr.py --stats                       # per-site breakdown
-python acr.py --check                       # prove the import
+python sites.py                             # the sites this program knows
+python sites.py --stats                     # what is in the database, per site
+python sites.py --check                     # prove every site's import
 ```
 
-Both walk the folder recursively for `*.txt`. Omaha files are skipped.
-ACR hand ids are prefixed `cp-` so the two sites can never collide.
+Folders are walked recursively for `*.txt`. Omaha files are skipped. ACR
+hand ids are prefixed `cp-` so the sites can never collide.
 
-### Reading `--stats`
+`acr.py` and `ignition.py` are parsers and nothing else; neither is run
+directly.
+
+### Reading `sites.py --stats`
 
 ```
 hands by site and format:
@@ -38,6 +45,33 @@ coverage of what each site actually shows:
 `fmt` is `RING`, `BLITZ` (ACR's fast-fold), `ZONE` (Ignition's) or
 `MTT`. The coverage block is the point of having both sites: Ignition's
 100% is every folded hand; ACR's 777 names are identity.
+
+### Reading `sites.py --check`
+
+```
+ignition
+  money adds up           100.00%  (3892/3892 hands within a cent, in = stated pot, won <= pot)
+  positions balanced      100.00%  (6 positions, 1512-1512 each)
+  blinds posted by blinds  98.47%  (110 of 7190 posts were dead posts from other seats)
+  named opponents         none -- this site has no names
+
+acr
+  money adds up            99.92%  (8277/8284 hands within a cent, in - house = won)
+  positions balanced      100.00%  (6 positions, 3508-3508 each)
+  blinds posted by blinds  99.02%  (160 of 16370 posts were dead posts from other seats)
+  named opponents            786  (298 with 30+ hands, 85 with 100+, 7 with 500+)
+```
+
+Every site loaded is held to the same three tests, because a parser fails
+silently -- it drops the line it misreads and every number downstream comes
+out plausible. Money: everything that went in came back out minus the
+house's cut, where the site writes its cut; where it does not (Ignition),
+everything that went in equals the pot the site declared. Positions: over
+thousands of full-table hands every seat is every position equally often.
+Blinds: the seat the button says is the small blind is the one that posted
+it. A site with names is also asked whether names recur, since that is
+what a site with names is for. MTT is excluded from money -- chips are not
+dollars, and a tournament history can begin mid-hand.
 
 Your own results are shown as `won - posted - invested`, which is profit.
 Beware any tracker — including an earlier version of this one — that reports
