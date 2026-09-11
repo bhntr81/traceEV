@@ -29,6 +29,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import sites
+
 DB = Path(__file__).parent / "hands.db"
 
 RANKS = "23456789TJQKA"
@@ -84,27 +86,30 @@ CREATE INDEX bets_street ON bets(street, action);
 
 def identify(hands, seats_by):
     """
-    Who a seat belongs to, decided once for both sites.
+    Who a seat belongs to, decided once for every site.
 
-    The two sites answer this completely differently and the difference is
-    the whole reason for having both.
+    Sites answer this in two completely different ways, and the registry
+    says which way each one takes -- the difference is the whole reason for
+    having more than one.
 
-      ACR  writes the name. It is the same person next week, at
-                 another table, at another stake -- including on Blitz,
-                 where the table changes every hand but the name does not.
-      Ignition   writes nobody. A seat number persists only while somebody
-                 stays sat in it, so identity is table + seat + how many
-                 times that seat has turned over, and it dies with the
-                 session. Zone moves you every hand, so a Zone seat is a
+      A site with names (ACR) writes the screen name. It is the same person
+                 next week, at another table, at another stake -- including
+                 on Blitz, where the table changes every hand but the name
+                 does not.
+      A site without (Ignition) writes nobody. A seat number persists only
+                 while somebody stays sat in it, so identity is table + seat
+                 + how many times that seat has turned over, and it dies
+                 with the session. That only means anything at a ring
+                 table: Zone moves you every hand, so a Zone seat is a
                  stranger and is left unnamed rather than given a name that
                  would silently merge hundreds of different people.
     """
     out = {}
     last_seen, segment = {}, {}
     for i, h in enumerate(hands):
-        site = h["site"] if "site" in h.keys() else None
+        named = sites.of(h["site"]).names
         for s in seats_by.get(h["hand_id"], []):
-            if (site or "ignition") == "acr":
+            if named:
                 out[(h["hand_id"], s["seat"])] = s["label"]
                 continue
             if h["fmt"] != "RING":
@@ -333,8 +338,7 @@ def build(db_path=DB):
 
     spot_rows, bet_rows = [], []
     for h in hands:
-        hid, bb = h["hand_id"], h["bb"]
-        site = (h["site"] if "site" in h.keys() else None) or "ignition"
+        hid, bb, site = h["hand_id"], h["bb"], h["site"]
         acts = acts_by.get(hid, [])
         # A seat can be at the table without being in the hand -- sitting
         # out, waiting for the big blind, disconnected. It never acts and it
@@ -457,7 +461,7 @@ def check(db_path=DB):
         # neither, and the whole point of these lines is that a broken
         # derivation shows up as a number with the wrong shape.
         cells = []
-        for site in ("ignition", "acr"):
+        for site in sites.KEYS:
             got, tot = one("SELECT SUM({}), SUM({}) FROM spots WHERE "
                            "fmt='RING' AND n_players>=5 AND site='{}'".format(
                                num, den, site))
@@ -466,12 +470,13 @@ def check(db_path=DB):
                 100 * got / tot if tot else 0, tot))
         print("  {:14} {}".format(label, "   ".join(cells)))
 
-    print("\nopen sizes actually used, ring:")
-    for size, cnt in con.execute(
-            "SELECT ROUND(open_size_bb,1), COUNT(*) FROM spots WHERE rfi=1 "
-            "AND fmt='RING' AND site='ignition' GROUP BY 1 "
-            "ORDER BY 2 DESC LIMIT 8"):
-        print("  {}bb  {}".format(size, cnt))
+    for site in sites.KEYS:
+        print("\nopen sizes actually used, {} ring:".format(site))
+        for size, cnt in con.execute(
+                "SELECT ROUND(open_size_bb,1), COUNT(*) FROM spots WHERE rfi=1 "
+                "AND fmt='RING' AND site=? GROUP BY 1 "
+                "ORDER BY 2 DESC LIMIT 8", (site,)):
+            print("  {}bb  {}".format(size, cnt))
 
     print("\nflop bet sizes as a fraction of pot:")
     for lo, hi in ((0, .3), (.3, .45), (.45, .6), (.6, .8), (.8, 1.1), (1.1, 99)):
@@ -479,12 +484,13 @@ def check(db_path=DB):
             "SELECT COUNT(*) FROM bets WHERE street='flop' AND to_call=0 "
             "AND pot_frac>=? AND pot_frac<?", lo, hi)[0]))
 
-    print("\nhero, by position (bb/100):")
-    for pos, n, bb100 in con.execute(
-            "SELECT position, COUNT(*), 100.0*SUM(net_bb)/COUNT(*) FROM spots "
-            "WHERE is_hero=1 AND fmt='RING' AND site='ignition' "
-            "GROUP BY position ORDER BY 3"):
-        print("  {:4} {:5d}  {:+8.1f}".format(pos, n, bb100))
+    for site in sites.KEYS:
+        print("\nhero, by position, {} ring (bb/100):".format(site))
+        for pos, n, bb100 in con.execute(
+                "SELECT position, COUNT(*), 100.0*SUM(net_bb)/COUNT(*) FROM spots "
+                "WHERE is_hero=1 AND fmt='RING' AND site=? "
+                "GROUP BY position ORDER BY 3", (site,)):
+            print("  {:4} {:5d}  {:+8.1f}".format(pos, n, bb100))
 
     print("\nseat identities that lasted long enough to profile:")
     for band, players in con.execute(

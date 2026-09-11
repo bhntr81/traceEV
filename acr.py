@@ -1,5 +1,5 @@
 """
-Load ACR hand histories into the same database Ignition writes to.
+Read ACR hand histories -- the Winning Poker Network format.
 
 The two sites are worth having together because each has exactly what the
 other lacks.
@@ -11,35 +11,29 @@ other lacks.
             which is the thing an opponent report is for. What it will not
             show is a folded hand, so ranges here are inferred, not seen.
 
-This loader reads the Winning Poker Network format, which ACR is on. It was
-written believing the hands were ACR's, on the evidence that a
-ACR client was installed on the machine -- the site was inferred from
-the computer rather than from the data, which is exactly the assumption
-`EmpiricalRigor` exists to forbid. The data says otherwise and says it
-plainly: the fast-fold game is called "Blitz Poker", the tables are named
-after American towns, the pot loses a "JP Fee", and the stakes are dollars
-rather than chips. All four are ACR and none of them is ACR.
-
-So Ignition measures the pool and ACR measures the person, and the
-interesting work is using the first as the prior for the second. That only
-happens if both land in one schema, which is what this does: the same hands
-/ seats / actions tables, the same position names, the same money
-convention (`won` is what came back from the pot, never profit).
+This is the parser and nothing else: the header a hand begins with, how a
+file splits into hands, and one hand as the dict shape every site's parser
+returns. Loading, the schema and the checks are `importer.py` and
+`sites.py`. The site this parser belongs to, and what is true of it, is the
+registry entry in `sites.py`.
 
 Two things ACR gives that Ignition does not: the button is stated
 outright, so positions are read rather than reconstructed from labels, and
-rake is written on every pot.
+rake is written on every pot -- plus a jackpot fee, which the money check
+found when one hand in five came up short.
 
-    python acr.py <folder>     load, or top up, the database
-    python acr.py --stats      what is in there, per site
+    python importer.py <folder>     load, whatever sites are in it
+    python sites.py --check         prove the import
 """
 
 import re
-import sqlite3
-import sys
-from pathlib import Path
 
-DB = Path(__file__).parent / "hands.db"
+# The Winning Poker Network writes a bare hand number followed by the game.
+# The header is the only thing a file is identified by -- never the folder
+# it was found in, never which client is installed on the machine. Eight
+# thousand hands were once loaded and reported on under the wrong site
+# because the site was inferred from the computer instead of the text.
+HEADER = lambda line: line.startswith("Hand #") and " - Holdem" in line[:80]
 
 # "Hand #2459218653 - Holdem (No Limit) - $0.01/$0.02 - 2025/05/18 22:43:28 UTC"
 HAND_RE = re.compile(
@@ -313,7 +307,7 @@ def parse_hand(text, source=""):
                  "pot": _money(pot_m.group(1)) if pot_m else None,
                  "rake": rake, "jp_fee": jp,
                  "hero_seat": hero["seat"] if hero else None,
-                 "standard": standard, "source": source, "site": "acr",
+                 "standard": standard, "source": source,
                  "max_seats": max_seats},
         "seats": seats,
         "actions": actions,
@@ -329,220 +323,3 @@ def split_hands(text):
     starts = [m.start() for m in HAND_RE.finditer(text)]
     for i, a in enumerate(starts):
         yield text[a:starts[i + 1] if i + 1 < len(starts) else len(text)]
-
-
-def migrate(con):
-    """
-    Room for a second site in tables that were written for one.
-
-    Existing Ignition hand ids are left exactly as they are. Rewriting 3,942
-    hands across four tables to gain a prefix they do not need would be
-    churn; ACR ids carry a "cp-" instead, which makes a collision
-    between the two sites impossible either way.
-    """
-    cols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
-    if "site" not in cols:
-        con.execute("ALTER TABLE hands ADD COLUMN site TEXT")
-        con.execute("UPDATE hands SET site='ignition' WHERE site IS NULL")
-    if "rake" not in cols:
-        con.execute("ALTER TABLE hands ADD COLUMN rake REAL")
-    if "max_seats" not in cols:
-        con.execute("ALTER TABLE hands ADD COLUMN max_seats INT")
-    if "jp_fee" not in cols:
-        con.execute("ALTER TABLE hands ADD COLUMN jp_fee REAL")
-    acols = {r[1] for r in con.execute("PRAGMA table_info(actions)")}
-    if "allin" not in acols:
-        con.execute("ALTER TABLE actions ADD COLUMN allin INT")
-    con.commit()
-
-
-def build(folder, db_path=DB, files=None):
-    con = sqlite3.connect(db_path)
-    # The tables before the columns. `migrate` only ALTERs, so against a
-    # database that does not have them yet it asked SQLite to add a column
-    # to a table that was not there -- which is what an ACR-first import
-    # into a fresh database is, and this machine holds three hundred ACR
-    # files and one Ignition folder. Ignition's loader has always created
-    # them; both write the same tables, so both must be able to.
-    from ignition import SCHEMA
-    con.executescript(SCHEMA)
-    migrate(con)
-    known = {r[0] for r in con.execute("SELECT hand_id FROM hands")}
-
-    added = skipped = n_files = 0
-    # `files=` lets a caller hand over an explicit list, which is what the
-    # importer does when one folder holds two sites and each file has to go
-    # to the parser that wrote it. The counter beside it is deliberately not
-    # called `files`: it used to be, and being assigned first it overwrote
-    # the parameter with 0 before the loop could read it -- so the list was
-    # thrown away and the loop tried to iterate the number zero. Every
-    # import through `importer.load` went that way and raised.
-    for f in (files if files is not None else sorted(Path(folder).rglob("*.txt"))):
-        n_files += 1
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for block in split_hands(text):
-            got = parse_hand(block, source=f.name)
-            if not got:
-                continue
-            h = got["hand"]
-            if h["hand_id"] in known:
-                skipped += 1
-                continue
-            known.add(h["hand_id"])
-            con.execute(
-                "INSERT INTO hands (hand_id, played_at, table_id, game, fmt,"
-                " sb, bb, n_players, board, pot, hero_seat, standard, source,"
-                " site, rake, max_seats, jp_fee)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (h["hand_id"], h["played_at"], h["table_id"], h["game"],
-                 h["fmt"], h["sb"], h["bb"], h["n_players"], h["board"],
-                 h["pot"], h["hero_seat"], h["standard"], h["source"],
-                 h["site"], h["rake"], h["max_seats"], h["jp_fee"]))
-            con.executemany(
-                "INSERT OR REPLACE INTO seats VALUES (?,?,?,?,?,?,?,?,?,?)",
-                [(h["hand_id"], s["seat"], s["label"], s["position"],
-                  s["stack"], s["cards"], int(s["is_hero"]), s["won"],
-                  s["posted"], s["invested"]) for s in got["seats"]])
-            con.executemany(
-                "INSERT INTO actions (hand_id, street, n, position, seat,"
-                " action, amount, total, allin) VALUES (?,?,?,?,?,?,?,?,?)",
-                [(h["hand_id"], a["street"], a["n"], a["position"], a["seat"],
-                  a["action"], a["amount"], a["total"], a["allin"])
-                 for a in got["actions"]])
-            added += 1
-        if n_files % 25 == 0:
-            con.commit()
-            print(f"  ...{n_files} files, {added} hands", flush=True)
-    con.commit()
-    con.close()
-    return n_files, added, skipped
-
-
-def stats(db_path=DB):
-    con = sqlite3.connect(db_path)
-    migrate(con)
-    print("hands by site and format:")
-    for site, fmt, bb, n in con.execute(
-            "SELECT COALESCE(site,'ignition'), fmt, bb, COUNT(*) FROM hands "
-            "GROUP BY 1, 2, 3 ORDER BY 1, COUNT(*) DESC"):
-        print(f"  {site:10} {fmt:6} {('$%.2f' % bb) if bb else '-':>7}  {n:6d}")
-
-    print("\ncoverage of what each site actually shows:")
-    for site in ("ignition", "acr"):
-        row = con.execute(
-            "SELECT COUNT(*), SUM(s.cards IS NOT NULL), COUNT(DISTINCT s.label) "
-            "FROM seats s JOIN hands h USING(hand_id) "
-            "WHERE COALESCE(h.site,'ignition')=?", (site,)).fetchone()
-        if not row[0]:
-            continue
-        print(f"  {site:10} {row[0]:7d} seats, {row[1] or 0:7d} with cards "
-              f"({100 * (row[1] or 0) / row[0]:5.1f}%), "
-              f"{row[2]:6d} distinct names")
-
-    print("\nyour results, by site and stake:")
-    for site, fmt, bb, n, profit in con.execute(
-            "SELECT COALESCE(h.site,'ignition'), h.fmt, h.bb, COUNT(*), "
-            "SUM(s.won - s.posted - s.invested) FROM seats s "
-            "JOIN hands h USING(hand_id) WHERE s.is_hero=1 AND h.bb IS NOT NULL "
-            "GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"):
-        profit = profit or 0.0
-        print(f"  {site:10} {fmt:6} ${bb:.2f}  {n:6d} hands  ${profit:+9.2f}"
-              f"  {100 * profit / bb / max(1, n):+8.1f} bb/100")
-    con.close()
-
-
-CP = "h.site='acr'"
-
-
-def check(db_path=DB):
-    """
-    Four ways this loader could be wrong, each one a number that would move.
-
-    A hand history parser fails quietly. It does not crash on a line it
-    misreads; it drops the line and every figure downstream comes out
-    slightly wrong and entirely plausible. So the import is not believed
-    because it ran -- it is believed because the money adds up, the button
-    goes round, and the blinds are posted by the seats named as blinds.
-    """
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    q = lambda sql, *a: con.execute(sql, a).fetchall()
-    fails = []
-
-    # 1. Money. Every chip that went in came back to somebody, minus what the
-    #    house took. This is the check that catches a misread bet size, a
-    #    missed call, an uncalled bet counted twice.
-    rows = q(f"""SELECT h.hand_id, SUM(s.won) w,
-                   SUM(s.posted + s.invested) inp,
-                   COALESCE(h.rake,0) + COALESCE(h.jp_fee,0) house
-                 FROM seats s JOIN hands h USING(hand_id)
-                 WHERE {CP} GROUP BY h.hand_id""")
-    off = [r for r in rows if abs((r["inp"] or 0) - r["house"] - (r["w"] or 0)) > 0.011]
-    ok = 100 * (1 - len(off) / max(1, len(rows)))
-    print(f"money adds up          {ok:6.2f}%  "
-          f"({len(rows) - len(off)}/{len(rows)} hands within a cent)")
-    if ok < 99.0:
-        fails.append("money")
-        for r in off[:5]:
-            print(f"    {r['hand_id']}  in {r['inp']:.2f}  house {r['house']:.2f}"
-                  f"  won {r['w']:.2f}")
-
-    # 2. The button goes round. Over thousands of hands at a full table every
-    #    seat is every position equally often. A skew means the rotation was
-    #    read wrong, which would silently rewrite every positional stat.
-    counts = q(f"""SELECT s.position, COUNT(*) n FROM seats s
-                   JOIN hands h USING(hand_id)
-                   WHERE {CP} AND h.n_players=6 AND h.standard=1
-                   GROUP BY 1""")
-    ns = [r["n"] for r in counts]
-    spread = (max(ns) - min(ns)) / max(1, sum(ns) / len(ns)) if ns else 1
-    print(f"positions balanced     {100 * (1 - spread):6.2f}%  "
-          f"(6 positions, {min(ns) if ns else 0}-{max(ns) if ns else 0} each)")
-    if len(ns) != 6 or spread > 0.02:
-        fails.append("positions")
-
-    # 3. The blinds. Whoever the button says is the small blind is whoever
-    #    the history says posted it -- otherwise positions are one seat out.
-    bad = q(f"""SELECT COUNT(*) n FROM seats s JOIN hands h USING(hand_id)
-                WHERE {CP} AND h.standard=1 AND s.posted > 0
-                  AND s.position NOT IN ('SB','BB')""")[0]["n"]
-    total = q(f"""SELECT COUNT(*) n FROM seats s JOIN hands h USING(hand_id)
-                  WHERE {CP} AND h.standard=1 AND s.posted > 0""")[0]["n"]
-    # A bare "posts $0.05" from a returning player is a real post from a
-    # non-blind seat, so this is never expected to be exactly 100%.
-    print(f"blinds posted by blinds{100 * (1 - bad / max(1, total)):6.2f}%  "
-          f"({bad} of {total} posts were dead posts from other seats)")
-    if bad / max(1, total) > 0.02:
-        fails.append("blinds")
-
-    # 4. Identity. The point of this site is that players have names, so a
-    #    profile is only worth building if names recur.
-    seen = q(f"""SELECT s.label, COUNT(*) n FROM seats s JOIN hands h USING(hand_id)
-                 WHERE {CP} AND s.is_hero=0 GROUP BY 1""")
-    over = {k: sum(1 for r in seen if r["n"] >= k) for k in (30, 100, 500)}
-    print(f"named opponents        {len(seen):6d}  "
-          f"({over[30]} with 30+ hands, {over[100]} with 100+, {over[500]} with 500+)")
-    if over[100] < 20:
-        fails.append("identity")
-
-    con.close()
-    print()
-    print("FAIL: " + ", ".join(fails) if fails else "PASS")
-    return not fails
-
-
-if __name__ == "__main__":
-    if "--check" in sys.argv:
-        sys.exit(0 if check() else 1)
-    if "--stats" in sys.argv:
-        stats()
-        sys.exit(0)
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-    files, added, skipped = build(sys.argv[1])
-    print(f"\n{files} files, {added} hands added, {skipped} already known\n")
-    stats()

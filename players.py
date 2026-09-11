@@ -41,6 +41,7 @@ import sys
 import re
 from pathlib import Path
 
+import sites
 from stats import wilson
 
 DB = Path(__file__).parent / "hands.db"
@@ -331,9 +332,10 @@ def build(db_path=DB):
         pct = lambda k, d: (100.0 * k / d) if d else None
         rows.append((
             r["site"], r["player"],
-            # ACR names a person. An Ignition ring seat names a chair, and
-            # the person in it changes without the name doing so.
-            int(r["site"] == "acr"), n,
+            # A site with names names a person. An Ignition ring seat names
+            # a chair, and the person in it changes without the name doing
+            # so. The registry says which a site is.
+            int(sites.of(r["site"]).names), n,
             pct(r["vpip"], n), pct(r["pfr"], n),
             pct(r["tb"], r["tb_n"]), pct(r["f3"], r["f3_n"]),
             pct(r["wwsf"], r["flops"]), pct(r["wtsd"], r["flops"]),

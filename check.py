@@ -25,7 +25,7 @@ HERE = Path(__file__).parent
 # In dependency order, so the first failure is the earliest cause rather
 # than the loudest symptom.
 CHECKS = [
-    ("acr", "the ACR import: money, positions, blinds, identity"),
+    ("sites", "each site's import: money, positions, blinds, and names where it has them"),
     ("spots", "the per-hand derivation: figures with a known shape"),
     ("decisions", "the per-decision derivation, against spots exactly"),
     ("lines", "the betting written out, against the columns it must match"),

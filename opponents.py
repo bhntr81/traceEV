@@ -25,6 +25,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import sites
 from stats import BY_KEY, POOL, STATS, fmt, rate, rates_by_player, wilson
 
 DB = Path(__file__).parent / "hands.db"
@@ -172,7 +173,7 @@ def show(con, player, site):
     return len(devs)
 
 
-def leaderboard(con, site="acr", limit=15):
+def leaderboard(con, site, limit=15):
     """
     Who is worth having a plan for.
 
@@ -241,7 +242,10 @@ def check(db_path=DB):
     """
     con = sqlite3.connect(db_path)
     fails = []
-    rows = leaderboard(con, "acr", limit=0)
+    # Only a site with names has opponents to profile; the registry says
+    # which those are, and each is held to the same test.
+    rows = [r for site in sites.named()
+            for r in leaderboard(con, site, limit=0)]
 
     # (a) re-derive every reported deviation the long way and confirm the
     #     intervals really are disjoint. The report is not trusted to have
@@ -250,7 +254,7 @@ def check(db_path=DB):
     for count, h, p, devs in rows:
         for s, n, pr, bp, way, _gap in devs:
             _, _, _, lo, hi = rate(con, s, "player=? AND standard=1", (p,))
-            _, _, _, blo, bhi = rate(con, s, f"{POOL} AND site='acr'")
+            _, _, _, blo, bhi = rate(con, s, f"{POOL} AND {sites.sql_in(sites.named())}")
             checked += 1
             if not (lo > bhi or hi < blo):
                 bad += 1
@@ -263,7 +267,7 @@ def check(db_path=DB):
     # (b) and (c)
     total = con.execute(
         "SELECT COUNT(*) FROM (SELECT player FROM decisions WHERE "
-        "site='acr' AND is_hero=0 AND player IS NOT NULL "
+        f"{sites.sql_in(sites.named())} AND is_hero=0 AND player IS NOT NULL "
         "GROUP BY player)").fetchone()[0]
     print(f"opponents seen          {total}")
     print(f"profiled ({MIN_HANDS}+ hands)  {len(rows)}")
@@ -297,4 +301,5 @@ if __name__ == "__main__":
             sys.exit(1)
         show(con, name, site[0])
     else:
-        leaderboard(con)
+        for site in sites.named():
+            leaderboard(con, site)

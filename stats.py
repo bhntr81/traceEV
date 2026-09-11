@@ -39,6 +39,8 @@ import tempfile
 from math import erfc, sqrt
 from pathlib import Path
 
+import sites
+
 DB = Path(__file__).parent / "hands.db"
 
 
@@ -902,11 +904,12 @@ def main(argv):
         safe = name.replace("'", "''")
         report(con, f"player='{safe}' AND standard=1", f"{name}")
         return 0
-    for site in ("ignition", "acr"):
+    for site in sites.KEYS:
         report(con, f"{POOL} AND site='{site}'", f"pool: {site}")
-    by_position(con, ["rfi", "threebet", "fold_to_cbet"],
-                f"{POOL} AND site='acr'",
-                "acr pool, by position")
+    for site in sites.KEYS:
+        by_position(con, ["rfi", "threebet", "fold_to_cbet"],
+                    f"{POOL} AND site='{site}'",
+                    f"{site} pool, by position")
     return 0
 
 

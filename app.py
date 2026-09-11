@@ -46,6 +46,7 @@ import sqlite3
 import diag
 import importer
 import players
+import sites
 import query
 import stats
 import update
@@ -458,9 +459,7 @@ class ImportMixin:
                 "Use Import a folder… and point it at wherever your site "
                 "writes them.")
             return
-        summary = "\n".join(
-            f"{p['ignition']:>5} ignition   {p['acr']:>5} acr   {p['path']}"
-            for p in found)
+        summary = "\n".join(importer.describe(p) for p in found)
         if not messagebox.askyesno(
                 "found these", summary + "\n\nImport all of them?"):
             return
@@ -523,9 +522,9 @@ class ImportMixin:
     def _do_load(paths, say):
         say("looking at the files…")
         survey = importer.survey(paths)
-        say(f"  {len(survey['ignition'])} ignition, {len(survey['acr'])} acr, "
-            f"{len(survey['unknown'])} not recognised")
-        if not survey["ignition"] and not survey["acr"]:
+        say("  " + ", ".join(f"{len(survey[key])} {key}" for key in sites.KEYS)
+            + f", {len(survey['unknown'])} not recognised")
+        if not importer.recognised(survey):
             return "nothing to import"
         got = importer.load(paths, DB, progress=say)
         say(f"{got['added']} hands added, {got['known']} already known")
@@ -1381,7 +1380,7 @@ class CohortDialog(tk.Toplevel):
             ttk.Label(row, text="blank or comparator value, e.g. >=500",
                       style="Dim.TLabel").pack(side="left", padx=10)
         for label, variable, values in (
-                ("Site", self.site, ("", "acr", "ignition")),
+                ("Site", self.site, ("",) + sites.KEYS),
                 ("Class", self.klass, ("", "reg", "fish", "unknown")),
                 ("Durable", self.durable, ("", "1", "0"))):
             row = ttk.Frame(body)

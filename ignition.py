@@ -1,5 +1,5 @@
 """
-Load Ignition hand histories into a database that can be counted.
+Read Ignition hand histories -- the Bodog network format.
 
 Ignition gives away something almost no site does: the hole cards of every
 player in every hand, including everyone who folded preflop. Not only the
@@ -13,16 +13,26 @@ persist within a table, so on RING tables a player can be followed across a
 session; on ZONE the client moves you after every hand, so every seat is a
 stranger and only aggregates mean anything there.
 
-    python ignition.py <folder>     load, or top up, the database
-    python ignition.py --stats      what is in there
+This is the parser and nothing else: the header a hand begins with, how a
+file splits into hands, and one hand as the dict shape every site's parser
+returns. Loading, the schema and the checks are `importer.py` and
+`sites.py`; what is true of this site is its registry entry there.
+
+    python importer.py <folder>     load, whatever sites are in it
+    python sites.py --check         prove the import
 """
 
 import re
-import sqlite3
-import sys
-from pathlib import Path
 
-DB = Path(__file__).parent / "hands.db"
+# Ignition names itself on the first line of every hand. The header is the
+# only thing a file is identified by -- never the folder it was found in.
+HEADER = lambda line: line.startswith("Ignition Hand #")
+
+# The format and the stakes are not in the hand text at all; they are in
+# the file's name -- "HH20260825-052504 - 800 - RING - $0.10-$0.25 - HOLDEM
+# - NL - TBL No..." -- which is why `parse_hand` needs `source` for more
+# than provenance.
+FILENAME_RE = re.compile(r" - (RING|ZONE|MTT) - (?:\$([\d.]+)-\$([\d.]+))?", re.I)
 
 # The three formats write their middle section differently -- a ring hand
 # says "TBL#37661151 HOLDEM No Limit", a Zone hand "Zone Poker ID#2138
@@ -56,9 +66,12 @@ RETURN_RE = re.compile(r"Return uncalled portion of bet\s*\$?([\d,.]+)")
 # Money a player is made to put up rather than chooses to: blinds, the post
 # a returning player owes, antes. Not decisions, so not actions -- but they
 # have to be counted, because profit is what came back minus everything
-# that went in.
+# that went in. "Posts dead chip" is the dead post, and it was missing from
+# this list until the money check first ran against Ignition: a verb not
+# listed here falls through the parser without a sound, and the pot had
+# money come out of it that never went in.
 POSTS = ("Small Blind", "Small blind", "Big Blind", "Big blind",
-         "Posts chip", "Ante chip")
+         "Posts chip", "Posts dead chip", "Ante chip")
 
 REVEALS = ("Card dealt", "Showdown", "Mucks", "Does not show")
 
@@ -233,9 +246,13 @@ def parse_hand(text, source=""):
                 and ("Dealer" in labels or len(seats) == 2))
 
     pm = POT_RE.search(text)
+    fm = FILENAME_RE.search(source)
     return {
         "hand": {"hand_id": hand_id, "played_at": played_at,
                  "table_id": table_id, "game": game.strip(),
+                 "fmt": fm.group(1).upper() if fm else "?",
+                 "sb": float(fm.group(2)) if fm and fm.group(2) else None,
+                 "bb": float(fm.group(3)) if fm and fm.group(3) else None,
                  "n_players": len(seats), "board": " ".join(board),
                  "pot": _money(pm.group(1)) if pm else None,
                  "hero_seat": hero_seat, "standard": int(standard),
@@ -250,166 +267,3 @@ def split_hands(text):
     starts = [m.start() for m in HAND_RE.finditer(text)]
     for i, a in enumerate(starts):
         yield text[a:starts[i + 1] if i + 1 < len(starts) else len(text)]
-
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS hands (
-  hand_id TEXT PRIMARY KEY, played_at TEXT, table_id TEXT, game TEXT,
-  fmt TEXT, sb REAL, bb REAL, n_players INT, board TEXT, pot REAL,
-  hero_seat INT, standard INT, source TEXT);
-CREATE TABLE IF NOT EXISTS seats (
-  hand_id TEXT, seat INT, label TEXT, position TEXT, stack REAL,
-  cards TEXT, is_hero INT, won REAL, posted REAL, invested REAL,
-  PRIMARY KEY (hand_id, seat));
-CREATE TABLE IF NOT EXISTS actions (
-  hand_id TEXT, street TEXT, n INT, position TEXT, seat INT,
-  action TEXT, amount REAL, total REAL);
-CREATE INDEX IF NOT EXISTS actions_hand ON actions(hand_id);
-CREATE INDEX IF NOT EXISTS actions_spot ON actions(street, position, action);
-CREATE INDEX IF NOT EXISTS hands_fmt ON hands(fmt, bb);
-"""
-
-# "HH20260825-052504 - 800 - RING - $0.10-$0.25 - HOLDEM - NL - TBL No..."
-FILENAME_RE = re.compile(r" - (RING|ZONE|MTT) - (?:\$([\d.]+)-\$([\d.]+))?", re.I)
-
-
-def build(folder, db_path=DB, files=None):
-    """
-    Load every hand not already stored.
-
-    Safe to re-run as the database grows: hands are keyed by Ignition's own
-    id, so re-exported files, or exports that overlap ones already loaded,
-    contribute only what is new. That matters because the intended use is to
-    keep pointing this at the same folder as more sessions are played.
-    """
-    con = sqlite3.connect(db_path)
-    con.executescript(SCHEMA)
-    # Both loaders write the same tables, so both must bring them up to date.
-    from acr import migrate
-    migrate(con)
-    known = {r[0] for r in con.execute("SELECT hand_id FROM hands")}
-
-    added = skipped = n_files = 0
-    # `files=` lets a caller hand over an explicit list, which is what the
-    # importer does when one folder holds two sites and each file has to go
-    # to the parser that wrote it. The counter beside it is deliberately not
-    # called `files`: it used to be, and being assigned first it overwrote
-    # the parameter with 0 before the loop could read it -- so the list was
-    # thrown away and the loop tried to iterate the number zero. Every
-    # import through `importer.load` went that way and raised.
-    for f in (files if files is not None else sorted(Path(folder).rglob("*.txt"))):
-        n_files += 1
-        fm = FILENAME_RE.search(f.name)
-        fmt = fm.group(1).upper() if fm else "?"
-        sb = float(fm.group(2)) if fm and fm.group(2) else None
-        bb = float(fm.group(3)) if fm and fm.group(3) else None
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for block in split_hands(text):
-            got = parse_hand(block, source=f.name)
-            if not got:
-                continue
-            h = got["hand"]
-            if h["hand_id"] in known:
-                skipped += 1
-                continue
-            known.add(h["hand_id"])
-            # Columns are named, not positional. They were positional until
-            # a second site arrived and added `site`, `rake`, `max_seats` and
-            # `jp_fee` to `hands` and `allin` to `actions` -- at which point
-            # this loader stopped being able to insert anything at all, and
-            # stayed that way silently because nobody loads a new session
-            # every day. Naming them means the next column added here costs
-            # nothing rather than breaking the other site's importer.
-            con.execute(
-                "INSERT INTO hands (hand_id, played_at, table_id, game, fmt,"
-                " sb, bb, n_players, board, pot, hero_seat, standard, source,"
-                " site) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (h["hand_id"], h["played_at"], h["table_id"], h["game"],
-                 fmt, sb, bb, h["n_players"], h["board"], h["pot"],
-                 h["hero_seat"], h["standard"], h["source"], "ignition"))
-            con.executemany(
-                "INSERT OR REPLACE INTO seats (hand_id, seat, label, position,"
-                " stack, cards, is_hero, won, posted, invested)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                [(h["hand_id"], s["seat"], s["label"], s["position"],
-                  s["stack"], s["cards"], int(s["is_hero"]), s["won"],
-                  s["posted"], s["invested"])
-                 for s in got["seats"]])
-            con.executemany(
-                "INSERT INTO actions (hand_id, street, n, position, seat,"
-                " action, amount, total) VALUES (?,?,?,?,?,?,?,?)",
-                [(h["hand_id"], a["street"], a["n"], a["position"], a["seat"],
-                  a["action"], a["amount"], a["total"])
-                 for a in got["actions"]])
-            added += 1
-        if n_files % 25 == 0:
-            con.commit()
-            print(f"  ...{n_files} files, {added} hands", flush=True)
-    con.commit()
-    con.close()
-    return n_files, added, skipped
-
-
-def stats(db_path=DB):
-    if not Path(db_path).exists():
-        print("no database yet -- load a folder first")
-        return
-    con = sqlite3.connect(db_path)
-    one = lambda s: con.execute(s).fetchone()[0]
-    print(f"hands             {one('SELECT COUNT(*) FROM hands'):>8}")
-    print(f"seats observed    {one('SELECT COUNT(*) FROM seats'):>8}")
-    print(f"with hole cards   {one('SELECT COUNT(*) FROM seats WHERE cards IS NOT NULL'):>8}")
-    print(f"actions           {one('SELECT COUNT(*) FROM actions'):>8}")
-
-    # Profit is what came back less everything that went in, including the
-    # blinds. "Hand result" on its own is the pot collected, which counts a
-    # player's own money as winnings.
-    net = con.execute(
-        "SELECT h.fmt, h.bb, COUNT(*), SUM(s.won - s.posted - s.invested) "
-        "FROM seats s JOIN hands h USING(hand_id) WHERE s.is_hero=1 "
-        "AND h.bb IS NOT NULL GROUP BY h.fmt, h.bb "
-        "ORDER BY h.fmt, h.bb").fetchall()
-    if net:
-        print("\nyour results:")
-        for fmt, bb, n, profit in net:
-            profit = profit or 0.0
-            print(f"  {fmt:5} ${bb:.2f}  {n:6d} hands  ${profit:+8.2f}"
-                  f"  {100 * profit / bb / max(1, n):+7.1f} bb/100")
-
-    print("\nby format and stake:")
-    for fmt, bb, n in con.execute(
-            "SELECT fmt, bb, COUNT(*) FROM hands GROUP BY fmt, bb "
-            "ORDER BY COUNT(*) DESC"):
-        print(f"  {fmt:5} {('$%.2f' % bb) if bb else '-':>7}  {n:6d}")
-
-    print("\npreflop, by position -- how often each seat does what:")
-    rows = con.execute(
-        "SELECT position, action, COUNT(*) FROM actions "
-        "WHERE street='preflop' GROUP BY position, action").fetchall()
-    by_pos = {}
-    for pos, act, n in rows:
-        by_pos.setdefault(pos, {})[act] = n
-    for pos in ("UTG", "HJ", "CO", "BTN", "SB", "BB"):
-        acts = by_pos.get(pos)
-        if not acts:
-            continue
-        total = sum(acts.values())
-        parts = "  ".join(f"{a}{100 * n // total:3d}%"
-                          for a, n in sorted(acts.items()))
-        print(f"  {pos:4} n={total:6d}   {parts}")
-    con.close()
-
-
-if __name__ == "__main__":
-    if "--stats" in sys.argv:
-        stats()
-        sys.exit(0)
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-    files, added, skipped = build(sys.argv[1])
-    print(f"\n{files} files, {added} hands added, {skipped} already known\n")
-    stats()

@@ -49,6 +49,7 @@ import tempfile
 
 import lines
 import players
+import sites
 import stats
 import strength
 from stats import (BY_KEY, STATS, detectable, difference, fmt, holm,
@@ -1027,8 +1028,9 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3):
     if not g["seen"]:
         print(f"  {g['total']:,} player-hands match and none of them showed "
               f"cards, so there is no range to draw.")
-        print("  (Ignition shows every hand; ACR shows 23%. --site ignition "
-              "is the filter that fixes this.)")
+        shows = ", ".join(sites.revealing())
+        print(f"  (Only {shows} shows every hand, folds included; "
+              f"--site {sites.revealing()[0]} is the filter that fixes this.)")
         return
 
     share = 100.0 * g["seen"] / g["total"]

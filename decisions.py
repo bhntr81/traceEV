@@ -27,6 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import sites
 from equity import completing
 from spots import combo_of, is_aggressive, with_pot
 
@@ -258,7 +259,7 @@ def build(db_path=DB):
         seats, acts = seats_by.get(hid, []), acts_by.get(hid, [])
         if not seats or not acts:
             continue
-        site = (h["site"] if "site" in h.keys() else None) or "ignition"
+        site = h["site"]
         by_seat = {s["seat"]: s for s in seats}
         actions = with_pot(seats, acts)
         texture = flop_texture(h["board"])

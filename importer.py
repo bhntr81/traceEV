@@ -8,8 +8,11 @@ CoinPoker, because a CoinPoker client happened to be installed on the
 machine. The site was inferred from the computer instead of from the file,
 and the file had said so in plain text from the first line.
 
-So nothing here asks. Every file is sniffed, and a file that cannot be
-identified is counted and skipped rather than guessed at.
+So nothing here asks. Every file is sniffed -- each site's parser says
+whether a line is one of its headers -- and a file that cannot be
+identified is counted and skipped rather than guessed at. Which sites exist
+is `sites.py`; this file loads whatever that registry knows, and a new site
+needs nothing changed here.
 
     python importer.py --scan               where hand histories are
     python importer.py --refresh            load anything new from those places
@@ -22,35 +25,61 @@ import os
 import sqlite3
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-import acr
-import ignition
+import sites
 
 DB = Path(__file__).parent / "hands.db"
 
-# How each site announces itself in the first line of a hand. These are the
-# actual headers, not a guess about them: Ignition names itself, and the
-# Winning Poker Network -- which is what ACR runs on -- writes a bare hand
-# number followed by the game.
-SIGNATURES = (
-    ("ignition", lambda t: t.startswith("Ignition Hand #")),
-    ("acr", lambda t: t.startswith("Hand #") and " - Holdem" in t[:80]),
-)
+# The three raw tables every site's parser fills, and every column any site
+# has needed. One schema for all of them: it was Ignition's, with the
+# columns ACR added by ALTER, and a parser that wrote its own INSERT stopped
+# being able to insert anything the day the other site added a column.
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS hands (
+  hand_id TEXT PRIMARY KEY, played_at TEXT, table_id TEXT, game TEXT,
+  fmt TEXT, sb REAL, bb REAL, n_players INT, board TEXT, pot REAL,
+  hero_seat INT, standard INT, source TEXT, site TEXT, rake REAL,
+  max_seats INT, jp_fee REAL);
+CREATE TABLE IF NOT EXISTS seats (
+  hand_id TEXT, seat INT, label TEXT, position TEXT, stack REAL,
+  cards TEXT, is_hero INT, won REAL, posted REAL, invested REAL,
+  PRIMARY KEY (hand_id, seat));
+CREATE TABLE IF NOT EXISTS actions (
+  hand_id TEXT, street TEXT, n INT, position TEXT, seat INT,
+  action TEXT, amount REAL, total REAL, allin INT);
+CREATE INDEX IF NOT EXISTS actions_hand ON actions(hand_id);
+CREATE INDEX IF NOT EXISTS actions_spot ON actions(street, position, action);
+CREATE INDEX IF NOT EXISTS hands_fmt ON hands(fmt, bb);
+"""
 
-# Where hand histories live when nobody has moved them. Checked in order and
-# reported with what is actually in them, because a folder that exists and
-# holds nothing is not a place to import from.
-KNOWN_PLACES = (
-    r"%USERPROFILE%\Ignition Casino Poker\Hand History",
-    r"%USERPROFILE%\Bovada Poker\Hand History",
-    r"%LOCALAPPDATA%\AmericasCardroom\handHistory",
-    r"%LOCALAPPDATA%\BlackChipPoker\handHistory",
-    r"%USERPROFILE%\Documents\AmericasCardroom",
-    r"%USERPROFILE%\Downloads",
-    r"%USERPROFILE%\Desktop",
-)
+HAND_COLUMNS = ("hand_id", "played_at", "table_id", "game", "fmt", "sb", "bb",
+                "n_players", "board", "pot", "hero_seat", "standard", "source",
+                "site", "rake", "max_seats", "jp_fee")
+
+
+def migrate(con):
+    """
+    Bring a database written before a column existed up to the schema.
+
+    `merge` takes hands from another database of the same shape, and that
+    shape is whatever version of this program the other machine ran. Hand
+    ids are never rewritten: Ignition's are bare, ACR's carry "cp-", and
+    that is enough to keep the sites from colliding.
+    """
+    con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
+    for col, kind in (("site", "TEXT"), ("rake", "REAL"),
+                      ("max_seats", "INT"), ("jp_fee", "REAL")):
+        if col not in cols:
+            con.execute(f"ALTER TABLE hands ADD COLUMN {col} {kind}")
+    if "site" not in cols:
+        # Before a second site existed, every hand was Ignition's.
+        con.execute("UPDATE hands SET site='ignition' WHERE site IS NULL")
+    acols = {r[1] for r in con.execute("PRAGMA table_info(actions)")}
+    if "allin" not in acols:
+        con.execute("ALTER TABLE actions ADD COLUMN allin INT")
+    con.commit()
 
 
 def sniff(path):
@@ -66,9 +95,9 @@ def sniff(path):
                 line = line.lstrip("﻿").strip()
                 if not line:
                     continue
-                for site, matches in SIGNATURES:
-                    if matches(line):
-                        return site
+                for site in sites.SITES:
+                    if site.module.HEADER(line):
+                        return site.key
                 return None
     except OSError:
         return None
@@ -91,26 +120,48 @@ def files_under(paths):
 
 def survey(paths):
     """What is in these places, by site, without loading anything."""
-    counts = {"ignition": [], "acr": [], "unknown": []}
+    counts = {key: [] for key in sites.KEYS}
+    counts["unknown"] = []
     for f in files_under(paths):
         counts[sniff(f) or "unknown"].append(f)
     return counts
 
 
+def recognised(survey):
+    """The files a survey found a parser for, every site together."""
+    return [f for key in sites.KEYS for f in survey[key]]
+
+
+def describe(place):
+    """One line for a place `scan` found: counts per site, then the path."""
+    counts = "   ".join(f"{place['sites'][key]:>5} {key}" for key in sites.KEYS)
+    return f"{counts}   {place['path']}"
+
+
 def scan():
     """The places on this machine that actually hold hand histories."""
     found = []
-    for raw in KNOWN_PLACES:
+    for raw in places():
         place = Path(os.path.expandvars(raw))
         if not place.exists():
             continue
         got = survey([place])
-        n = len(got["ignition"]) + len(got["acr"])
-        if n:
-            found.append({"path": place, "ignition": len(got["ignition"]),
-                          "acr": len(got["acr"]),
+        if recognised(got):
+            found.append({"path": place,
+                          "sites": {key: len(got[key]) for key in sites.KEYS},
                           "unknown": len(got["unknown"])})
     return found
+
+
+# Where hand histories live when nobody has moved them: each site's own
+# folders from the registry, then the places a person drops an export.
+# Checked in order and reported with what is actually in them, because a
+# folder that exists and holds nothing is not a place to import from.
+DROPPED = (r"%USERPROFILE%\Downloads", r"%USERPROFILE%\Desktop")
+
+
+def places():
+    return tuple(p for s in sites.SITES for p in s.places) + DROPPED
 
 
 # How far the loader has read, kept in the database beside the hands it
@@ -166,7 +217,7 @@ def anything_new(db_path=DB):
     fresh = 0
     for place in scan():
         got = survey([place["path"]])
-        for f in got["ignition"] + got["acr"]:
+        for f in recognised(got):
             if mark is None or f.stat().st_mtime > mark:
                 fresh += 1
     return fresh
@@ -201,7 +252,15 @@ def load(paths, db_path=DB, progress=None):
 
     Files are grouped by site first so that a folder holding both -- which is
     what a Downloads folder is -- loads correctly rather than by whichever
-    parser was asked for.
+    parser was asked for. Safe to re-run: hands are keyed by the site's own
+    id, so re-exported files, or exports overlapping ones already loaded,
+    contribute only what is new. That is the intended way to use it as you
+    keep playing.
+
+    This is the only place rows are written. Each parser used to carry its
+    own copy of this loop with its own INSERT, and the two had drifted: one
+    wrote fewer columns than the other, and both had the same bug in the
+    same line. A parser returns the dict; the writing is here.
     """
     got = survey(paths)
     result = {"added": 0, "known": 0, "files": 0, "unknown": len(got["unknown"]),
@@ -210,20 +269,62 @@ def load(paths, db_path=DB, progress=None):
     # loader marks how far it has read -- Import a folder and Find hands on
     # this computer read the same files and would otherwise leave the
     # window still offering to fetch them.
-    read = [f for f in got["ignition"] + got["acr"]]
+    read = recognised(got)
     if read:
         high_water(db_path, max(f.stat().st_mtime for f in read))
-    for site, module in (("ignition", ignition), ("acr", acr)):
-        files = got[site]
+
+    con = sqlite3.connect(db_path)
+    migrate(con)
+    known = {r[0] for r in con.execute("SELECT hand_id FROM hands")}
+    for site in sites.SITES:
+        files = got[site.key]
         if not files:
             continue
         if progress:
-            progress(f"{site}: {len(files)} files")
-        n_files, added, skipped = module.build(None, db_path, files=files)
-        result["by_site"][site] = added
+            progress(f"{site.key}: {len(files)} files")
+        added = skipped = n_files = 0
+        for f in files:
+            n_files += 1
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for block in site.module.split_hands(text):
+                parsed = site.module.parse_hand(block, source=f.name)
+                if not parsed:
+                    continue
+                h = dict(parsed["hand"], site=site.key)
+                if h["hand_id"] in known:
+                    skipped += 1
+                    continue
+                known.add(h["hand_id"])
+                con.execute(
+                    f"INSERT INTO hands ({', '.join(HAND_COLUMNS)}) "
+                    f"VALUES ({', '.join('?' * len(HAND_COLUMNS))})",
+                    [h.get(c) for c in HAND_COLUMNS])
+                con.executemany(
+                    "INSERT OR REPLACE INTO seats (hand_id, seat, label, "
+                    "position, stack, cards, is_hero, won, posted, invested) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [(h["hand_id"], st["seat"], st["label"], st["position"],
+                      st["stack"], st["cards"], int(st["is_hero"]), st["won"],
+                      st["posted"], st["invested"]) for st in parsed["seats"]])
+                con.executemany(
+                    "INSERT INTO actions (hand_id, street, n, position, seat, "
+                    "action, amount, total, allin) VALUES (?,?,?,?,?,?,?,?,?)",
+                    [(h["hand_id"], a["street"], a["n"], a["position"],
+                      a["seat"], a["action"], a["amount"], a["total"],
+                      a.get("allin")) for a in parsed["actions"]])
+                added += 1
+            if n_files % 25 == 0:
+                con.commit()
+                print(f"  ...{n_files} files, {added} hands", flush=True)
+        con.commit()
+        result["by_site"][site.key] = added
         result["added"] += added
         result["known"] += skipped
         result["files"] += n_files
+    con.close()
     return result
 
 
@@ -241,7 +342,7 @@ def merge(other, db_path=DB, progress=None):
     if not other.exists():
         raise SystemExit(f"no database at {other}")
     con = sqlite3.connect(db_path)
-    acr.migrate(con)
+    migrate(con)
     con.execute("ATTACH DATABASE ? AS src", (str(other),))
     have = {r[0] for r in con.execute("SELECT hand_id FROM hands")}
     incoming = [r[0] for r in con.execute("SELECT hand_id FROM src.hands")]
@@ -340,9 +441,8 @@ def check(db_path=DB):
     con.close()
 
     # Find each recorded source file wherever it now lives, and re-sniff it.
-    places = [Path(os.path.expandvars(p)) for p in KNOWN_PLACES]
     index = {}
-    for place in places:
+    for place in (Path(os.path.expandvars(p)) for p in places()):
         if place.exists():
             for f in place.rglob("*.txt"):
                 index.setdefault(f.name, f)
@@ -421,7 +521,7 @@ def check(db_path=DB):
     # So this loads a real file into a database of its own and counts what
     # arrived, which is the only version of this check that would have
     # noticed.
-    for site in ("ignition", "acr"):
+    for site in sites.KEYS:
         sample = next((f for place in scan()
                        for f in survey([place["path"]])[site]), None)
         if sample is None:
@@ -456,7 +556,7 @@ def check(db_path=DB):
     places_found = scan()
     print(f"places holding hands          {len(places_found)}")
     for p in places_found:
-        print(f"    {p['ignition']:>5} ignition  {p['acr']:>5} acr   {p['path']}")
+        print("    " + describe(p))
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
@@ -472,7 +572,7 @@ def main(argv):
             print("no hand histories found in the usual places")
             return 0
         for p in found:
-            print(f"{p['ignition']:>6} ignition {p['acr']:>6} acr   {p['path']}")
+            print(describe(p))
         return 0
     if "--refresh" in argv:
         got = refresh(progress=print)

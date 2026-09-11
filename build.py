@@ -31,6 +31,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import sites
+
+# The parser modules, from the registry rather than a second list here --
+# a parser added there and forgotten here is a window that fails on the
+# first import.
+PARSERS = [s.module.__name__ for s in sites.SITES]
+
 HERE = Path(__file__).parent
 DIST = HERE / "dist"
 
@@ -49,8 +56,8 @@ TARGETS = {
 # because a missed one produces a program that starts and then fails on the
 # first click, which is a much worse way to find out.
 MODULES = ["query", "stats", "equity", "decisions", "spots", "lines",
-           "strength", "players", "importer", "acr", "ignition", "diag",
-           "update"]
+           "strength", "players", "importer", "sites", "diag",
+           "update"] + PARSERS
 
 
 def target():
@@ -165,8 +172,8 @@ def check():
 # The modules the program actually runs. This script is not among them --
 # PyInstaller is a build tool and never a dependency of what it builds.
 RUNTIME = ("app", "query", "stats", "spots", "decisions", "lines", "strength",
-           "players", "equity", "importer", "acr", "ignition", "diag",
-           "update", "opponents", "gui")
+           "players", "equity", "importer", "sites", "diag",
+           "update", "opponents", "gui") + tuple(PARSERS)
 
 
 def _third_party():
