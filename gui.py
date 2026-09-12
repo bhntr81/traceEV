@@ -288,7 +288,7 @@ def payload(con, params):
         panes = list(query.DEFAULT_STUDY_PANES) + [
             p for p in extra if p in query.PLUS_STUDY_PANES]
         out = query.study_of(con, where, argv, panes=panes, pin=(
-            params.get("pin", [""])[0] or "").strip())
+            params.get("pin", [""])[0] or "").strip(), crumbs=crumbs)
         compact.attach(con, out.get("hands") or [], fmt="html")
         out["label"] = label
         out["why"] = None if (out.get("hands") or out.get("panes")) else nothing()
@@ -1278,7 +1278,7 @@ function renderStudy(d){
     + '<p class="smart">'+(smart.join('  ·  ')||'Smart')
     + (fams ? '  combos '+fams : '')+'</p>'
     + '<p class="n">+ pane <select id="plus">'+plus+'</select>'
-    + '  click a row to drill · ⚙ Detach · right-click a hand</p>'
+    + '  click a row to drill · ⚙ Detach / Dock back · right-click a hand</p>'
     + panes
     + renderHist(d.hist, {click: 'study'})
     + '<p class="n"><button type="button" id="detach-graph">⚙ Detach graph</button></p>'
@@ -1301,7 +1301,8 @@ function renderStudy(d){
       only = '<div class="panes">'+renderPane(DETACH_PANE, pane)+'</div>'
         + renderStudyHands(d.hands||[]);
     }
-    h = '<p class="n">live with the main filter · pin stays in-main</p>' + only;
+    h = '<p class="n">live with the main filter · pin stays in-main'
+      + ' · <button type="button" id="dock-back">Dock back</button></p>' + only;
   }
   $('#out').innerHTML = h;
   $('#out').querySelectorAll('.crumbs a').forEach(a => {
@@ -1346,6 +1347,8 @@ function renderStudy(d){
   });
   const dg = $('#detach-graph');
   if (dg) dg.onclick = () => detachPane('graph');
+  const db = $('#dock-back');
+  if (db) db.onclick = () => dockBack();
   $('#out').querySelectorAll('.pane th[data-sort]').forEach(th => {
     th.onclick = () => {
       const pane = th.closest('.pane');
@@ -1491,7 +1494,9 @@ function gearPane(name, d){
     ? ['label','hands','net','bb/100']
     : (name==='graph' || name==='hands') ? []
     : ['label','n','freq','act bb'];
-  const items = [['Detach', () => detachPane(name)]].concat(
+  const items = (DETACH_PANE
+    ? [['Dock back', () => dockBack()]]
+    : [['Detach', () => detachPane(name)]]).concat(
     cols.map(c => [(hidden.has(c)?'☐ ':'☑ ')+c, () => {
       if (hidden.has(c)) hidden.delete(c); else hidden.add(c);
       state.paneHidden[name] = [...hidden];
@@ -1521,6 +1526,36 @@ function detachPane(name){
     w.__pane = name;
     state.detached.push(w);
   }
+}
+function dockBack(){
+  if (!DETACH_PANE) return;
+  const study = window.__lastStudy || {};
+  const payload = study.dock || {
+    context: (study.detach && study.detach.context) || [],
+    crumbs: state.crumbs || []
+  };
+  if (window.opener && !window.opener.closed){
+    window.opener.postMessage({kind:'dock', payload: payload}, '*');
+    window.close();
+  }
+}
+function dockReport(payload){
+  // Same context id Detach already uses. If the study tab
+  // already shows that nest, just focus it -- a second Reports
+  // tab of the same crumbs is a duplicate.
+  payload = payload || {};
+  state.view = 'study';
+  document.querySelectorAll('#tabs button').forEach(x =>
+    x.classList.toggle('on', x.dataset.v === 'study'));
+  $('#byrow').style.display = 'none';
+  const incoming = payload.crumbs || [];
+  const currentCtx = ((window.__lastStudy||{}).detach||{}).context || [];
+  const incomingCtx = payload.context || [];
+  const same = JSON.stringify(currentCtx) === JSON.stringify(incomingCtx);
+  if (!same && incoming.length)
+    state.crumbs = incoming.slice();
+  try { window.focus(); } catch (e) {}
+  load();
 }
 function renderStudyHands(rows){
   if (!rows.length) return '<p class="empty">no hands in this filter</p>';
@@ -2036,6 +2071,7 @@ window.addEventListener('message', ev => {
   const msg = ev.data || {};
   if (msg.kind === 'drill') applyStep(msg.step);
   if (msg.kind === 'pin') pinStep(msg.step);
+  if (msg.kind === 'dock') dockReport(msg.payload);
 });
 if (DETACH_CH){
   DETACH_CH.onmessage = ev => {
@@ -2362,6 +2398,14 @@ def check(db_path=DB):
     this, _other = query.pin_sides(ctx, '["--action","call"]')
     if query._canonical(this) != query._canonical(ctx):
         fails.append("page pin THIS side is not the detach context")
+    crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
+    dock = query.dock_payload(ctx, crumbs)
+    if query._canonical(dock["context"]) != query._canonical(ctx):
+        fails.append("page dock context drifted from detach")
+    if not dock["crumbs"] or dock["crumbs"][0].get("value") != "80-120":
+        fails.append("page dock payload dropped the breadcrumb")
+    if not query.same_report(dock["context"], nest):
+        fails.append("page dock same_report missed the nest")
     print(f"detach title / pin context   "
           f"{'yes' if 'hero' in title and '80-120' in title else 'NO'}")
 
@@ -2408,6 +2452,20 @@ def check(db_path=DB):
         if query._canonical(meta.get("context") or []) != \
                 query._canonical(["--hero", "--stack", "80-120"]):
             fails.append("study detach context drifted from the form")
+        dock = got.get("dock") or {}
+        if query._canonical(dock.get("context") or []) != \
+                query._canonical(meta.get("context") or []):
+            fails.append("study dock context drifted from detach")
+        crumb = json.dumps([{"flag": "--stack", "value": "80-120",
+                             "label": "80-120"}])
+        nested = payload(con, {"view": ["study"], "hero": ["1"],
+                               "crumbs": [crumb]})
+        nest_dock = nested.get("dock") or {}
+        if not (nest_dock.get("crumbs") or []):
+            fails.append("study dock payload dropped the crumbs")
+        if query._canonical(nest_dock.get("context") or []) != \
+                query._canonical(["--hero", "--stack", "80-120"]):
+            fails.append("study dock crumbs did not fold the nest")
     except Exception as e:
         fails.append(f"study detach payload: {type(e).__name__}: {e}")
 

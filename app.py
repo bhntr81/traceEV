@@ -1736,7 +1736,7 @@ class App(ImportMixin, ttk.Frame):
             state="readonly", width=14)
         self.plus_box.pack(side="left", padx=(6, 0))
         self.plus_box.bind("<<ComboboxSelected>>", lambda _e: self._add_pane())
-        ttk.Label(tools, text="click a row to drill  ·  ⚙ Detach  ·  right-click a hand",
+        ttk.Label(tools, text="click a row to drill  ·  ⚙ Detach / Dock back  ·  right-click a hand",
                   style="Dim.TLabel").pack(side="left", padx=12)
 
         grid = ttk.Frame(parent)
@@ -2102,7 +2102,7 @@ class App(ImportMixin, ttk.Frame):
                 panes = list(query.DEFAULT_STUDY_PANES) + list(
                     getattr(self, "extra_panes", []) or [])
                 out.update(query.study_of(con, where, argv, panes=panes,
-                                          pin=pin))
+                                          pin=pin, crumbs=self.crumbs))
             elif view == "results":
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
@@ -2614,7 +2614,8 @@ class App(ImportMixin, ttk.Frame):
         Live: the window redraws from the latest study payload, so
         a drill in main (or in the copy) reshapes it. Pin stays on
         the main bar -- a detached pane is a viewport, not a second
-        report. Dock-back is deferred.
+        report. Dock-back returns this nest to the Reports tab
+        under the same context id.
         """
         if name not in query.DETACHABLE:
             return None
@@ -2646,6 +2647,50 @@ class App(ImportMixin, ttk.Frame):
 
     def _forget_detached(self, win):
         self._detached = [w for w in self._detached if w is not win]
+
+    def dock_report(self, context, crumbs=None):
+        """
+        Return a detached report to the main Reports tab.
+
+        `context` is `report_context` -- the same argv Pin and
+        Detach already use. If the study tab already shows that
+        id, just focus it: a second Reports tab of the same nest
+        is a duplicate. Otherwise hydrate the filter and the
+        breadcrumb from what the window held. Pin stays on the
+        bar.
+        """
+        payload = query.dock_payload(context, crumbs)
+        context = payload["context"]
+        crumbs = payload["crumbs"]
+        if "study" in self.tabs:
+            try:
+                self.nb.select(self.tabs["study"])
+            except tk.TclError:
+                pass
+        current = query.report_context(self.argv())
+        same = query.same_report(current, context)
+        if not same:
+            self.clear_situation()
+            parent = query.parent_context(context, crumbs)
+            self._apply_argv(parent, who=True)
+            self.crumbs = [dict(c) for c in crumbs]
+        try:
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+        if same:
+            self._paint_crumbs()
+            return True
+        # Different nest: restore the path. A payload already on
+        # the window is the live detach case after a clear -- keep
+        # it so `--check` does not race a worker. A real change
+        # with no payload asks the database.
+        if self._study_out is not None:
+            self._render_study(self._study_out)
+        else:
+            self.refresh()
+        return True
 
     def _drill_pane(self, name, event):
         tv = event.widget if event is not None else self.study_trees.get(name)
@@ -3596,8 +3641,9 @@ class DetachedPane(tk.Toplevel):
     Live: `sync` redraws from the latest study payload, so a
     drill in the main window (or a row click here) reshapes
     this copy. The report identity is `App.argv` -- the same
-    list Pin uses. Pin itself stays on the main bar. Closing
-    does not touch the in-main pane. Dock-back is deferred.
+    list Pin uses. Pin itself stays on the main bar. Dock-back
+    returns that id to the Reports tab; closing without it
+    does not touch the in-main pane.
     """
 
     def __init__(self, app, name):
@@ -3613,10 +3659,19 @@ class DetachedPane(tk.Toplevel):
         self.minsize(420, 280)
         self.geometry("720x520")
         dark_titlebar(self)
-        why = (f"live with the main filter  ·  pin stays in-main  ·  "
-               f"close does not dock")
-        ttk.Label(self, text=why, style="Dim.TLabel").pack(
-            anchor="w", padx=8, pady=(6, 0))
+        menubar = tk.Menu(self, tearoff=0)
+        pane_menu = tk.Menu(menubar, tearoff=0, background=PANEL,
+                            foreground=INK, activebackground=EDGE)
+        pane_menu.add_command(label="Dock back", command=self._dock_back)
+        menubar.add_cascade(label="Pane", menu=pane_menu)
+        self.config(menu=menubar)
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Label(bar, text="live with the main filter  ·  pin stays in-main",
+                  style="Dim.TLabel").pack(side="left")
+        self.dock_btn = ttk.Button(bar, text="Dock back",
+                                   command=self._dock_back)
+        self.dock_btn.pack(side="right")
         if name == "graph":
             self.graph = WinGraph(self, unit_var=app.graph_unit)
             self.graph.pack(fill="both", expand=True, padx=8, pady=8)
@@ -3673,6 +3728,12 @@ class DetachedPane(tk.Toplevel):
             self.app._fill_pane(self.pane, self.tree, pane, out)
         if self.hands is not None:
             self.app._render_hands(self.hands, {"rows": out.get("hands") or []})
+
+    def _dock_back(self):
+        """Return this nest to the main Reports tab and close."""
+        payload = query.dock_payload(self.app.argv(), self.app.crumbs)
+        self.app.dock_report(payload["context"], payload["crumbs"])
+        self._close()
 
     def _close(self):
         self.app._forget_detached(self)
@@ -5483,6 +5544,76 @@ def check(db_path=DB):
             pass
     print(f"detach + pin coexist          "
           f"{'yes' if not [f for f in fails if 'detach' in f.lower() or 'Detach' in f or 'pin THIS' in f or 'Pin did' in f] else 'NO'}")
+
+    # Dock-back: nest → Detach → Dock → same breadcrumb and hands,
+    # Reports tab focused, pin still on the bar. A second dock of
+    # the same id focuses rather than duplicating.
+    app.clear_situation()
+    app.pin.set("")
+    app._pin_alias.clear()
+    nest_crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
+    app.crumbs = [dict(c) for c in nest_crumbs]
+    nest_hands = [{"id": "h1", "seat": 1, "when": "2026-09-01",
+                   "site": "acr", "pos": "BTN", "combo": "AKs",
+                   "net": 2.0, "act": 1.0, "compact": "BTN _R3_"}]
+    app._study_out = {
+        "panes": {"stack": {"id": "stack", "rows": [
+            {"key": "80-120", "label": "80-120", "n": 10, "pct": 20.0,
+             "flag": "--stack", "value": "80-120"}]}},
+        "hands": nest_hands, "graph": None, "hist": None,
+    }
+    app._render_study(app._study_out)
+    nest_argv = list(app.argv())
+    payload = query.dock_payload(nest_argv, app.crumbs)
+    if not query.same_report(payload["context"], nest_argv):
+        fails.append("dock payload is not the detached nest")
+    win = app._detach_pane("stack")
+    if win is None:
+        fails.append("Detach before Dock-back did not open Stack")
+    else:
+        win.withdraw()
+        if getattr(win, "dock_btn", None) is None:
+            fails.append("detached window has no Dock back button")
+        # Stay on study: switching tabs fires refresh and a worker
+        # would race the mocked hands. Focus is checked on the
+        # duplicate dock below.
+        win._dock_back()
+        if app.nb.tab(app.nb.select(), "text") != "study":
+            fails.append("Dock-back did not select the Reports tab")
+        if not app.crumbs or app.crumbs[0].get("value") != "80-120":
+            fails.append(f"Dock-back lost the breadcrumb: {app.crumbs}")
+        got_hands = (app._study_out or {}).get("hands") or []
+        if not got_hands or got_hands[0].get("id") != "h1":
+            fails.append("Dock-back lost the compact hands")
+        if app._alive_detached():
+            fails.append("Dock-back left the window open")
+        if not query.same_report(app.argv(), nest_argv):
+            fails.append("Dock-back drifted the report id")
+        # Pin + Detach + Dock: pin survives the round trip.
+        app._pin_step({"flag": "--action", "value": "call", "label": "Call"})
+        if not app.pin.get():
+            fails.append("Pin did not survive Dock-back")
+        # Duplicate: already on this nest, dock focuses, no second tab.
+        before = [dict(c) for c in app.crumbs]
+        app.nb.select(app.tabs["sessions"])
+        app.dock_report(payload["context"], payload["crumbs"])
+        if app.nb.tab(app.nb.select(), "text") != "study":
+            fails.append("duplicate Dock-back did not focus Reports")
+        if [c.get("value") for c in app.crumbs] != [c.get("value") for c in before]:
+            fails.append("duplicate Dock-back rewrote the breadcrumb")
+        # Hydrate after a clear: crumbs come back from the payload.
+        app.clear_situation()
+        if app.crumbs:
+            fails.append("clear_situation left crumbs on")
+        app.dock_report(payload["context"], payload["crumbs"])
+        if not app.crumbs or app.crumbs[0].get("value") != "80-120":
+            fails.append(f"hydrate Dock-back lost the nest: {app.crumbs}")
+        if not query.same_report(app.argv(), nest_argv):
+            fails.append("hydrate Dock-back drifted the report id")
+        if app.nb.tab(app.nb.select(), "text") != "study":
+            fails.append("hydrate Dock-back did not select Reports")
+    print(f"dock-back nest / breadcrumb   "
+          f"{'yes' if not [f for f in fails if 'Dock-back' in f or 'dock' in f.lower() or 'hydrate' in f] else 'NO'}")
 
     app.clear_situation()
     app._apply_argv(["--first-in", "--first-raise", "--last-action",

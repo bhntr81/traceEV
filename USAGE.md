@@ -213,7 +213,10 @@ is the path; three deep, then the last crumb is replaced. Gear →
 **Detach** opens that pane in its own window (resize / zoom the
 graph). The copy stays live with the main filter -- a further
 drill reshapes it -- and Pin stays on the main bar. Cap is four;
-closing one does not break the cockpit. Dock-back is deferred.
+closing one does not break the cockpit. **Dock back** on the
+detached window returns that nest to the main Reports tab with
+the same breadcrumb and hands; if the tab already shows it, the
+tab is focused rather than duplicated.
 
 The demo that has to work without typing flags:
 
@@ -237,7 +240,8 @@ and its Weak % (Air / Draws / Weak pair by default). Click a bar
 to AND `--hist-group` onto the filter; right-click flips whether
 that group counts as weak. Other is always last, for leftovers.
 
-Not in this cockpit: a board editor, dock-back. Sessions is the
+Not in this cockpit: a board editor. The rest of what this
+track will not grow is in `GAPS.md`. Sessions is the
 neighbouring tab. Statistics is the one after study. Save/Open
 of a Statistics context is on that tab, not here.
 
@@ -308,7 +312,7 @@ same person.
 `--fmt cash` is everything that is not a tournament (`fmt <>
 'MTT'`). `fmt='RING'` is not a pool; ACR ring is in cash too.
 
-Not this: a WYSIWYG profile editor, a board editor, dock-back.
+Not this: a WYSIWYG profile editor, a board editor. See `GAPS.md`.
 
 ### Sessions
 
@@ -1002,8 +1006,8 @@ session's detail. Click a line name to hide it; hover names the
 hand. All-in EV is only priced for the clean two-way case with
 cards to come -- nothing is invented. MTT is out.
 
-Not this: rakeback overlay, Chip EV. Detach lives on the
-Reports gear, not on this CLI flag.
+Not this: rakeback overlay, Chip EV. Detach and Dock-back live
+on the Reports gear, not on this CLI flag. See `GAPS.md`.
 
 **`--hands`** lists the hands themselves, newest first, with the board and
 what each one made. Under each row is a **compact hand** -- the same

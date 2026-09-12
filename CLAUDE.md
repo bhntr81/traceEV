@@ -299,4 +299,5 @@ Match the surrounding code — it is consistent, and it is the spec.
 | `CONTRIBUTING.md` | the rules, and the failure behind each |
 | `CHANGELOG.md` | what changed, and why |
 | `ROADMAP.md` | goals and the run log |
+| `GAPS.md` | tracking-half outs, frozen on purpose |
 | `the-augster.xml` | the operating framework |

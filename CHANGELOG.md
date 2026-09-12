@@ -8,6 +8,35 @@ Newest first.
 
 ---
 
+## Dock-back + tracking-half freeze
+
+Detached window → **Dock back** → the main Reports tab, same
+context and breadcrumb. No HUD. No solver. The remaining
+tracking-half gaps are frozen on purpose; they are listed in
+`GAPS.md`.
+
+The report id is the same argv Detach and Pin already share --
+who + situation + crumbs -- so a docked nest cannot silently
+become a different filter. If the study tab already shows that
+id, Dock-back focuses it rather than opening a duplicate.
+Pin + Detach + Dock coexist: pin stays on the main bar.
+
+Gear on a detached pane (and **Dock back** on the window) hands
+`dock_payload` to `App.dock_report` / the page's `dockReport`.
+Close without docking still does not touch the in-main pane.
+
+`--check` covers the payload, hydrate = parent + crumbs, and
+Detach → Dock → same breadcrumb and hands. No invented EV.
+
+### Not this, on purpose
+
+See `GAPS.md`. Rakeback overlay, WYSIWYG profile editor, full
+256 board/bet editors, Dispersion/EV diff, more Expression
+atoms, HUD/solver, view-as-opponent, anon IDs/import skip
+flags. PLO / multi-game is a separate track.
+
+---
+
 ## Statistics Profile Menu + Save/Open Report
 
 The tracking-half Profile Menu and the costly-context Save/Open.
