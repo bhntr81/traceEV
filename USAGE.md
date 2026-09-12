@@ -236,17 +236,31 @@ on a filter:
     THIS action)
 
   `--hands` prints `act bb` and `call bb` beside `net bb` so the
-  three cannot be mixed up. A dash is unpriced. Open cases for
-  Action Profit, left unpriced on purpose:
+  three cannot be mixed up. A dash is unpriced.
 
-  - a call that is played on (later pot is not assigned back --
-    that number, when they called, is Call Profit Rate)
-  - multiway unless every other seat folds
-  - later streets after a call
-  - rake: not subtracted from +pot; if rake ate the pot (`won=0`)
-    the line is unpriced
+  A **called bet** is priced as `(won − chips this seat put in from
+  THIS action on) / bb` -- the same accounting as Call Profit Rate,
+  from the aggressor's side. Later streets are assigned back
+  because that is what happened after they bet and got called, not
+  because we invented the other action's EV. On a heads-up called
+  pot with no later chips the two numbers sum to `pot_before` (the
+  dead money), not to zero.
+
+  - bet 5, called, lose → **−5**
+  - bet 5, called, win 20, no more chips → **+15**
+  - bet 5, called, then bet 10, win 40 → **+25**
+
+  Still unpriced on purpose:
+
+  - a raise-back with no call, unless they folded to it (that is
+    −this bet). Inventing the 3-bet pot is EV
+  - multiway raise-back with no call
+  - rake: not subtracted from +pot; if rake ate an uncontested
+    pot (`won=0`) that line is unpriced. A called pot already
+    has rake out of `won`
   - MTT (chips are not dollars)
-  - uncalled extra chips come back; v1 credits `+pot_before` only
+  - uncalled extra chips come back; uncontested credits
+    `+pot_before` only
 - **Call profit rate** in bb/hand, the sibling used to compare
   alternatives when both call and raise were legal. It is
   **accounting of actual calls**, not the EV of calling when they
@@ -313,7 +327,8 @@ python query.py --hit cbet_flop --stats
   and folds have no size and are not a row, so the freqs will not
   sum to 100% on a situation that includes them. `--bet-sizes` and
   `--by size` print the pane; `--size m` opens a row. Action Profit
-  is still v1 -- later pot on a called bet stays unpriced.
+  on a called bet is `(won − chips from here)`; a raise-back with
+  no call stays unpriced unless they folded.
 
 A Quick Filter also **swaps the report columns** to the pack for that
 spot. `--quick raise_cbet` leads with raise c-bet, not VPIP, and the
@@ -352,8 +367,13 @@ two-column summary: hits/opps, the primary frequency, hits per 1k,
 Action Profit v1 when priced, and Call Profit Rate when a call with
 raise available is in the filter. The frequency gap is an interval
 on the difference. Changing the filter leaves the pin where it is --
-that is the point. In the window and on the page the pin box does
-the same thing above the rest of this report.
+that is the point. In the window the box is labelled **Pin compare**,
+next to the report; on the page it sits in Smart reports. The
+**Sizes** tab (window and page) is the Bet Sizes pane without
+opening `--by size` by hand. Faced Next is on Stats, above the
+stat list -- click a row to apply it. The filter dialog's **Study**
+tab holds Faced Next, Next Actions, Outcome and Bet Size so they
+are not buried under Actions.
 
 With `--by position` (or any other split) the pin also draws **two
 `--by` grids**, keys aligned. `--by size` / `--bet-sizes` draws two

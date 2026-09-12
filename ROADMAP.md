@@ -944,5 +944,17 @@ corpus.
 
 **Result:** `size_expr` matching `lines.bucket`; `--bet-sizes` /
 `--by size`; richer `--pin` (`--by`, Bet Sizes, or two packs).
-Remaining: Dispersion / EV diff, Action Profit later-pot-on-called-bet,
-live `check.py` on a real `hands.db`. Window `--check` needs Tk.
+
+## Run — Action Profit on a called bet + study-flow polish
+
+**Goal:** the next leftover. Action Profit on a called-and-played-on
+bet is `(won − chips from this action on) / bb` -- Call Profit
+Rate's formula from the aggressor's side, not EV. Study-flow polish
+so Bet Sizes, Pin and Faced Next are findable (labels, a Sizes tab,
+a Study filter tab, stats order). No HUD, no solver, skip
+Dispersion / EV diff. `--check` without a corpus.
+
+**Result:** fourth CASE branch; HU identity AP + CPR = pot_before;
+Sizes tab; Pin compare label; Study tab; Faced Next / sizes above
+the stat list. Remaining: Dispersion / EV diff, live `check.py` on
+a real `hands.db`. Window `--check` needs Tk.
