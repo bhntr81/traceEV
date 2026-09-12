@@ -125,7 +125,8 @@ python opponents.py SomeOpponent
 `USAGE.md` covers every command and what its output means.
 `CONTRIBUTING.md` is the rules for changing any of it — read it before you
 touch a derivation. `ROADMAP.md` is the run log: what each session set out
-to do, and whether it did it. `the-augster.xml` is the operating framework
+to do, and whether it did it. `GAPS.md` is the intentional freeze of the
+remaining tracking-half gaps. `the-augster.xml` is the operating framework
 this project is developed under, and `CLAUDE.md` is the short version.
 
 ## What this is honest about

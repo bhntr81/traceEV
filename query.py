@@ -2311,6 +2311,76 @@ def detach_meta(argv):
     }
 
 
+def same_report(a, b):
+    """True when two argv lists name the same report id."""
+    return _canonical(report_context(a)) == _canonical(report_context(b))
+
+
+def dock_payload(argv, crumbs=None):
+    """
+    What Dock-back hands the main Reports tab.
+
+    Same context id Detach already uses -- who + situation +
+    crumbs as argv. The crumb list travels beside it so the
+    breadcrumb is the path that produced the nest, not a
+    rebuild from widgets that would look like the same filter
+    with an empty path.
+    """
+    crumbs = [dict(c) for c in list(crumbs or [])][:DRILL_MAX]
+    return {
+        "context": list(report_context(argv)),
+        "crumbs": crumbs,
+    }
+
+
+def parent_context(argv, crumbs):
+    """
+    The report id with crumb steps stripped.
+
+    Dock-back hydrates widgets from this and restores crumbs
+    as the path. Applying the folded argv AND the crumbs would
+    write `--stack` twice: once as a chip and once as a crumb,
+    and the breadcrumb would not be the filter, it would be a
+    second copy of it.
+    """
+    argv = list(report_context(argv))
+    for step in reversed(list(crumbs or [])[:DRILL_MAX]):
+        extra = list(step.get("argv") or [])
+        if step.get("flag"):
+            extra = [step["flag"], str(step.get("value", ""))]
+        i = 0
+        while i < len(extra):
+            a = extra[i]
+            if a in VALUE_FLAGS or a in OPTIONS:
+                argv = _drop_flag(argv, a)
+                i += 2
+            elif a in SWITCHES or a in STUDY_SWITCHES:
+                argv = _drop_flag(argv, a)
+                i += 1
+            else:
+                i += 1
+    return argv
+
+
+def _drop_flag(argv, flag):
+    """argv with this flag removed and not put back."""
+    out = []
+    i = 0
+    argv = situation_only(list(argv))
+    while i < len(argv):
+        a = argv[i]
+        if a == flag:
+            i += 2 if (a in VALUE_FLAGS or a in OPTIONS) else 1
+            continue
+        if a in VALUE_FLAGS or a in OPTIONS:
+            out += argv[i:i + 2]
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    return out
+
+
 RANKS = "AKQJT98765432"
 
 
@@ -2593,7 +2663,7 @@ def study_board_of(con, where, argv=None):
     return {"id": "board", "flag": "--board", "n": opps, "rows": rows}
 
 
-def study_of(con, where, argv, panes=None, pin=""):
+def study_of(con, where, argv, panes=None, pin="", crumbs=None):
     """
     One payload for the Reports study cockpit.
 
@@ -2601,7 +2671,9 @@ def study_of(con, where, argv, panes=None, pin=""):
     only built when asked. Pin is the same `compare_of` the other
     views already use -- a named report or a JSON argv list, so
     pinning another stack is `["--stack","120-200"]`, not a second
-    compare language.
+    compare language. `dock` is the same context id Detach uses,
+    plus the crumb path, so Dock-back can return as the Reports
+    tab without inventing a second writing of the nest.
     """
     argv = situation_only(list(argv or []))
     panes = list(panes or DEFAULT_STUDY_PANES)
@@ -2618,6 +2690,7 @@ def study_of(con, where, argv, panes=None, pin=""):
         "plus": list(PLUS_STUDY_PANES),
         "defaults": list(DEFAULT_STUDY_PANES),
         "detach": detach_meta(argv),
+        "dock": dock_payload(argv, crumbs),
     }
     builders = {
         "results": lambda: results_breakdown(con, where, argv),
@@ -7932,12 +8005,14 @@ def check_hist():
 def check_detach():
     """
     Detach reuses Pin's report context, titles name the nest,
-    and the cap is four.
+    the cap is four, and Dock-back hydrates from that same id.
 
     No corpus, no invented EV. The failure this catches is a
     detached pane that silently describes a different filter
     than the pin sitting next to it -- two writings of one
-    nest, drifting the first time either changes.
+    nest, drifting the first time either changes -- or a
+    dock that rebuilds the nest from widgets and loses the
+    breadcrumb.
     """
     fails = []
     crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
@@ -8005,6 +8080,36 @@ def check_detach():
             "call" not in detach_short_filters(deeper):
         fails.append(f"short filters dropped the second crumb: "
                      f"{detach_short_filters(deeper)!r}")
+    # Dock-back reuses that same id. Hydrate = parent + crumbs.
+    payload = dock_payload(ctx, crumbs)
+    if _canonical(payload["context"]) != _canonical(ctx):
+        fails.append("dock_payload.context drifted from the report id")
+    if not payload["crumbs"] or payload["crumbs"][0].get("value") != "80-120":
+        fails.append(f"dock_payload dropped the breadcrumb: {payload['crumbs']}")
+    parent = parent_context(payload["context"], payload["crumbs"])
+    rebuilt = drill_stack(parent, payload["crumbs"])
+    if _canonical(rebuilt) != _canonical(ctx):
+        fails.append(f"dock hydrate did not reconstitute the nest: {rebuilt}")
+    if "--stack" in parent:
+        fails.append("parent_context left the crumb flag on the widgets")
+    if "--hero" not in parent:
+        fails.append("parent_context dropped who")
+    if not same_report(ctx, ["--stack", "80-120", "--hero"]):
+        fails.append("same_report missed a rewritten nest")
+    if same_report(ctx, ["--hero"]):
+        fails.append("same_report treated the parent as the nest")
+    composed = {"label": "Call vs OR", "composed": True,
+                "argv": ["--street", "preflop", "--facing", "open",
+                         "--action", "call"]}
+    composed_ctx = report_context(["--hero"], crumbs + [composed])
+    composed_parent = parent_context(composed_ctx, crumbs + [composed])
+    if "--action" in composed_parent or "--street" in composed_parent:
+        fails.append("parent_context left a composed crumb on")
+    if "--hero" not in composed_parent:
+        fails.append("parent_context dropped who from a composed nest")
+    if not same_report(composed_ctx, dock_payload(
+            composed_ctx, crumbs + [composed])["context"]):
+        fails.append("dock_payload of a composed nest drifted")
     print(f"detach context / title / cap  "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:

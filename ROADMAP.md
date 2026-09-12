@@ -1069,6 +1069,26 @@ payload. Live: `_sync_detached` / BroadcastChannel redraw
 from the latest study blob. Cap is four; close frees the
 slot and does not break main. Dock-back deferred.
 
+## Run — Dock-back + tracking-half freeze
+
+**Goal:** Detached window → Dock back → main Reports tab with
+the same context and breadcrumb; focus the existing tab if
+that nest is already open. Pin + Detach + Dock coexist. Then
+document the intentional freeze of the remaining tracking-half
+gaps. No HUD, no solver, no rakeback / WYSIWYG / Dispersion /
+more Expression atoms. `--check` without inventing EV.
+
+**Result:** `query.dock_payload` is the same report id Detach
+already uses, plus the crumb path. `App.dock_report` and the
+page's `dockReport` hydrate or focus the study tab. Duplicate
+id focuses; close without docking still leaves main alone.
+`GAPS.md` freezes rakeback overlay, WYSIWYG profile editor,
+full 256 board/bet editors, Dispersion/EV diff, more
+Expression atoms, HUD/solver, view-as-opponent, anon
+IDs/import skip flags. PLO / multi-game is a separate track,
+not more NLHE chrome. Tracking-half NLHE study chrome is
+frozen pending a new track.
+
 ## Run — Statistics Profile Menu + Save/Open
 
 **Goal:** H2N Profile Menu and Save/Open Report on the
