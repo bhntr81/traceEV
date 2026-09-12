@@ -67,6 +67,7 @@ VALUE_FIELDS = {
     "street": "--street", "pot": "--pot", "facing": "--facing",
     "vs": "--vs", "opener": "--opener",
     "combo": "--combo", "stake": "--stake", "deep": "--deep",
+    "action": "--action", "result": "--result",
     "short": "--short", "board": "--board", "since": "--since",
     "until": "--until", "where": "--where",
     "after": "--after", "then": "--then",
@@ -127,8 +128,17 @@ def argv_from(params):
 
 def payload(con, params):
     """Whatever the page asked for, as plain data."""
-    view = params.get("view", ["stats"])[0]
+    view = params.get("view", ["study"])[0]
     argv = argv_from(params)
+    raw_crumbs = (params.get("crumbs", [""])[0] or "").strip()
+    crumbs = []
+    if raw_crumbs:
+        try:
+            crumbs = json.loads(raw_crumbs)
+        except ValueError:
+            crumbs = []
+    if crumbs:
+        argv = query.drill_stack(argv, crumbs)
     spec, argv = players.parse_cohort(argv)
     where, label, parts = query.build(argv)
     notes.attach(con)
@@ -138,6 +148,19 @@ def payload(con, params):
     def nothing():
         """Why this filter is empty, so the page never just goes blank."""
         return query.why_empty(con, parts)
+    if view == "study":
+        extra = [x.strip() for x in
+                 (params.get("panes", [""])[0] or "").split(",") if x.strip()]
+        panes = list(query.DEFAULT_STUDY_PANES) + [
+            p for p in extra if p in query.PLUS_STUDY_PANES]
+        out = query.study_of(con, where, argv, panes=panes, pin=(
+            params.get("pin", [""])[0] or "").strip())
+        compact.attach(con, out.get("hands") or [], fmt="html")
+        out["label"] = label
+        out["why"] = None if (out.get("hands") or out.get("panes")) else nothing()
+        out["crumbs"] = crumbs
+        return out
+
     if view == "stats":
         n_dec, rows = query.stats_of(con, where)
         out = {"label": label, "decisions": n_dec, "rows": rows,
@@ -254,6 +277,17 @@ def payload(con, params):
         out["label"] = label
         out["why"] = None if out["total"] else nothing()
         return out
+
+    if view == "note":
+        hid = (params.get("id", [""])[0] or "").strip()
+        text = (params.get("text", [""])[0] or "").strip()
+        if not hid or not text:
+            return {"error": "note needs a hand id and some text"}
+        seat = params.get("seat", [""])[0]
+        notes.add(text, hand_id=hid,
+                  seat=int(seat) if seat.isdigit() else None,
+                  hands_con=con)
+        return {"ok": True, "id": hid}
 
     if view == "mark":
         hid = (params.get("id", [""])[0] or "").strip()
@@ -388,6 +422,24 @@ td.compact{text-align:left;font-weight:500}
   letter-spacing:.06em;padding-top:12px}
 .empty{color:var(--dim);padding:26px 0}
 .bar{height:5px;background:var(--accent);border-radius:3px;opacity:.5}
+.crumbs,.chips-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  margin:0 0 8px;font-size:12px}
+.crumbs a,.chip-x{color:var(--accent);cursor:pointer;text-decoration:none}
+.smart{color:var(--dim);margin:0 0 10px;font-size:12px}
+.smart a{color:var(--accent);margin-left:8px;cursor:pointer}
+.panes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 12px}
+.pane{border:1px solid var(--edge);border-radius:6px;padding:8px 8px 4px;
+  min-width:0;background:var(--panel)}
+.pane h3{margin:0 0 6px;font-size:12px;font-weight:600;display:flex;
+  justify-content:space-between;align-items:center}
+.pane h3 button{background:none;border:1px solid var(--edge);color:var(--dim);
+  border-radius:4px;cursor:pointer;font:inherit;padding:1px 6px}
+.pane table{font-size:12px}
+.ctx{position:fixed;background:var(--panel);border:1px solid var(--edge);
+  border-radius:6px;padding:4px 0;z-index:20;min-width:140px}
+.ctx button{display:block;width:100%;text-align:left;background:none;border:0;
+  color:var(--ink);padding:5px 12px;cursor:pointer;font:inherit}
+.ctx button:hover{background:var(--edge)}
 </style>
 <header>
   <h1>poker_analysis</h1>
@@ -506,6 +558,23 @@ td.compact{text-align:left;font-weight:500}
         <option value="50%+">50%+</option>
       </select></label>
     <label>or pot-frac range <input id="pot_frac" placeholder="0.4-0.75"></label>
+    <label>this action
+      <select id="action"><option value="">any</option>
+        <option value="fold">fold</option>
+        <option value="check">check</option>
+        <option value="call">call</option>
+        <option value="bet">bet</option>
+        <option value="raise">raise</option>
+      </select></label>
+    <label>whole-hand result
+      <select id="result"><option value="">any</option>
+        <option value="won">won</option>
+        <option value="lost">lost</option>
+        <option value="showdown">showdown</option>
+        <option value="no-showdown">no showdown</option>
+      </select></label>
+    <label>combo / family
+      <input id="combo" placeholder="AKs  or  Axs, 22+"></label>
     <label>stack bb <input id="stack" placeholder="100+  or  80-200"></label>
     <label>players at the table <input id="players" type="number" min="2" max="10"></label>
     <label>still in the pot <input id="live" type="number" min="2" max="10"></label>
@@ -524,7 +593,8 @@ td.compact{text-align:left;font-weight:500}
 </aside>
 <section>
   <nav id="tabs">
-    <button data-v="stats" class="on">stats</button>
+    <button data-v="study" class="on">study</button>
+    <button data-v="stats">stats</button>
     <button data-v="range">range</button>
     <button data-v="chart">chart</button>
     <button data-v="report">report</button>
@@ -542,7 +612,9 @@ td.compact{text-align:left;font-weight:500}
 </main>
 <script>
 const $ = s => document.querySelector(s);
-const state = {view:'stats', by:'position', flags:{}, multi:{}, preset:'', spot:''};
+const state = {view:'study', by:'position', flags:{}, multi:{}, preset:'',
+               spot:'', crumbs:[], extraPanes:[], paneHidden:{}, paneSort:{},
+               pinAlias:{}};
 let OPT = {};
 
 const POSITIONS = ['UTG','HJ','CO','BTN','SB','BB'];
@@ -589,7 +661,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -600,14 +672,15 @@ $('#tabs').addEventListener('click', e => {
         state.flags[f] = false;
       });
       ['pos','vs','street','pot','board'].forEach(g => { state.multi[g] = []; });
-      ['after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node'].forEach(fid => {
+      ['after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','combo','action','result'].forEach(fid => {
         const el = $('#'+fid); if (el) el.value = '';
       });
       paintChips();
+      state.crumbs = [];
     }
     load();
   }));
-['where','pot_frac','stack','pre','flop','turn','river','line','node','cohort']
+['where','pot_frac','stack','pre','flop','turn','river','line','node','cohort','combo']
   .forEach(id => $('#'+id).addEventListener('keydown', e => {
     if (e.key === 'Enter') load();
   }));
@@ -618,10 +691,14 @@ function params(){
   if (state.view === 'report' || state.view === 'results') p.set('by', state.by);
   if (state.preset) p.set('preset', state.preset);
   if (state.spot) p.set('spot', state.spot);
+  if (state.crumbs && state.crumbs.length)
+    p.set('crumbs', JSON.stringify(state.crumbs));
+  if (state.extraPanes && state.extraPanes.length)
+    p.set('panes', state.extraPanes.join(','));
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -750,10 +827,270 @@ function htmlReportCompare(d){
   return h + '</tbody></table>';
 }
 
+function stepFromRow(r){
+  if (r.composed || (r.argv && !r.flag))
+    return {label: r.label || r.key, argv: r.argv || [], how: r.how};
+  if (!r.flag) return null;
+  return {label: r.label || r.value || r.key, flag: r.flag,
+          value: String(r.value || r.key), how: r.how};
+}
+function applyStep(step){
+  if (!step) return;
+  if (state.crumbs.length >= 3) state.crumbs = state.crumbs.slice(0,2);
+  state.crumbs.push(step);
+  load();
+}
+function popCrumb(i){
+  state.crumbs = i < 0 ? [] : state.crumbs.slice(0, i+1);
+  load();
+}
+function pinStep(step){
+  const label = 'pin ' + (step.label || step.value || 'row');
+  const argv = step.argv || (step.flag ? [step.flag, step.value] : []);
+  const box = $('#pin');
+  let opt = [...box.options].find(o => o.textContent === label);
+  if (!opt){
+    opt = document.createElement('option');
+    opt.textContent = label;
+    box.appendChild(opt);
+  }
+  opt.value = JSON.stringify(argv);
+  box.value = opt.value;
+  load();
+}
+function renderStudy(d){
+  const crumbs = ['<a data-i="-1">All</a>'].concat(
+    (state.crumbs||[]).map((c,i) => ' › <a data-i="'+i+'">'+(c.label||c.value||'?')+'</a>')
+  ).join('');
+  const chips = (state.crumbs||[]).map((c,i) =>
+    '<span class="chip on chip-x" data-i="'+i+'">'+(c.label||c.how||'?')+' ×</span>'
+  ).join('') || '<span class="n">unfiltered</span>';
+  const summ = d.summary || {}, prof = d.profit || {};
+  let smart = [];
+  if (summ.opps) smart.push((summ.hits||0).toLocaleString()+'/'+summ.opps.toLocaleString()
+    +'  '+(summ.pct||0).toFixed(1)+'%');
+  if (prof.bb_per_hand != null) smart.push('AP '+(prof.bb_per_hand>=0?'+':'')+prof.bb_per_hand.toFixed(2)+' bb');
+  const fams = ((d.families||{}).rows||[]).slice(0,8).map(r =>
+    '<a data-fam="'+r.key+'">'+r.label+'</a>').join('');
+  const plus = (d.plus||[]).filter(k => !(state.extraPanes||[]).includes(k))
+    .map(k => '<option value="'+k+'">'+( {size:'Bet Sizes',made:'Flop Hand',
+      board:'Flop Board',combo:'Combos'}[k]||k)+'</option>').join('');
+  const names = ['results','stack','position','next'].concat(state.extraPanes||[]);
+  let panes = '<div class="panes">';
+  for (const name of names){
+    const pane = (d.panes||{})[name] || (name==='combo' ? d.families : null);
+    panes += renderPane(name, pane);
+  }
+  panes += '</div>';
+  let h = '<div class="crumbs">path '+crumbs+'</div>'
+    + '<div class="chips-row">filter '+chips+'</div>'
+    + '<p class="smart">'+(smart.join('  ·  ')||'Smart')
+    + (fams ? '  combos '+fams : '')+'</p>'
+    + '<p class="n">+ pane <select id="plus">'+plus+'</select>'
+    + '  click a row to drill · right-click a hand</p>'
+    + panes
+    + renderStudyHands(d.hands||[]);
+  $('#out').innerHTML = h;
+  $('#out').querySelectorAll('.crumbs a').forEach(a => {
+    a.onclick = e => { e.preventDefault(); popCrumb(+a.dataset.i); };
+  });
+  $('#out').querySelectorAll('.chip-x').forEach(a => {
+    a.onclick = () => { state.crumbs = state.crumbs.filter((_,i)=>i!==+a.dataset.i); load(); };
+  });
+  $('#out').querySelectorAll('[data-fam]').forEach(a => {
+    a.onclick = e => { e.preventDefault();
+      const row = ((d.families||{}).rows||[]).find(r => r.key===a.dataset.fam);
+      if (row) applyStep(stepFromRow(row));
+    };
+  });
+  const plusEl = $('#plus');
+  if (plusEl) plusEl.onchange = () => {
+    if (plusEl.value && !state.extraPanes.includes(plusEl.value))
+      state.extraPanes.push(plusEl.value);
+    load();
+  };
+  $('#out').querySelectorAll('.pane tbody tr[data-pane]').forEach(tr => {
+    tr.onclick = () => {
+      const pane = (d.panes||{})[tr.dataset.pane] || d.families;
+      const row = (pane.rows||[])[+tr.dataset.i];
+      if (row) applyStep(stepFromRow(row));
+    };
+    tr.oncontextmenu = e => {
+      e.preventDefault();
+      const pane = (d.panes||{})[tr.dataset.pane] || d.families;
+      const row = (pane.rows||[])[+tr.dataset.i];
+      if (row) showCtx(e, [
+        ['Drill', () => applyStep(stepFromRow(row))],
+        ['Pin this', () => pinStep(stepFromRow(row))],
+      ]);
+    };
+  });
+  $('#out').querySelectorAll('.pane h3 button').forEach(b => {
+    b.onclick = () => gearPane(b.dataset.pane, d);
+  });
+  $('#out').querySelectorAll('.pane th[data-sort]').forEach(th => {
+    th.onclick = () => {
+      const pane = th.closest('.pane');
+      const name = (pane && pane.querySelector('h3 button')
+                    && pane.querySelector('h3 button').dataset.pane);
+      if (!name) return;
+      const col = th.dataset.sort;
+      const cur = state.paneSort[name];
+      state.paneSort[name] = [col, !!(cur && cur[0]===col && !cur[1])];
+      renderStudy(d);
+    };
+  });
+  bindHandRows(d);
+}
+function renderPane(name, pane){
+  const title = {results:'Results',stack:'Stack Sizes',position:'Positions',
+    next:'Next Action',size:'Bet Sizes',made:'Flop Hand',board:'Flop Board',
+    combo:'Combos'}[name] || name;
+  const rows = (pane && pane.rows) || [];
+  if (!rows.length)
+    return '<div class="pane"><h3>'+title+'</h3><p class="n">nothing in this pane</p></div>';
+  const hidden = new Set(state.paneHidden[name]||[]);
+  if (name==='position' && !state.paneHidden[name]){
+    hidden.add('vpip'); hidden.add('pfr');
+  }
+  let cols = ['label','n','freq'];
+  if (name==='results') cols = ['label','hands','net','bb/100'];
+  if (name==='stack' || name==='next' || name==='size')
+    cols = ['label','n','freq','act bb'];
+  cols = cols.filter(c => !hidden.has(c));
+  const sort = state.paneSort[name];
+  const copy = rows.slice();
+  if (sort){
+    copy.sort((a,b) => {
+      const ka = paneSortKey(a, sort[0]), kb = paneSortKey(b, sort[0]);
+      return sort[1] ? (ka<kb?1:-1) : (ka<kb?-1:1);
+    });
+  }
+  const cell = (r,c) => {
+    if (c==='label') return r.label||r.key||'';
+    if (c==='n' || c==='hands') return (r.hands||r.n||0).toLocaleString();
+    if (c==='freq') return (r.pct||0).toFixed(1)+'%';
+    if (c==='act bb'){
+      const ap = r.profit||{};
+      return ap.bb_per_hand==null ? '–' : ((ap.bb_per_hand>=0?'+':'')+ap.bb_per_hand.toFixed(2));
+    }
+    if (c==='net') return (r.net_bb>=0?'+':'')+(r.net_bb||0).toFixed(1);
+    if (c==='bb/100') return (r.bb100>=0?'+':'')+(r.bb100||0).toFixed(1);
+    return '';
+  };
+  let h = '<div class="pane"><h3>'+title+'<button type="button" data-pane="'+name+'">⚙</button></h3><table><thead><tr>';
+  for (const c of cols) h += '<th data-sort="'+c+'">'+c+'</th>';
+  h += '</tr></thead><tbody>';
+  copy.forEach((r,i) => {
+    const idx = rows.indexOf(r);
+    h += '<tr class="click" data-pane="'+name+'" data-i="'+idx+'">';
+    for (const c of cols) h += '<td>'+cell(r,c)+'</td>';
+    h += '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+function paneSortKey(r, col){
+  if (col==='n'||col==='hands') return r.hands||r.n||0;
+  if (col==='freq') return r.pct||0;
+  if (col==='act bb') return (r.profit&&r.profit.bb_per_hand)||0;
+  if (col==='net') return r.net_bb||0;
+  if (col==='bb/100') return r.bb100||0;
+  return String(r.label||r.key||'');
+}
+function gearPane(name, d){
+  const hidden = new Set(state.paneHidden[name]||[]);
+  const cols = name==='results'
+    ? ['label','hands','net','bb/100']
+    : ['label','n','freq','act bb'];
+  showCtx({clientX: window.event?window.event.clientX:80,
+           clientY: window.event?window.event.clientY:80},
+    cols.map(c => [(hidden.has(c)?'☐ ':'☑ ')+c, () => {
+      if (hidden.has(c)) hidden.delete(c); else hidden.add(c);
+      state.paneHidden[name] = [...hidden];
+      renderStudy(d);
+    }]));
+}
+function renderStudyHands(rows){
+  if (!rows.length) return '<p class="empty">no hands in this filter</p>';
+  let h = '<table><thead><tr><th></th><th>when</th><th>site</th><th>pos</th>'
+    + '<th>hand</th><th>net bb</th><th>act bb</th><th>compact</th></tr></thead><tbody>';
+  for (const r of rows){
+    const tags = (r.tags||[]).join(',');
+    h += `<tr class="click handrow" data-id="${r.id}" data-seat="${r.seat}">`
+      + `<td><button type="button" class="mark" data-id="${r.id}" data-unmark="${r.marked?1:0}">${r.marked?'★':'☆'}</button></td>`
+      + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site||''}</td>`
+      + `<td>${r.pos||''}</td><td>${r.combo||'–'}</td>`
+      + `<td>${r.net==null?'':money(r.net)}</td>`
+      + `<td>${r.act==null?'–':money(r.act)}</td>`
+      + `<td class="compact">${tags?('['+tags+'] '):''}${r.compact||r.board||''}</td></tr>`;
+  }
+  return h + '</tbody></table>';
+}
+function bindHandRows(d){
+  $('#out').querySelectorAll('tr.handrow, tr.click[data-id]').forEach(tr => {
+    tr.ondblclick = () => openHand(tr.dataset.id, tr.dataset.seat);
+    tr.oncontextmenu = e => {
+      e.preventDefault();
+      showCtx(e, [
+        ['Replay', () => openHand(tr.dataset.id, tr.dataset.seat)],
+        ['Mark', () => markHand(tr.dataset.id, false)],
+        ['Unmark', () => markHand(tr.dataset.id, true)],
+        ['Add to Note', () => noteHand(tr.dataset.id, tr.dataset.seat)],
+      ]);
+    };
+  });
+  $('#out').querySelectorAll('button.mark').forEach(b => {
+    b.onclick = async e => {
+      e.stopPropagation();
+      await markHand(b.dataset.id, b.dataset.unmark==='1');
+    };
+  });
+}
+async function markHand(id, unmark){
+  const p = new URLSearchParams({view:'mark', id});
+  if (unmark) p.set('unmark','1');
+  const tag = ($('#tag') && $('#tag').value.trim()) || '';
+  if (tag) p.set('tag', tag);
+  await fetch('/api?' + p);
+  load();
+}
+async function noteHand(id, seat){
+  const text = prompt('Note on '+id);
+  if (!text || !text.trim()) return;
+  const p = new URLSearchParams({view:'note', id, seat, text: text.trim()});
+  await fetch('/api?' + p);
+  load();
+}
+function showCtx(e, items){
+  document.querySelectorAll('.ctx').forEach(n => n.remove());
+  const m = document.createElement('div');
+  m.className = 'ctx';
+  m.style.left = (e.clientX||80)+'px';
+  m.style.top = (e.clientY||80)+'px';
+  items.forEach(([lab, fn]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = lab;
+    b.onclick = () => { m.remove(); fn(); };
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  setTimeout(() => document.addEventListener('click', () => m.remove(), {once:true}), 0);
+}
+function openHand(id, seat){
+  state.view = 'hand';
+  fetch('/api?' + new URLSearchParams({view:'hand', id, seat}))
+    .then(r => r.json()).then(d => renderHand(d.hand));
+}
+
 function render(d){
   const out = $('#out');
   $('#filter').textContent = 'filter: ' + (d.label || 'everything');
   paintRelated(d.related);
+  if (state.view === 'study'){
+    if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
+    renderStudy(d); return;
+  }
   if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
   const nope = msg => `<p class="empty">nothing matches<br><span class="n">${
     d.why || msg || ''}</span></p>`;
@@ -1274,6 +1611,9 @@ def check(db_path=DB):
           "--pos", "BTN"]),
         ({"villain_type": ["fish"]},
          ["--villain-type", "fish"]),
+        ({"action": ["call"], "stack": ["80-120"], "combo": ["Axs"]},
+         ["--action", "call", "--stack", "80-120", "--combo", "Axs"]),
+        ({"result": ["won"]}, ["--result", "won"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))
@@ -1288,6 +1628,19 @@ def check(db_path=DB):
     for f in fails:
         print(f"    {f}")
 
+    parent = argv_from({"stack": ["80-120"]})
+    child = query.drill_child(parent, {"flag": "--action", "value": "call"})
+    want = query.drill_child(["--stack", "80-120"],
+                             {"flag": "--action", "value": "call"})
+    if query._canonical(child) != query._canonical(want):
+        fails.append("page drill_child drifted from the CLI")
+    axs_a, _, _ = query.build(argv_from({"combo": ["Axs"]}))
+    axs_b, _, _ = query.build(["--combo", "Axs"])
+    if axs_a != axs_b or "A2s" not in axs_a:
+        fails.append("page --combo Axs did not expand")
+    print(f"study drill matches CLI      "
+          f"{'yes' if query._canonical(child) == query._canonical(want) else 'NO'}")
+
     # Every view must answer, including on a filter that matches nothing --
     # which a user will type within a minute of being handed a form.
     # Connecting when `hands.db` is missing creates an empty file, and
@@ -1300,7 +1653,7 @@ def check(db_path=DB):
               "PASS (no hands.db -- form/CLI only)")
         return not fails
     con = sqlite3.connect(db_path)
-    views = ("stats", "report", "results", "hands", "graph")
+    views = ("study", "stats", "report", "results", "hands", "graph")
     broke = []
     for v in views:
         for form in ({"view": [v]},

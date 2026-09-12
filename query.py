@@ -103,6 +103,15 @@ VALUE_FLAGS = {
     "--pot": "pot_type IN ({list})",
     "--facing": "facing IN ({list})",
     "--combo": "combo IN ({list})",
+    # What THIS decision was. Faced Next / Next Actions (`--after` /
+    # `--then`) are the next row; this is the verb on the row the
+    # filter already selected. Clicking "call" in the study Next
+    # Action pane is this flag, not `--then call`.
+    "--action": None,
+    # Whole-hand result of the (hand, seat), via spots. Money is a
+    # property of a hand; MTT is refused the same way `results_of`
+    # refuses it -- tournament chips are not dollars.
+    "--result": None,
     # What the hand became once the board came. Only where the cards were
     # shown, which is most of Ignition and a quarter of ACR -- so these
     # narrow hard, and `why_empty` says so rather than leaving an empty
@@ -934,7 +943,7 @@ def _canonical(argv):
             v = str(argv[i + 1])
             if "{list}" in (VALUE_FLAGS[a] or "") or a in (
                     "--quick", "--board", "--turn-card", "--river-card",
-                    "--size", "--outcome"):
+                    "--size", "--outcome", "--action", "--result"):
                 v = ",".join(sorted(x.strip() for x in v.split(",") if x.strip()))
             parts.append((a, v))
             i += 2
@@ -1128,6 +1137,13 @@ ACTION_MIX = (
     ("bet", "agg = 1 AND to_call = 0"),
     ("raise", "agg = 1 AND to_call > 0"),
 )
+ACTION_ALIAS = {
+    "fold": "fold", "f": "fold",
+    "check": "check", "x": "check",
+    "call": "call", "c": "call",
+    "bet": "bet", "b": "bet",
+    "raise": "raise", "r": "raise", "3bet": "raise", "3-bet": "raise",
+}
 
 
 def actions_of(con, where):
@@ -2047,6 +2063,423 @@ def counts_by(con, expr, where):
         f"AND ({expr}) IS NOT NULL GROUP BY 1"))
 
 
+# ---- study cockpit ----------------------------------------------------
+# Hand2Note's Reports window is one filter, several panes, and a click
+# that ANDs the row onto the filter. The CLI already has every number
+# those panes show. This is the same data as a payload the window and
+# the page can both draw, so a click is `drill_child` rather than a
+# second WHERE clause either front end invents.
+
+DRILL_MAX = 3
+
+# Finer than `--by stack`. The coarse dimension stays for CLI reports;
+# the study pane needs an 80-120 row because that is the cut people
+# actually click, and folding it into 40-99 / 100-199 hid it.
+STUDY_STACKS = (
+    ("<20", None, 20),
+    ("20-40", 20, 40),
+    ("40-80", 40, 80),
+    ("80-120", 80, 120),
+    ("120-200", 120, 200),
+    ("200+", 200, None),
+)
+
+# Whole-hand result. MTT is excluded in the SQL: chips are not dollars,
+# and `results_of` already refuses those seats.
+RESULTS = {
+    "won": "s.net_bb > 0",
+    "lost": "s.net_bb < 0",
+    "even": "s.net_bb = 0",
+    "showdown": "s.wtsd = 1",
+    "no-showdown": "s.wtsd = 0",
+}
+RESULT_ALIAS = {
+    "won": "won", "win": "won", "won$": "won",
+    "lost": "lost", "lose": "lost", "loss": "lost",
+    "even": "even", "chop": "even",
+    "showdown": "showdown", "sd": "showdown", "wtsd": "showdown",
+    "no-showdown": "no-showdown", "nosd": "no-showdown",
+    "no_showdown": "no-showdown",
+}
+RESULT_LABELS = {
+    "won": "Won",
+    "lost": "Lost",
+    "even": "Even",
+    "showdown": "Showdown",
+    "no-showdown": "No showdown",
+}
+
+# Preflop families the study strip offers. Axs is the one the demo
+# clicks; the rest are the same idea one rank over, so a click is not
+# a one-off.
+COMBO_FAMILIES = (
+    "Axs", "Kxs", "Qxs", "Jxs", "AKo", "AKs", "pairs", "broadways",
+)
+
+# When the filter has not already named a street or a facing, the Next
+# Action pane also offers the vs-open-raise rows Hand2Note prints on
+# an unfiltered report. Clicking one is street + facing + this action,
+# not `--then call` -- that is the next row, and "Call vs OR" is this
+# one.
+STUDY_VS_OR = (
+    ("Fold vs OR", "fold"),
+    ("Call vs OR", "call"),
+    ("3-bet vs OR", "raise"),
+)
+
+DEFAULT_STUDY_PANES = ("results", "stack", "position", "next")
+PLUS_STUDY_PANES = ("size", "made", "board", "combo")
+STUDY_PANE_LABELS = {
+    "results": "Results",
+    "stack": "Stack Sizes",
+    "position": "Positions",
+    "next": "Next Action",
+    "size": "Bet Sizes",
+    "made": "Flop Hand",
+    "board": "Flop Board",
+    "combo": "Combos",
+}
+
+RANKS = "AKQJT98765432"
+
+
+def expand_combo(token):
+    """
+    A combo, or a family of them.
+
+    `AKs` stays `AKs`. `Axs` is every suited ace, `Kxo` every offsuit
+    king, `22+` every pair at or above twos, `broadways` the ten
+    broadway suited+offsuit pairs people actually name. A family that
+    did not expand would be `combo IN ('Axs')`, which matches nothing
+    and looks like a broken click.
+    """
+    raw = (token or "").strip()
+    if not raw:
+        return []
+    if raw.lower() == "pairs":
+        return [r + r for r in RANKS]
+    if raw.lower() == "broadways":
+        hi = "AKQJT"
+        out = []
+        for i, a in enumerate(hi):
+            for b in hi[i + 1:]:
+                out.append(a + b + "s")
+                out.append(a + b + "o")
+        return out
+    t = raw[0].upper() + raw[1:]
+    if len(t) == 3 and t[1] in "xX" and t[2] in "so":
+        hi = t[0]
+        if hi not in RANKS:
+            return [raw]
+        return [hi + r + t[2] for r in RANKS[RANKS.index(hi) + 1:]]
+    if len(t) >= 3 and t.endswith("+") and len(t) >= 3:
+        pair = t[:2]
+        if len(pair) == 2 and pair[0] == pair[1] and pair[0] in RANKS:
+            return [r + r for r in RANKS if RANKS.index(r) <= RANKS.index(pair[0])]
+    return [t]
+
+
+def result_sql(key):
+    """This (hand, seat) has that whole-hand result. Cash only."""
+    pred = RESULTS[key]
+    return (
+        "EXISTS (SELECT 1 FROM spots s "
+        "WHERE s.hand_id = decisions.hand_id AND s.seat = decisions.seat "
+        f"AND s.fmt <> 'MTT' AND {pred})"
+    )
+
+
+def drill_child(parent_argv, step):
+    """
+    The child filter: parent ∧ row_key.
+
+    A row that names the same flag as the parent replaces it -- two
+    `--stack` values AND-ed match nothing and look like a broken
+    pane. A composed row (Call vs OR) is several flags; each is
+    replaced the same way. Who is being measured is left alone.
+    """
+    parent = situation_only(list(parent_argv or []))
+    extra = list(step.get("argv") or [])
+    if step.get("flag"):
+        extra = [step["flag"], str(step.get("value", ""))]
+    i = 0
+    out = parent
+    while i < len(extra):
+        a = extra[i]
+        if a in VALUE_FLAGS or a in OPTIONS:
+            if i + 1 >= len(extra):
+                break
+            out = _replace_flag(out, a, extra[i + 1])
+            i += 2
+        elif a in SWITCHES or a in STUDY_SWITCHES:
+            out = _replace_flag(out, a)
+            i += 1
+        else:
+            out.append(a)
+            i += 1
+    return out
+
+
+def drill_stack(parent_argv, crumbs):
+    """Fold a breadcrumb list onto the parent. Caps at DRILL_MAX."""
+    argv = situation_only(list(parent_argv or []))
+    for step in list(crumbs or [])[:DRILL_MAX]:
+        argv = drill_child(argv, step)
+    return argv
+
+
+def _row(key, label, n, opps, flag, value, argv, extra=None):
+    """One clickable pane row, same shape every pane uses."""
+    p, lo, hi = wilson(n, opps) if opps else (0.0, 0.0, 0.0)
+    row = {
+        "key": key, "label": label, "n": n, "k": n, "hits": n, "opps": opps,
+        "pct": 100 * p, "band": 100 * (hi - lo) / 2,
+        "flag": flag, "value": value,
+        "argv": list(argv) + ([flag, value] if flag else []),
+        "how": f"{flag} {value}" if flag else label,
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def study_stacks_of(con, where, argv=None):
+    """Hits per study stack bucket. Clicking a row is `--stack` of that cut."""
+    argv = situation_only(list(argv or []))
+    opps = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    rows = []
+    for label, lo, hi in STUDY_STACKS:
+        child = f"({where}) AND ({stack_sql(lo, hi)})"
+        n = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {child}").fetchone()[0]
+        if not n:
+            continue
+        rows.append(_row(label, label, n, opps, "--stack", label, argv,
+                         {"profit": action_profit_of(con, child)}))
+    return {"id": "stack", "flag": "--stack", "n": opps, "rows": rows}
+
+
+def results_breakdown(con, where, argv=None):
+    """Won / lost / showdown as clickable rows over the matching seats."""
+    argv = situation_only(list(argv or []))
+    pairs = matching_seats(con, where)
+    tot = results_of(con, pairs) if pairs else None
+    opps = tot["hands"] if tot else 0
+    rows = []
+    for key, label in RESULT_LABELS.items():
+        child = f"({where}) AND ({result_sql(key)})"
+        seats = matching_seats(con, child)
+        got = results_of(con, seats) if seats else None
+        if not got:
+            continue
+        extra = {"hands": got["hands"], "net_bb": got["net_bb"],
+                 "bb100": got["bb100"], "error": got["error"],
+                 "totals": got}
+        rows.append(_row(key, label, got["hands"], opps or got["hands"],
+                         "--result", key, argv, extra))
+    return {"id": "results", "flag": "--result", "n": opps,
+            "totals": tot, "rows": rows}
+
+
+def study_positions_of(con, where, argv=None, columns=None):
+    """`--by position` as pane rows. Clicking a row is `--pos`."""
+    argv = situation_only(list(argv or []))
+    cols = list(columns or columns_for(argv))
+    got = report_of(con, where, "position", cols, argv)
+    opps = sum(got["counts"].values()) if got["counts"] else 0
+    rows = []
+    for k in got["keys"]:
+        if k is None:
+            continue
+        n = got["counts"].get(k, 0)
+        if isinstance(n, tuple):
+            n = n[0]
+        if not n:
+            continue
+        cells = {}
+        for c in cols:
+            nn, kk = got["grid"][c].get(k, (0, 0))
+            cells[c] = None if not nn else {
+                "pct": 100 * kk / nn, "n": nn, "k": kk}
+        rows.append(_row(str(k), str(k), n, opps, "--pos", str(k), argv,
+                         {"cells": cells}))
+    return {"id": "position", "flag": "--pos", "n": opps,
+            "cols": cols, "rows": rows, "won_by": got.get("won_by") or {}}
+
+
+def study_next_of(con, where, argv=None):
+    """
+    What they DID here, plus vs-OR rows when the filter is still broad.
+
+    `--then` stays on the stats tab as Faced Next's sibling. The study
+    pane's job is the H2N "Call vs OR" click, which is this action
+    facing an open, not the next street.
+    """
+    argv = situation_only(list(argv or []))
+    acts = actions_of(con, where)
+    opps = acts["n"]
+    rows = []
+    for r in acts["mix"]:
+        if not r["k"]:
+            continue
+        child = f"({where}) AND ({dict(ACTION_MIX)[r['key']]})"
+        rows.append(_row(r["key"], r["label"], r["k"], opps,
+                         "--action", r["key"], argv,
+                         {"profit": action_profit_of(con, child),
+                          "band": r["band"], "pct": r["pct"]}))
+    streets = set(flag_values(argv, "--street"))
+    facing = set(flag_values(argv, "--facing"))
+    if not streets and not facing:
+        for label, action in STUDY_VS_OR:
+            step = {"argv": ["--street", "preflop", "--facing", "open",
+                             "--action", action]}
+            child_argv = drill_child(argv, step)
+            child_where, _, _ = build(child_argv)
+            n = con.execute(
+                f"SELECT COUNT(*) FROM decisions WHERE {child_where}"
+            ).fetchone()[0]
+            if not n:
+                continue
+            p, lo, hi = wilson(n, opps) if opps else (0.0, 0.0, 0.0)
+            rows.append({
+                "key": label, "label": label, "n": n, "k": n,
+                "hits": n, "opps": opps,
+                "pct": 100 * p, "band": 100 * (hi - lo) / 2,
+                "flag": None, "value": label,
+                "argv": child_argv,
+                "how": " ".join(step["argv"]),
+                "profit": action_profit_of(con, child_where),
+                "composed": True,
+            })
+    later = chain_report(con, where, argv, True)
+    return {"id": "next", "flag": "--action", "n": opps, "rows": rows,
+            "then": later}
+
+
+def study_combos_of(con, where, argv=None):
+    """Family rows (Axs, pairs, …) for the + Combos pane and the strip."""
+    argv = situation_only(list(argv or []))
+    opps = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where} "
+        f"AND combo IS NOT NULL").fetchone()[0]
+    rows = []
+    for fam in COMBO_FAMILIES:
+        combos = expand_combo(fam)
+        if not combos:
+            continue
+        items = ", ".join(q(c) for c in combos)
+        child = f"({where}) AND combo IN ({items})"
+        n = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {child}").fetchone()[0]
+        if not n:
+            continue
+        rows.append(_row(fam, fam, n, opps or n, "--combo", fam, argv))
+    return {"id": "combo", "flag": "--combo", "n": opps, "rows": rows}
+
+
+def study_made_of(con, where, argv=None):
+    """`--by hand` (what the flop became). Clicking is `--made`."""
+    argv = situation_only(list(argv or []))
+    got = report_of(con, where, "hand", [], argv)
+    # report_of with no columns still has counts/keys.
+    opps = sum(got["counts"].values()) if got["counts"] else 0
+    rows = []
+    for k in got["keys"]:
+        if not k:
+            continue
+        n = got["counts"].get(k, 0)
+        if isinstance(n, tuple):
+            n = n[0]
+        if not n:
+            continue
+        rows.append(_row(str(k), str(k), n, opps, "--made", str(k), argv))
+    return {"id": "made", "flag": "--made", "n": opps, "rows": rows}
+
+
+def study_board_of(con, where, argv=None):
+    """Flop texture rows. Clicking is `--board`."""
+    argv = situation_only(list(argv or []))
+    got = report_of(con, where, "texture", [], argv)
+    opps = sum(got["counts"].values()) if got["counts"] else 0
+    # `--board` wants the named texture keys (mono, paired, …), not
+    # the CASE labels (monotone, paired). Map the display back.
+    named = {
+        "monotone": "mono", "two-tone": "twotone", "paired": "paired",
+        "connected": "connected", "dry": "dry",
+    }
+    rows = []
+    for k in got["keys"]:
+        if not k:
+            continue
+        n = got["counts"].get(k, 0)
+        if isinstance(n, tuple):
+            n = n[0]
+        if not n:
+            continue
+        flag_val = named.get(str(k), str(k))
+        rows.append(_row(str(k), str(k), n, opps, "--board", flag_val, argv))
+    return {"id": "board", "flag": "--board", "n": opps, "rows": rows}
+
+
+def study_of(con, where, argv, panes=None, pin=""):
+    """
+    One payload for the Reports study cockpit.
+
+    Summary + default panes + compact hands. Extra panes are cheap and
+    only built when asked. Pin is the same `compare_of` the other
+    views already use -- a named report or a JSON argv list, so
+    pinning another stack is `["--stack","120-200"]`, not a second
+    compare language.
+    """
+    argv = situation_only(list(argv or []))
+    panes = list(panes or DEFAULT_STUDY_PANES)
+    cols = columns_for(argv)
+    out = {
+        "view": "study",
+        "columns": cols,
+        "summary": spot_summary(con, where, argv),
+        "actions": actions_of(con, where),
+        "profit": action_profit_of(con, where),
+        "call_profit": call_profit_of(con, where),
+        "related": related_spots(argv),
+        "panes": {},
+        "plus": list(PLUS_STUDY_PANES),
+        "defaults": list(DEFAULT_STUDY_PANES),
+    }
+    builders = {
+        "results": lambda: results_breakdown(con, where, argv),
+        "stack": lambda: study_stacks_of(con, where, argv),
+        "position": lambda: study_positions_of(con, where, argv, cols),
+        "next": lambda: study_next_of(con, where, argv),
+        "size": lambda: bet_sizes_of(con, where, argv),
+        "made": lambda: study_made_of(con, where, argv),
+        "board": lambda: study_board_of(con, where, argv),
+        "combo": lambda: study_combos_of(con, where, argv),
+    }
+    for name in panes:
+        if name in builders:
+            blob = builders[name]()
+            blob.setdefault("id", name)
+            blob.setdefault("title", STUDY_PANE_LABELS.get(name, name))
+            out["panes"][name] = blob
+    # Combo-family chips on the Smart strip, even when the Combos pane
+    # is off -- Axs has to be one click from unfiltered.
+    out["families"] = study_combos_of(con, where, argv)
+    hands = matching_hands(con, where, limit=400)
+    notes.decorate(con, hands)
+    compact.attach(con, hands, fmt="text")
+    out["hands"] = hands
+    if pin:
+        try:
+            argv_a, argv_b = pin_sides(argv, pin)
+            out["compare"] = compare_of(
+                con, argv_a, argv_b, None, pin, packs=True)
+        except SystemExit as e:
+            out["pinned"] = {"error": str(e), "name": pin}
+    return out
+
+
 def _replace_flag(argv, flag, value=None):
     """argv with this flag removed, or replaced by a new value."""
     out = []
@@ -2658,6 +3091,30 @@ def build(argv):
                     keys.append(key)
                 described.append("outcome " + ", ".join(keys))
                 continue
+            if a == "--action":
+                words = []
+                for name in v.split(","):
+                    key = ACTION_ALIAS.get(name.strip().lower())
+                    if key is None:
+                        raise SystemExit(
+                            f"unknown action {name!r} -- one of: "
+                            f"{', '.join(k for k, _ in ACTION_MIX)}")
+                    parts.append("(" + dict(ACTION_MIX)[key] + ")")
+                    words.append(key)
+                described.append("action " + ", ".join(words))
+                continue
+            if a == "--result":
+                words = []
+                for name in v.split(","):
+                    key = RESULT_ALIAS.get(name.strip().lower())
+                    if key is None:
+                        raise SystemExit(
+                            f"unknown result {name!r} -- one of: "
+                            f"{', '.join(RESULTS)}")
+                    parts.append("(" + result_sql(key) + ")")
+                    words.append(key)
+                described.append("result " + ", ".join(words))
+                continue
             if a in LINE_FLAGS:
                 # Normalised rather than taken as typed, because the columns
                 # are stored in one case and nobody holds shift for half a
@@ -2693,7 +3150,16 @@ def build(argv):
                 continue
             tpl = VALUE_FLAGS[a]
             if "{list}" in tpl:
-                items = ", ".join(q(x.strip()) for x in v.split(","))
+                raw = [x.strip() for x in v.split(",") if x.strip()]
+                if a == "--combo":
+                    # Axs / Kxo / 22+ are families, not combo names.
+                    # Expanding here keeps `--combo Axs` the same
+                    # filter the study pane click produces.
+                    items = []
+                    for token in raw:
+                        items.extend(expand_combo(token))
+                    raw = items
+                items = ", ".join(q(x) for x in raw)
                 parts.append(tpl.format(list=items))
             elif "{n}" in tpl:
                 parts.append(tpl.format(n=float(v)))
@@ -4263,6 +4729,11 @@ def usage():
     print(f"    {'--size':14} pot fraction: "
           f"{', '.join(lines.BUCKETS)} or a range (0.4-0.75, 50%+)")
     print(f"    {'--stack':14} effective stack in bb: 100+, <40, 80-200")
+    print(f"    {'--action':14} this decision: fold, check, call, bet, raise")
+    print(f"    {'--result':14} whole-hand: won, lost, even, showdown, "
+          f"no-showdown")
+    print(f"    {'--combo':14} AKs, or a family: Axs, Kxo, 22+, pairs, "
+          f"broadways")
     print(f"    {'--outcome':14} what the pot did with this bet: "
           f"fold-out, call, raise-back")
     print(f"    {'--first-in':14} first to put chips in on this street")
@@ -4341,6 +4812,10 @@ SCAN_OK = {
         "last on the street is NOT EXISTS on a later n of the same "
         "hand -- there is no column for it, and adding one was not "
         "measured",
+    "--result won":
+        "a whole-hand result is EXISTS onto spots.net_bb / wtsd. "
+        "Money is a property of a hand, so there is no prefix on "
+        "decisions that can seek it",
 }
 
 
@@ -4374,7 +4849,10 @@ def check_shape():
             (["--tag", "leak"], "study.hand_tags"),
             (["--villain-type", "fish"], "vs_class IN ('fish')"),
             (["--vs-class", "reg,unknown"],
-             "vs_class IN ('reg', 'unknown')")):
+             "vs_class IN ('reg', 'unknown')"),
+            (["--action", "call"], "action IN ('C','A') AND agg = 0"),
+            (["--result", "won"], "s.net_bb > 0"),
+            (["--combo", "Axs"], "A2s")):
         where, _label, _p = build(argv)
         if needle not in where.replace("0.40", "0.4"):
             fails.append(f"{argv} built {where!r}, expected {needle!r}")
@@ -4404,6 +4882,41 @@ def check_shape():
         fails.append("--filter did not open 3rd Barrel")
     if "vpip" in columns_for(["--quick", "cbet_flop"]):
         fails.append("cbet pack still leads with VPIP")
+    axs = expand_combo("Axs")
+    if "AKs" not in axs or "A2s" not in axs or "AKo" in axs:
+        fails.append(f"Axs expanded to {axs}")
+    if expand_combo("AKs") != ["AKs"]:
+        fails.append("AKs was treated as a family")
+    if "22" not in expand_combo("22+") or "AA" not in expand_combo("22+"):
+        fails.append("22+ did not cover the pairs")
+    if "AKs" not in expand_combo("broadways"):
+        fails.append("broadways dropped AKs")
+    child = drill_child([], {"flag": "--stack", "value": "80-120"})
+    if child != ["--stack", "80-120"]:
+        fails.append(f"drill onto empty was {child}")
+    nested = drill_child(child, {"argv": ["--street", "preflop",
+                                          "--facing", "open",
+                                          "--action", "call"]})
+    if "--stack" not in nested or nested[nested.index("--action") + 1] != "call":
+        fails.append(f"Call vs OR did not AND onto stack: {nested}")
+    replaced = drill_child(["--stack", "80-120"],
+                           {"flag": "--stack", "value": "200+"})
+    if replaced != ["--stack", "200+"]:
+        fails.append(f"second stack AND-ed rather than replaced: {replaced}")
+    deep = drill_stack([], [{"flag": "--stack", "value": "80-120"},
+                            {"flag": "--action", "value": "call"},
+                            {"flag": "--combo", "value": "Axs"},
+                            {"flag": "--pos", "value": "BTN"}])
+    if "--pos" in deep:
+        fails.append("drill_stack did not cap at 3")
+    if "vpip" in columns_for(["--street", "flop"]) or \
+            "pfr" in columns_for(["--street", "flop"]):
+        fails.append("postflop study pack still shows VPIP/PFR")
+    axs_where, axs_label, _ = build(["--combo", "Axs"])
+    if "Axs" in axs_where:
+        fails.append("--combo Axs was stored as a name, not expanded")
+    if "combo Axs" not in axs_label:
+        fails.append(f"--combo Axs labelled {axs_label!r}")
     if not pack_wants_won(["--quick", "raise_cbet"]):
         fails.append("raise-cbet pack should carry Won$ as a join extra")
     if not pack_wants_won(["--quick", "cbet_flop"]):
@@ -5315,7 +5828,10 @@ def check(db_path=DB):
               ("--size m", ["--size", "m"]),
               ("--size 0.4-0.75", ["--size", "0.4-0.75"]),
               ("--stack 100+", ["--stack", "100+"]),
-              ("--outcome fold-out", ["--outcome", "fold-out"])]
+              ("--outcome fold-out", ["--outcome", "fold-out"]),
+              ("--action call", ["--action", "call"]),
+              ("--result won", ["--result", "won"]),
+              ("--combo Axs", ["--combo", "Axs"])]
     cases += [(f"--preset {name}", list(flags))
               for name, flags in SMART_REPORTS.items()]
     cases.append(("--player", ["--player", con.execute(
