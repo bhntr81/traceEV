@@ -57,12 +57,24 @@ footnotes, and in the filter dialog under Actions after street / pot
 
 No rewrite. Same `query.build`, same CASE, same click-to-apply.
 
+### Fixed — Windows cp1252 cannot print U+2212
+
+`--hero --filter "Flop c-bets" --stats` on a live corpus printed
+hits and Action Profit, then died in `_print_mean_profit` on the
+note (`bet 5, raise, fold = −5`). The console is cp1252; U+2212
+is not in it. Notes, edges, and the pin-compare line now use
+ASCII `-`. `_harden_stdout` / `_cli_print` replace rather than
+crash if another one slips in. `--check` encodes those strings
+as cp1252.
+
+Live `query.py --check` against the ~249MB `hands.db` passed on
+PR #4 before this branch. Full `check.py` on that corpus is
+still a remaining gap. Window `--check` needs Tk.
+
 ### Not this, on purpose
 
 No HUD. No solver. No Dispersion / EV diff. A raise-back that they
-call is still unpriced -- that pot is not this bet's money. Live
-`check.py` on a real `hands.db` is still a remaining gap. Window
-`--check` needs Tk.
+call is still unpriced -- that pot is not this bet's money.
 
 ### What's next
 

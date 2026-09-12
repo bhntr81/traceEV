@@ -238,7 +238,7 @@ on a filter:
   `--hands` prints `act bb` and `call bb` beside `net bb` so the
   three cannot be mixed up. A dash is unpriced.
 
-  A **called bet** is priced as `(won − chips this seat put in from
+  A **called bet** is priced as `(won - chips this seat put in from
   THIS action on) / bb` -- the same accounting as Call Profit Rate,
   from the aggressor's side. Later streets are assigned back
   because that is what happened after they bet and got called, not
@@ -246,7 +246,7 @@ on a filter:
   pot with no later chips the two numbers sum to `pot_before` (the
   dead money), not to zero.
 
-  - bet 5, called, lose → **−5**
+  - bet 5, called, lose → **-5**
   - bet 5, called, win 20, no more chips → **+15**
   - bet 5, called, then bet 10, win 40 → **+25**
 

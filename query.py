@@ -1310,8 +1310,8 @@ def spot_summary(con, where, argv):
 #   fold always 0
 #   bet 5 into pot 10, everyone folds  →  +10  (pot_before; the bet
 #       comes back, so it is not subtracted)
-#   bet 5, face a raise, fold          →  −5   (amount on THIS action)
-#   bet 5, someone calls, play on      →  (won − chips from here) / bb
+#   bet 5, face a raise, fold          →  -5   (amount on THIS action)
+#   bet 5, someone calls, play on      →  (won - chips from here) / bb
 #       the same accounting Call Profit Rate uses, from the
 #       aggressor's side. Later streets are assigned back because
 #       that is what happened after they bet and got called -- not
@@ -1324,9 +1324,9 @@ def spot_summary(con, where, argv):
 # and we do not have the EV of the 3-bet.
 ACTION_PROFIT_EDGES = (
     "raise-back with no call stays unpriced unless they folded to "
-    "it (that is −this bet). Inventing the 3-bet pot is EV",
+    "it (that is -this bet). Inventing the 3-bet pot is EV",
     "multiway: fold-out is still +pot_before; a call from any seat "
-    "is priced as (won − chips from here); a raise-back with no "
+    "is priced as (won - chips from here); a raise-back with no "
     "call is unpriced unless they folded",
     "uncalled bet: +pot_before is the dead money they take; the "
     "uncalled chips come back and are not subtracted",
@@ -1347,7 +1347,7 @@ ACTION_PROFIT_EDGES = (
 #
 # A priced call is: to_call > 0 (facing a bet or raise, including a
 # limp), not all-in (so a raise was still possible), cash game.
-# Profit is (won − chips this seat put in from THIS action on) / bb.
+# Profit is (won - chips this seat put in from THIS action on) / bb.
 # Later streets are assigned back on purpose -- that is the point of
 # the number. Action Profit now uses the same formula when the
 # aggressor's bet is called; a raise-back with no call is the case
@@ -1359,7 +1359,7 @@ CALL_PROFIT_EDGES = (
     "had called (that would be EV, and we do not have it)",
     "raise had to be an option: to_call > 0 and not all-in. An all-in "
     "call is a call with no raise behind it",
-    "profit is (won − chips this seat put in from this action on) / bb. "
+    "profit is (won - chips this seat put in from this action on) / bb. "
     "Later streets are assigned back; that is accounting, not equity",
     "a limp is a call with raise available and is priced",
     "mean over priced calls, not over opportunities, not Action Profit, "
@@ -1392,7 +1392,7 @@ def action_profit_sql(d="d", s="s"):
     # Called-and-played-on. A call (or all-in call) from another seat
     # after this bet. Same formula as Call Profit Rate: what came
     # back, minus what this seat put in from here. The CASE order
-    # keeps fold-out on +pot_before and bet-fold on −amount -- those
+    # keeps fold-out on +pot_before and bet-fold on -amount -- those
     # two do not need won, and won on an uncalled bet is site-shaped.
     called_on = (
         f"{d}.agg = 1 AND {cash} AND {s}.won IS NOT NULL "
@@ -1439,7 +1439,7 @@ def action_profit_of(con, where):
         "lo": lo, "hi": hi,
         "per": "priced hits",
         "note": ("fold = 0; bet 5 into 10, all fold = +10; "
-                 "bet 5, raise, fold = −5; bet 5, called, lose = −5; "
+                 "bet 5, raise, fold = -5; bet 5, called, lose = -5; "
                  "bet 5, called, win 20 = +15. Mean over priced hits, "
                  "not opportunities, not Won$, not EV."),
         "interval_note": (
@@ -1517,7 +1517,7 @@ def call_profit_of(con, where):
         "lo": lo, "hi": hi,
         "per": "priced calls",
         "note": ("call 5, win the pot, no more chips in = +pot_before; "
-                 "call 5 and lose = −5. Mean over priced calls, not "
+                 "call 5 and lose = -5. Mean over priced calls, not "
                  "opportunities, not Action Profit, not EV."),
         "interval_note": (
             "sampling interval on the observed mean of priced calls, "
@@ -1672,7 +1672,7 @@ def show_compare(got):
     diff = got.get("freq_diff")
     if diff and diff.get("d") is not None:
         print()
-        print(f"freq THIS − PINNED   {100 * diff['d']:+.1f} pts  "
+        print(f"freq THIS - PINNED   {100 * diff['d']:+.1f} pts  "
               f"[{100 * diff['lo']:+.1f}, {100 * diff['hi']:+.1f}]")
         print("  interval on the difference, not whether the two "
               "bands overlap")
@@ -1717,7 +1717,7 @@ def show_compare_sizes(got):
     print("  freq is this size of the parent filter. Checks and folds "
           "have no size, so the column will not sum to 100% there.")
     print("  AP is Action Profit on those hits. --size LETTER opens "
-          "a row. A called bet is (won − chips from here); a "
+          "a row. A called bet is (won - chips from here); a "
           "raise-back with no call stays unpriced unless they folded.")
     print()
 
@@ -1818,7 +1818,7 @@ def show_bet_sizes(con, where, label, argv=None, parts=()):
     print("  freq is this size of the parent filter. Checks and folds")
     print("  have no size, so the column will not sum to 100% there.")
     print("  act bb is Action Profit on those hits -- a called bet is")
-    print("  (won − chips from here); a raise-back with no call stays")
+    print("  (won - chips from here); a raise-back with no call stays")
     print("  unpriced unless they folded. A dash is unpriced.")
 
 
@@ -1830,7 +1830,7 @@ def matching_hands(con, where, limit=None):
     `call_bb` is Call Profit Rate on the same row -- only a call with
     raise available is priced. The three sitting next to each other
     is the point: a won hand whose cbet was called has act bb =
-    (won − chips from the cbet on), which is not net_bb (blinds and
+    (won - chips from the cbet on), which is not net_bb (blinds and
     earlier streets stay out of the cost), and call bb is only
     priced if they were the caller.
     """
@@ -2017,7 +2017,7 @@ def bet_sizes_of(con, where, argv=None):
     situation that includes them.
 
     Clicking a row is `--size` of that letter. Action Profit on those
-    hits prices a called bet as (won − chips from here); a raise-back
+    hits prices a called bet as (won - chips from here); a raise-back
     with no call stays unpriced unless they folded.
     """
     argv = situation_only(list(argv or []))
@@ -4114,6 +4114,34 @@ def _print_coverage(cov):
     print(f"  {cov['note']}")
 
 
+def _harden_stdout():
+    """
+    Windows cp1252 has no U+2212. A note that used it took down
+    --stats after the numbers had already printed, which reads as
+    the report failing rather than as a character the console
+    cannot draw. Replace, do not crash.
+    """
+    out = sys.stdout
+    if hasattr(out, "reconfigure"):
+        try:
+            out.reconfigure(errors="replace")
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
+def _cli_print(*args, **kwargs):
+    """Print that cannot raise UnicodeEncodeError on a Windows console."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        enc = getattr(kwargs.get("file") or sys.stdout, "encoding", None) or "ascii"
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        dest = kwargs.get("file") or sys.stdout
+        text = sep.join(str(a) for a in args)
+        dest.write(text.encode(enc, errors="replace").decode(enc) + end)
+
+
 def _print_mean_profit(name, prof, kind):
     """Action / Call Profit with n and a t interval, or n and why not."""
     if not prof or not prof["n"]:
@@ -4122,15 +4150,15 @@ def _print_mean_profit(name, prof, kind):
         band = ""
         if prof.get("lo") is not None:
             band = f"  [{prof['lo']:+.1f}, {prof['hi']:+.1f}]"
-        print(f"  {name}  {prof['bb_per_hand']:+.2f} bb/hand{band}"
-              f"  n={prof['priced']:,} priced of {prof['n']:,} hits")
-        print(f"  {prof['note']}")
-        print(f"  {prof['interval_note']}")
+        _cli_print(f"  {name}  {prof['bb_per_hand']:+.2f} bb/hand{band}"
+                   f"  n={prof['priced']:,} priced of {prof['n']:,} hits")
+        _cli_print(f"  {prof['note']}")
+        _cli_print(f"  {prof['interval_note']}")
     else:
-        print(f"  {name}  unpriced on {prof['n']:,} hits"
-              f"  ({prof['note']})")
+        _cli_print(f"  {name}  unpriced on {prof['n']:,} hits"
+                   f"  ({prof['note']})")
     for edge in prof.get("edges") or []:
-        print(f"    unpriced: {edge}")
+        _cli_print(f"    unpriced: {edge}")
 
 
 def _print_amount_won(won):
@@ -4143,7 +4171,7 @@ def _print_amount_won(won):
     print(f"  Won$           {won['bb_per_hand']:+.2f} bb/hand{band}"
           f"  n={won['hands']:,} cash hands")
     print(f"                 {won['bb100']:+.1f} bb/100  "
-          f"±{won['error']:.0f}  (1170/√n, same as --results)")
+          f"+/-{won['error']:.0f}  (1170/sqrt(n), same as --results)")
     wband = ""
     if won.get("won_lo") is not None:
         wband = f"  [{won['won_lo']:.0f}, {won['won_hi']:.0f}]"
@@ -5024,7 +5052,7 @@ def check_fixture():
         fails.append(f"--last-raise selected {n}, expected 4")
 
     # Action profit: the three original examples, then a called pot
-    # priced as (won − chips from here) -- Call Profit Rate's formula
+    # priced as (won - chips from here) -- Call Profit Rate's formula
     # from the aggressor's side. A raise-back with no call stays
     # unpriced (h3).
     # spots is required for the cash-game / won / wtsd half; a fold with
@@ -5056,12 +5084,12 @@ def check_fixture():
             fails.append(
                 f"action profit {where} was {got['bb_per_hand']} "
                 f"on {got['priced']} priced, expected {want} on {priced}")
-    # h2: bet 6 into 10, called, lose. chips from here = 6, won = 0 → −6.
+    # h2: bet 6 into 10, called, lose. chips from here = 6, won = 0 → -6.
     called = action_profit_of(con, "hand_id='h2' AND seat=1 AND agg=1")
     if called["priced"] != 1 or called["bb_per_hand"] != -6.0:
         fails.append(
             f"called pot action profit was {called['bb_per_hand']} "
-            f"on {called['priced']} priced, expected −6 on 1")
+            f"on {called['priced']} priced, expected -6 on 1")
     # h3: bet, face a raise, no fold -- raise-back with no call. Unpriced.
     raised = action_profit_of(con, "hand_id='h3' AND seat=1 AND agg=1")
     if raised["priced"] or raised["bb_per_hand"] is not None:
@@ -5116,7 +5144,7 @@ def check_fixture():
     # Call Profit Rate: actual calls when raise was also legal.
     # allin is already on the table (see above).
     # h6: call 5 into pot 15, no more chips, win 20 → +15 (= pot_before)
-    # h7: call 5, lose → −5
+    # h7: call 5, lose → -5
     # h8: all-in call -- raise was not an option, unpriced
     # h9: MTT call -- chips are not dollars, unpriced
     # h10: call 5 then bet 10, win 40 → (40-15)/1 = +25 (later assigned back)
@@ -5310,7 +5338,7 @@ def check_fixture():
     if two["lo"] is None or two["hi"] is None:
         fails.append("n=2 call profit dropped its sampling interval")
 
-    # Won$ of the two priced Action Profit hands: +10 and −5. MTT h9 stays out.
+    # Won$ of the two priced Action Profit hands: +10 and -5. MTT h9 stays out.
     won = amount_won_of(con, "hand_id IN ('h1','h5') AND seat=1 AND agg=1")
     if won["hands"] != 2:
         fails.append(f"Won$ counted {won['hands']} hands, not h1 and h5")
@@ -5327,6 +5355,30 @@ def check_fixture():
     flop_won = amount_won_of(con, "street='flop' AND seat=1 AND agg=1")
     if not flop_won["hands"]:
         fails.append("Won$ blanked under a street filter")
+    # Windows cp1252 has no U+2212. A note that used it took down
+    # --stats after the numbers had already printed.
+    for label, text in (
+            ("action note", one["note"]),
+            ("action interval", one.get("interval_note") or ""),
+            ("call note", two["note"]),
+            ("call interval", two.get("interval_note") or "")):
+        try:
+            text.encode("cp1252")
+        except UnicodeEncodeError:
+            fails.append(f"{label} is not cp1252 -- Windows --stats crashes")
+    for i, edge in enumerate(ACTION_PROFIT_EDGES + CALL_PROFIT_EDGES):
+        try:
+            edge.encode("cp1252")
+        except UnicodeEncodeError:
+            fails.append(f"profit edge {i} is not cp1252 -- Windows --stats crashes")
+    class _Cp1252:
+        encoding = "cp1252"
+        def write(self, s):
+            s.encode("cp1252")
+    try:
+        _cli_print("fold = \u22125", file=_Cp1252())
+    except UnicodeEncodeError:
+        fails.append("_cli_print raised on U+2212 -- the Windows crash")
     con.close()
     print(f"outcome/size/action-profit fixture  "
           f"{'yes' if not fails else 'NO'}")
@@ -5347,6 +5399,7 @@ def check(db_path=DB):
     different population than its heading claims. So each filter must both
     run and select strictly fewer rows than no filter at all.
     """
+    _harden_stdout()
     fails = []
     fails.extend(check_shape())
     fails.extend(check_fixture())
@@ -5796,6 +5849,7 @@ def check(db_path=DB):
 
 
 def main(argv):
+    _harden_stdout()
     if not argv or "--help" in argv or "-h" in argv:
         usage()
         return 0
