@@ -33,6 +33,9 @@ money is summed over the hands those decisions happened in.
     python query.py --player dblj32 --pos BTN --stats
     python query.py --cohort --hands ">=500" --vpip ">=28" --pfr "<18" \
         --street flop --stats
+    python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+    python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10 \
+        --pos BTN --stats
     python query.py --hero --board mono --results
     python query.py --hero --pot 3bet --hands
     python query.py --where "eff_bb > 150 AND fl_paired=1" --stats
@@ -507,7 +510,7 @@ def save_filter(name, argv, path=None, db=None):
         raise ValueError(f"{name!r} is one of the reports built in, and two "
                          f"things under one name in the report box is one "
                          f"thing nobody can pick")
-    if "--cohort" in argv:
+    if "--cohort" in argv or any(a in players.COHORT_ALIASES for a in argv):
         raise ValueError("a player cohort cannot be part of a report -- a "
                          "cohort chooses people and a report describes a "
                          "situation. Save the situation and pick the players "
@@ -1109,13 +1112,15 @@ def spot_summary(con, where, argv):
     argv = situation_only(argv)
     hands = con.execute(
         "SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
-        f"FROM decisions WHERE {who_where(argv)})").fetchone()[0]
+        f"FROM decisions WHERE {with_cohort(con, who_where(argv))})"
+    ).fetchone()[0]
     quick = flag_values(argv, "--quick")
     chained = "--after" in argv or "--then" in argv
     label = "aggressive"
     if len(quick) == 1 and quick[0] in BY_KEY and not chained:
         st = BY_KEY[quick[0]]
         rest, _, _ = build(drop_flag(argv, "--quick"))
+        rest = with_cohort(con, rest)
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions "
             f"WHERE ({st.chance}) AND ({rest})").fetchone()[0]
@@ -1128,6 +1133,7 @@ def spot_summary(con, where, argv):
         hits = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
         parent, _, _ = build(drop_flag(drop_flag(argv, "--after"), "--then"))
+        parent = with_cohort(con, parent)
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
         label = "this chain"
@@ -1135,6 +1141,7 @@ def spot_summary(con, where, argv):
         hits = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
         parent, _, _ = build(drop_flag(argv, "--outcome"))
+        parent = with_cohort(con, parent)
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
         label = "this outcome"
@@ -1152,6 +1159,7 @@ def spot_summary(con, where, argv):
                 parent_argv = drop_flag(parent_argv, flag)
                 label = word
         parent, _, _ = build(parent_argv)
+        parent = with_cohort(con, parent)
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
     elif "--aggressive" in argv or "--allin" in argv:
@@ -1159,6 +1167,7 @@ def spot_summary(con, where, argv):
             f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
         parent, _, _ = build(drop_flag(drop_flag(argv, "--aggressive"),
                                        "--allin"))
+        parent = with_cohort(con, parent)
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
         label = "aggressive" if "--aggressive" in argv else "all-in"
@@ -1298,6 +1307,7 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
     """
     where_a, label_a, _ = build(situation_only(argv_a))
     where_b, label_b, _ = build(situation_only(argv_b))
+    where_a, where_b = with_cohort(con, where_a), with_cohort(con, where_b)
     sa = spot_summary(con, where_a, argv_a)
     sb = spot_summary(con, where_b, argv_b)
     pa = action_profit_of(con, where_a)
@@ -2269,6 +2279,7 @@ def show_versus(con, argv_a, argv_b, min_n=30, only=None):
     where_a, label_a, _pa = build([a for a in argv_a if a not in OPTIONS
                                    and not _is_value_of(argv_a, a)])
     where_b, label_b, _pb = build(argv_b)
+    where_a, where_b = with_cohort(con, where_a), with_cohort(con, where_b)
     a_counts = stat_rates(con, where_a)
     b_counts = stat_rates(con, where_b)
 
@@ -3177,7 +3188,67 @@ def select_cohort(con, spec):
                     [(row[0], row[1]) for row in rows])
     con.execute("CREATE INDEX IF NOT EXISTS _cohort_ix "
                 "ON _cohort(site, player)")
-    return len(rows)
+    return players.cohort_summary(rows)
+
+
+# The join every report uses once a cohort is parked. Pin, compare,
+# Hits/Opps and versus all call `build` again, which cannot see the
+# temp table, so they AND this in through `with_cohort` rather than
+# smuggling a `--where` that `who_only` would drop.
+COHORT_PRED = (
+    "EXISTS (SELECT 1 FROM _cohort c "
+    "WHERE c.site = decisions.site AND c.player = decisions.player)"
+)
+
+
+def cohort_loaded(con):
+    return bool(con.execute(
+        "SELECT 1 FROM sqlite_temp_master "
+        "WHERE type='table' AND name='_cohort'").fetchone())
+
+
+def with_cohort(con, where):
+    """AND the parked cohort into a WHERE rebuilt from argv."""
+    if con is None or not cohort_loaded(con) or COHORT_PRED in where:
+        return where
+    return f"({where}) AND {COHORT_PRED}"
+
+
+def apply_cohort(con, spec, where, label=None):
+    """
+    Park the players, narrow `where`, and return the header a report prints.
+
+    One function so the window, the page and the command line cannot
+    drift on what "this cohort" means -- the failure mode last time was
+    pin/compare returning before the EXISTS was applied, so a pooled
+    report of fish was the whole database wearing that heading.
+    """
+    if spec is None:
+        return where, None, label
+    summary = select_cohort(con, spec)
+    header = {
+        "describe": players.describe_cohort(spec),
+        "players": summary["players"],
+        "hands": summary["hands"],
+        "vpip": summary.get("vpip"),
+        "pfr": summary.get("pfr"),
+        "bb100": summary.get("bb100"),
+    }
+    where = with_cohort(con, where)
+    if label is not None:
+        n_pl = header["players"]
+        who = "player" if n_pl == 1 else "players"
+        label = (f"{label}, cohort: {header['describe']} "
+                 f"({n_pl} {who}, {header['hands']:,} hands)")
+    return where, header, label
+
+
+def show_cohort_banner(header):
+    """#players and #hands above the report numbers, not only in the label."""
+    if not header:
+        return
+    print(f"COHORT  {header['describe']}")
+    print(f"  {header['players']:,} players · {header['hands']:,} hands")
 
 
 def results_of(con, pairs):
@@ -3281,7 +3352,11 @@ def usage():
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
     print(f"    {'--where':14} raw SQL over `decisions`, for anything above")
     print("\n  Multiple Players cohort filters:")
-    print("    --cohort       select players before filtering situations")
+    print("    --cohort [EXPR]  select players before filtering situations")
+    print("                     EXPR: vpip>=40,pfr<=10,hands>=100")
+    print("    --cohort-hands N   players with at least N hands (bare N is >=)")
+    print("    --cohort-vpip  V   player VPIP (40+ means >=40)")
+    print("    --cohort-pfr   V   player PFR (<=10, 18, 10+)")
     print("    --hands VALUE  player hand count, e.g. >=500")
     print("    --vpip VALUE   player VPIP percentage, e.g. >=28")
     print("    --pfr VALUE    player PFR percentage, e.g. <18")
@@ -3618,6 +3693,107 @@ def check_compare():
     return fails
 
 
+def check_cohort():
+    """
+    Compact parse, aliases, the pooled header, and pin/compare staying
+    on the parked players. No corpus -- three rows in `players` and a
+    handful of decisions are enough to tell a cohort from everybody.
+    """
+    fails = []
+    fails.extend(players.check_parse())
+
+    spec, rest = players.parse_cohort(
+        ["--cohort", "vpip>=40,pfr<=10,hands>=100", "--filter", "3bet"])
+    if spec is None or spec[0] != [("vpip", ">=40"), ("pfr", "<=10"),
+                                   ("hands", ">=100")]:
+        fails.append(f"compact --cohort parsed {spec}")
+    if rest != ["--filter", "3bet"]:
+        fails.append(f"compact --cohort leftover {rest}")
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute(
+        "CREATE TABLE players ("
+        "site TEXT, player TEXT, durable INT, hands INT, "
+        "vpip REAL, pfr REAL, threebet REAL, fold_to_threebet REAL, "
+        "wwsf REAL, wtsd REAL, wsd REAL, bb100 REAL, class TEXT)")
+    con.executemany(
+        "INSERT INTO players VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("acr", "loose", 1, 200, 45, 8, None, None, None, None, None, 0, "fish"),
+         ("acr", "tight", 1, 500, 22, 18, None, None, None, None, None, 5, "reg"),
+         ("acr", "short", 1, 20, 50, 5, None, None, None, None, None, 0, "unknown")])
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, n INT, seat INT, action TEXT, agg INT, "
+        "to_call REAL, amount REAL, pot_before REAL, bb REAL, "
+        "first_in INT, was_agg INT, pot_frac REAL, street TEXT, "
+        "site TEXT, player TEXT)")
+    con.execute(
+        "CREATE TABLE spots ("
+        "hand_id TEXT, seat INT, fmt TEXT, wtsd INT, won REAL, net_bb REAL)")
+    # loose: two first-in bets (the compare fixture). tight/short: one each,
+    # so a cohort that forgot to join would still have "some" hits.
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "loose"),
+         ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop", "acr", "tight"),
+         ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "loose"),
+         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop", "acr", "tight"),
+         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", "acr", "loose"),
+         ("h9", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "tight"),
+         ("h8", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "short")])
+    con.executemany(
+        "INSERT INTO spots VALUES (?,?,?,?,?,?)",
+        [("h1", 1, "RING", 0, 15, 10),
+         ("h5", 1, "RING", 0, 0, -5),
+         ("h9", 1, "RING", 0, 15, 10),
+         ("h8", 1, "RING", 0, 15, 10)])
+
+    spec, _argv = players.parse_cohort(
+        ["--cohort", "vpip>=40,pfr<=10,hands>=100"])
+    where, header, label = apply_cohort(con, spec, "1=1", "everything")
+    if header is None:
+        fails.append("apply_cohort returned no header")
+    else:
+        if header["players"] != 1 or header["hands"] != 200:
+            fails.append(
+                f"header was {header['players']} players / "
+                f"{header['hands']} hands, not 1 / 200")
+        if "vpip" not in header["describe"] or "hands" not in header["describe"]:
+            fails.append(f"header describe dropped the filter: {header['describe']}")
+        if label is None or "1 player" not in label or "200" not in label:
+            fails.append(f"report label missing counts: {label!r}")
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    if n != 3:
+        fails.append(f"pooled cohort kept {n} decisions, not the loose player's 3")
+
+    # Pin/compare rebuild WHERE from argv. Without with_cohort they
+    # would count tight's first-in too and the heading would still
+    # say "fish with 100+ hands".
+    got = compare_of(con, ["--first-in"], ["--last-raise"],
+                     "first in", "last raise")
+    if got["a"]["summary"]["opps"] != 2:
+        fails.append(
+            f"compare under cohort saw {got['a']['summary']['opps']} "
+            f"first-in opps, not the loose player's 2")
+    if not cohort_loaded(con):
+        fails.append("apply_cohort did not park _cohort")
+
+    spec_fish, _ = players.parse_cohort(
+        ["--cohort-hands", "100", "--cohort-vpip", "40+", "--class", "fish"])
+    rows = players.cohort(con, *spec_fish)
+    if [r["player"] for r in rows] != ["loose"]:
+        fails.append(f"--cohort-hands/--class fish selected "
+                     f"{[r['player'] for r in rows]}")
+    con.close()
+    print(f"multi-player cohort           "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check_fixture():
     """
     Outcome / size / first-in against a hand-built table.
@@ -3777,6 +3953,7 @@ def check(db_path=DB):
     fails.extend(check_fixture())
     fails.extend(check_filterdef())
     fails.extend(check_compare())
+    fails.extend(check_cohort())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -4340,32 +4517,31 @@ def main(argv):
         raise SystemExit("--pin, --compare and --versus are three verbs -- "
                          "use one. --pin / --compare are the two-column "
                          "spot summary; --versus is the Holm table.")
-    if compare_names or pinned:
-        if compare_names:
-            argv_a, argv_b = compare_sides(argv, compare_names[0],
-                                           compare_names[1])
-            name_a, name_b = compare_names
+    if compare_names or pinned or other is not None:
+        if not Path(DB).exists():
+            raise SystemExit(f"no database at {DB} -- load some hands first")
+        con = sqlite3.connect(DB)
+        if cohort_spec is not None:
+            _, header, _ = apply_cohort(con, cohort_spec, "1=1")
+            show_cohort_banner(header)
+        if compare_names or pinned:
+            if compare_names:
+                argv_a, argv_b = compare_sides(argv, compare_names[0],
+                                               compare_names[1])
+                name_a, name_b = compare_names
+            else:
+                argv_a, argv_b = pin_sides(argv, pinned)
+                name_a, name_b = None, pinned
+            show_compare(compare_of(con, argv_a, argv_b, name_a, name_b))
         else:
-            argv_a, argv_b = pin_sides(argv, pinned)
-            name_a, name_b = None, pinned
-        if not Path(DB).exists():
-            raise SystemExit(f"no database at {DB} -- load some hands first")
-        con = sqlite3.connect(DB)
-        show_compare(compare_of(con, argv_a, argv_b, name_a, name_b))
-        con.close()
-        return 0
-    if other is not None:
-        try:
-            other_argv, named_spot = resolve_filter(other), True
-        except SystemExit:
-            other_argv, named_spot = shlex.split(other), False
-        if named_spot:
-            other_argv = who_only(argv) + without_who(other_argv)
-        if not Path(DB).exists():
-            raise SystemExit(f"no database at {DB} -- load some hands first")
-        con = sqlite3.connect(DB)
-        show_versus(con, argv, other_argv, min_n,
-                     only=set(columns) if opt("--show") else None)
+            try:
+                other_argv, named_spot = resolve_filter(other), True
+            except SystemExit:
+                other_argv, named_spot = shlex.split(other), False
+            if named_spot:
+                other_argv = who_only(argv) + without_who(other_argv)
+            show_versus(con, argv, other_argv, min_n,
+                         only=set(columns) if opt("--show") else None)
         con.close()
         return 0
 
@@ -4383,12 +4559,8 @@ def main(argv):
         raise SystemExit(f"no database at {DB} -- load some hands first")
     con = sqlite3.connect(DB)
     if cohort_spec is not None:
-        count = select_cohort(con, cohort_spec)
-        label += (f", cohort: {players.describe_cohort(cohort_spec)} "
-                  f"({count} players)")
-        where = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
-                 "WHERE c.site = decisions.site AND "
-                 "c.player = decisions.player)")
+        where, header, label = apply_cohort(con, cohort_spec, where, label)
+        show_cohort_banner(header)
     if mode == "--graph":
         show_graph(con, where, label, opt("--out", "graph.html"))
     elif mode == "--hands":

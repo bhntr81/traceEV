@@ -8,6 +8,38 @@ Newest first.
 
 ---
 
+## Multi-Player cohorts
+
+Hand2Note's Range Research is one report over a set of people.
+`--cohort` already selected players; it did not say how many hands
+they covered, it did not accept the compact string the research
+brief writes, and Pin / compare returned *before* the pool was
+parked -- so a two-column view of "fish with 100+ hands" was the
+whole database wearing that heading.
+
+    python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+    python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10
+
+The header is now `#players` and `#hands`, then the ordinary report
+numbers. Existing filters, Smart Reports and Pin run on the pooled
+hands. `40+` is `>=40`. `--class fish` is the cheap reg/fish
+checkbox; it was already a flag.
+
+The window's Players dialog takes the compact string. The page grew
+a Multiple Players fieldset. `--check` holds the parse, the header
+shape, and that compare under a cohort sees only those players --
+no `hands.db` required.
+
+### Not this, on purpose
+
+No HUD. No solver. No Expression Value/Opps strings
+(`VPIP>30 AND HandsCount>1000`) -- that is the Expressions
+milestone. No Preflop Range on the pool. No Bet Sizes view. No
+second Multi-Player compare (two cohorts side by side); `--versus`
+already compares two populations.
+
+---
+
 ## Pin / side-by-side compare
 
 Hand2Note's `+` adds a pane; Pin freezes one report while you change

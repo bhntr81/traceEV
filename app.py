@@ -1044,14 +1044,9 @@ class App(ImportMixin, ttk.Frame):
         con = sqlite3.connect(DB)
         try:
             if cohort_spec is not None:
-                count = query.select_cohort(con, cohort_spec)
-                label += (f", cohort: "
-                          f"{players.describe_cohort(cohort_spec)} "
-                          f"({count} players)")
-                where = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
-                         "WHERE c.site = decisions.site AND "
-                         "c.player = decisions.player)")
-            out = {"view": view}
+                where, _header, label = query.apply_cohort(
+                    con, cohort_spec, where, label)
+            out = {"view": view, "label": label}
             if view == "stats":
                 out["n"], out["rows"] = query.stats_of(con, where)
                 out["actions"] = query.actions_of(con, where)
@@ -1149,6 +1144,8 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        if out.get("label"):
+            self.filter_line.configure(text="filter: " + out["label"])
         if view == "graph":
             self.series = out.get("series")
             self._draw_graph(out.get("why") or out.get("error"))
@@ -1640,8 +1637,19 @@ class App(ImportMixin, ttk.Frame):
         except SystemExit:
             return "…"
         if cohort_spec is not None:
-            label += ", player cohort"
+            label += ", cohort: " + players.describe_cohort(cohort_spec)
         return "all hands" if label == "everything" else label
+
+
+def _cohort_expr(conditions):
+    """The compact string the dialog started from, so it can be edited back."""
+    parts = []
+    for field, value in conditions:
+        if str(value)[:1] in "<>=":
+            parts.append(f"{field}{value}")
+        else:
+            parts.append(f"{field}={value}")
+    return ",".join(parts)
 
 
 class CohortDialog(tk.Toplevel):
@@ -1663,7 +1671,7 @@ class CohortDialog(tk.Toplevel):
         self.app = app
         self.title("Players")
         self.configure(background=BG)
-        self.geometry("520x430")
+        self.geometry("520x500")
         self.transient(app.master)
         self.grab_set()
 
@@ -1672,7 +1680,8 @@ class CohortDialog(tk.Toplevel):
         self.values = {field: tk.StringVar(value=current.get(field, default))
                        for field, _label, default in self.FIELDS}
         current_spec = app.cohort_spec or ([], None, None, None)
-        _conditions, site, klass, durable = current_spec
+        conditions, site, klass, durable = current_spec
+        self.expr = tk.StringVar(value=_cohort_expr(conditions))
         self.site = tk.StringVar(value=site or "")
         self.klass = tk.StringVar(value=klass or "")
         self.durable = tk.StringVar(
@@ -1681,8 +1690,14 @@ class CohortDialog(tk.Toplevel):
         ttk.Label(self, text="PLAYER COHORT", style="Title.TLabel").pack(
             anchor="w", padx=24, pady=(22, 4))
         ttk.Label(self, text="Filter players first; the selected cohort is "
-                  "then used by every report tab.",
-                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 18))
+                  "then used by every report tab. 40+ means >=40.",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
+        compact = ttk.Frame(self)
+        compact.pack(fill="x", padx=24, pady=(0, 10))
+        ttk.Label(compact, text="or type", width=14).pack(side="left")
+        ttk.Entry(compact, textvariable=self.expr, width=36).pack(side="left")
+        ttk.Label(self, text="vpip>=40,pfr<=10,hands>=100",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
         body = ttk.Frame(self)
         body.pack(fill="x", padx=24)
         for field, label, _default in self.FIELDS:
@@ -1714,6 +1729,7 @@ class CohortDialog(tk.Toplevel):
         self.bind("<Return>", lambda _e: self.apply())
 
     def clear(self):
+        self.expr.set("")
         for value in self.values.values():
             value.set("")
         self.site.set("")
@@ -1722,10 +1738,14 @@ class CohortDialog(tk.Toplevel):
 
     def apply(self):
         argv = ["--cohort"]
+        compact = self.expr.get().strip()
+        if compact:
+            argv.append(compact)
+        flags = {"fold_to_threebet": "--fold-to-threebet"}
         for field, _label, _default in self.FIELDS:
             value = self.values[field].get().strip()
             if value:
-                argv += ["--" + field, value]
+                argv += [flags.get(field, "--" + field), value]
         for flag, value in (("--site", self.site.get()),
                             ("--class", self.klass.get()),
                             ("--durable", self.durable.get())):

@@ -568,36 +568,55 @@ Every filter above narrows *situations*. This one narrows *people* first, and
 then the situation filters apply inside what is left:
 
 ```bash
+python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10 --pos BTN
 python query.py --cohort --hands ">=500" --site acr
 python query.py --cohort --vpip ">=35" --pfr "<12" --pos BTN --street flop
-python query.py --cohort --class reg --durable 1 --pot 3bet --by position
+python query.py --cohort --class fish --hands ">=100" --pot 3bet --by position
 ```
 
-`--cohort` turns the flags after it into a player filter: `--hands`,
-`--vpip`, `--pfr`, `--gap`, `--threebet`, `--fold-to-threebet`, `--wwsf`,
-`--wtsd`, `--wsd`, `--bb100`, each taking a comparator and a number
-(`>=500`, `<12`, `28`), plus `--site`, `--class` (reg, fish, unknown) and
-`--durable` (1 for a named player, 0 for a session-only seat). In the window
-it is the **Players** button.
+`--cohort` selects people first; every situation filter, Smart Report, Pin
+and Faced Next then runs on the **pooled** hands of those players. One
+aggregated report, not a row per name.
 
-The heading says which players, not just how many:
+Three writings of the same idea:
+
+- **`--cohort 'vpip>=40,pfr<=10,hands>=100'`** — compact string. `40+` is
+  `>=40`. `class=fish` / `site=acr` / `durable=1` are allowed in the
+  string. This is not Hand2Note's Expression language (`VPIP>30 AND
+  HandsCount>1000`); that is a later milestone.
+- **`--cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10`** — aliases
+  that do not collide with `--hands` the view. A bare number on
+  `--cohort-hands` means at least that many.
+- **`--cohort --hands ">=500" --vpip ">=28"`** — the original flags. The
+  first `--hands` after `--cohort` is the player's hand count; a second
+  `--hands` is the view. If the compact string or `--cohort-hands` already
+  set the sample, `--hands` is only the view.
+
+`--class` (reg / fish / unknown) and `--durable` still work. In the window
+it is the **Players** button (a compact box plus the same fields). On the
+page it is the **multiple players** fieldset.
+
+The heading says which players **and** how many hands they cover:
 
 ```
-filter: pos BTN, cohort: hands >=500, site acr (8 players)
+COHORT  vpip >=40, pfr <=10, hands >=100
+  12 players · 4,810 hands
+
+filter: 3-bet pots, cohort: vpip >=40, pfr <=10, hands >=100 (12 players, 4,810 hands)
 ```
 
-Two of these words already mean something else, and both work anyway:
-
-- **`--hands`** is a player's hand count here and the name of a view in
-  `query.py`. The first one after `--cohort` is the cohort's; a second is
-  the view. `--cohort --hands ">=500" --hands` means "players with 500
-  hands, listed as hands".
-- **`--site`** picks the pool a player belongs to. The cohort is joined on
-  site as well as name, so the situations are narrowed to that site too.
+`--site` picks the pool a player belongs to. The cohort is joined on site
+as well as name, so the situations are narrowed to that site too.
 
 **A cohort is not a saved report and cannot be part of one.** A cohort
 chooses people and a report describes a situation; save the situation and
 pick the players beside it.
+
+Not this, on purpose: Expression Value/Opps cohort strings; Preflop Range
+on the pool; Bet Sizes as a cohort view; two cohorts side by side (that is
+`--versus` of two populations, already shipped, not a second Multi-Player
+compare).
 
 Bear the sample size in mind before reading anything into a small cohort. 85
 ACR players have 100+ hands and eight have 500+, so `--hands ">=500"` is

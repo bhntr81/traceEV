@@ -41,6 +41,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import compact
+import players
 import query
 from stats import BY_KEY, STATS
 
@@ -104,14 +105,28 @@ def argv_from(params):
         argv = [a for i, a in enumerate(argv)
                 if a != "--size" and (i == 0 or argv[i - 1] != "--size")]
         argv += ["--size", pot_frac]
-    return argv
+    # Cohort first so parse_cohort sees `--site` / `--class` after it
+    # as the player filter, the same order the command line uses.
+    cohort = (params.get("cohort", [""])[0] or "").strip()
+    klass = (params.get("cohort_class", [""])[0] or "").strip()
+    extra = []
+    if cohort:
+        extra += ["--cohort", cohort]
+    elif klass:
+        extra.append("--cohort")
+    if klass and klass not in ("any",):
+        extra += ["--class", klass]
+    return extra + argv
 
 
 def payload(con, params):
     """Whatever the page asked for, as plain data."""
     view = params.get("view", ["stats"])[0]
     argv = argv_from(params)
+    spec, argv = players.parse_cohort(argv)
     where, label, parts = query.build(argv)
+    if spec is not None:
+        where, _header, label = query.apply_cohort(con, spec, where, label)
 
     def nothing():
         """Why this filter is empty, so the page never just goes blank."""
@@ -324,6 +339,17 @@ td.compact{text-align:left;font-weight:500}
       <span class="chip" data-f="pool">pool</span>
     </div>
   </fieldset>
+  <fieldset><legend>multiple players</legend>
+    <label>cohort
+      <input id="cohort" placeholder="vpip>=40,pfr<=10,hands>=100"></label>
+    <label>class
+      <select id="cohort_class">
+        <option value="">any class</option>
+        <option value="fish">fish</option>
+        <option value="reg">reg</option>
+        <option value="unknown">unknown</option>
+      </select></label>
+  </fieldset>
   <fieldset><legend>site &amp; stake</legend>
     <label><select id="site"><option value="">any site</option></select></label>
     <label><select id="stake"><option value="">any stake</option></select></label>
@@ -476,7 +502,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -494,7 +520,7 @@ $('#tabs').addEventListener('click', e => {
     }
     load();
   }));
-['where','pot_frac','stack','pre','flop','turn','river','line','node']
+['where','pot_frac','stack','pre','flop','turn','river','line','node','cohort']
   .forEach(id => $('#'+id).addEventListener('keydown', e => {
     if (e.key === 'Enter') load();
   }));
@@ -508,7 +534,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -904,10 +930,18 @@ def check(db_path=DB):
          ["--players", "6", "--live", "2"]),
         ({"after": ["none"]}, ["--after", "none"]),
         ({"after": ["3bet"]}, ["--after", "3bet"]),
+        ({"cohort": ["vpip>=40,pfr<=10,hands>=100"], "hero": ["1"]},
+         ["--cohort", "vpip>=40,pfr<=10,hands>=100", "--hero"]),
+        ({"cohort": ["hands>=100"], "cohort_class": ["fish"], "pos": ["BTN"]},
+         ["--cohort", "hands>=100", "--class", "fish", "--pos", "BTN"]),
     ]
     for form, argv in cases:
-        a, _label_a, _pa = query.build(argv_from(form))
-        b, _label_b, _pb = query.build(argv)
+        spec_a, rest_a = players.parse_cohort(argv_from(form))
+        spec_b, rest_b = players.parse_cohort(list(argv))
+        a, _label_a, _pa = query.build(rest_a)
+        b, _label_b, _pb = query.build(rest_b)
+        if spec_a != spec_b:
+            fails.append(f"{form} cohort {spec_a!r} but CLI gives {spec_b!r}")
         if sorted(a.split(" AND ")) != sorted(b.split(" AND ")):
             fails.append(f"{form} -> {a!r} but CLI gives {b!r}")
     print(f"page and command line agree  {len(cases) - len(fails)}/{len(cases)}")
@@ -916,6 +950,15 @@ def check(db_path=DB):
 
     # Every view must answer, including on a filter that matches nothing --
     # which a user will type within a minute of being handed a form.
+    # Connecting when `hands.db` is missing creates an empty file, and
+    # every later `--cohort` / `--pin` then finds that file and fails
+    # inside it instead of saying to load hands.
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- form/CLI only)")
+        return not fails
     con = sqlite3.connect(db_path)
     views = ("stats", "report", "results", "hands", "graph")
     broke = []
