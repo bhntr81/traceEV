@@ -17,7 +17,8 @@ back.
 
 **PLO study is a new track**, stacked on the NLHE freeze. Import
 (including Bodog/Bovada), `--game` / `--game-type`, Omaha 2-of-4
-strength, Omaha hist groups / Weak %, 4/5-card compact, and the
+strength, Omaha hist groups / Weak %, 4/5-card compact and
+replayer (muck slots, two-line wrap, used-two highlight), and the
 13×13 gate shipped. What stays out of this track is still out: no
 HUD, no solver, no invented equity, no combinatoric Omaha heat
 map, no PokerStars Omaha import, no Magnum AA classes.

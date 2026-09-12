@@ -1137,6 +1137,20 @@ Nuts+, not "top pair". Weak % reads Omaha flags. Trap
 (1-heart ≠ flush) and royal-looking wrap+FD are golden in
 `fixtures/plo_parity/`. Default Hold'em hist stays Hold'em.
 
+## Run — PLO Compact + Replayer (4/5 cards)
+
+**Goal:** Compact N∈{2,4,5}; placeholders for mucked; overflow
+is two-line, never dropped holes. Replayer deals PLO4/PLO5
+including showdown; optional highlight of the exactly-two
+cards that made the hand. Reports / Sessions / Marks / Notes
+variant-aware. Snapshots + Ignition/ACR smoke. NLHE intact.
+No HUD, no solver, no invented EV.
+
+**Result:** `card_row` / `hand_cell` / `used_in_made`. Compact
+prepends four or five cards or `??` slots and wraps at 88.
+Replayer and every compact list share that row. Hold'em
+combo column and H2N example unchanged.
+
 ## Run — Statistics Profile Menu + Save/Open
 
 **Goal:** H2N Profile Menu and Save/Open Report on the
