@@ -1120,8 +1120,22 @@ Bodog/Bovada PLO files import. PLO4 report ≠ NLHE sample.
 `--game-type` / `--type` / `--variant`. Compact prepends
 four/five cards. 13×13 gated with a reason. Parity J on
 `fixtures/plo_parity/`. NLHE A–I still PASS. Deferred: PLO
-heat map, PLO6/Omaha8, taxonomy polish, HUD, Stars Omaha,
-PLO player class.
+heat map, PLO6/Omaha8, HUD, Stars Omaha, PLO player class.
+
+## Run — PLO hand-strength (Omaha groups)
+
+**Goal:** `best_omaha_hand` (exactly 2 hole + 3 board; PLO5
+still 2 of 5). Omaha-scoped hist groups with `is_weak`.
+Histograms / Flop Hand / Weak % switch by variant. Hold'em
+`--made` refused on PLO. verify-parity Omaha golden
+fixtures; NLHE path unchanged. No combinatoric ranges,
+PLO6/8, hi/lo, or Magnum AA.
+
+**Result:** `OMAHA_HIST_SPEC` / `OMAHA_WEAK`. PLO histogram
+is Combo / Wrap / FD / Air / Weak made / Medium / Strong /
+Nuts+, not "top pair". Weak % reads Omaha flags. Trap
+(1-heart ≠ flush) and royal-looking wrap+FD are golden in
+`fixtures/plo_parity/`. Default Hold'em hist stays Hold'em.
 
 ## Run — Statistics Profile Menu + Save/Open
 

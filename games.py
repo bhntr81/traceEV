@@ -197,6 +197,63 @@ def type_label(key):
     return spec["label"] if spec else key
 
 
+def omaha_asked(argv):
+    """
+    True when the filter named only Omaha.
+
+    `--game all` and a mix with Hold'em are False -- those are not
+    an Omaha histogram. Default (no flag) is Hold'em. Used to pick
+    the postflop groups and to refuse Hold'em `--made` labels.
+    """
+    argv = list(argv or [])
+    found = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--game", "--variant") and i + 1 < len(argv):
+            try:
+                got = resolve(argv[i + 1])
+            except KeyError:
+                i += 2
+                continue
+            if got is None:
+                return False
+            if any(g == "HOLDEM" for g in got):
+                return False
+            if got and all(g in ("OMAHA", "OMAHA5") for g in got):
+                found = True
+            i += 2
+            continue
+        if a in ("--game-type", "--type") and i + 1 < len(argv):
+            try:
+                keys = resolve_type(argv[i + 1])
+            except KeyError:
+                i += 2
+                continue
+            gs = {TYPES[k]["game"] for k in keys}
+            if "HOLDEM" in gs:
+                return False
+            if gs and gs <= {"OMAHA", "OMAHA5"}:
+                found = True
+            i += 2
+            continue
+        i += 1
+    return found
+
+
+def omaha_where(where):
+    """
+    True when the compiled SQL already pinned Omaha, and only Omaha.
+
+    `--game holdem,plo` compiles to an IN-list that mentions both;
+    that is a mixed sample and not an Omaha histogram. Substring
+    "OMAHA" alone would have flipped the bars on a mix.
+    """
+    if not where or "OMAHA" not in where:
+        return False
+    return "HOLDEM" not in where
+
+
 def resolve(words):
     """
     `--game plo,plo5` as the stored values, or None for `--game all`.
@@ -336,6 +393,19 @@ def check():
         print("cash test matches sites.CASH   NO")
     else:
         print("cash test matches sites.CASH   yes")
+
+    if not omaha_asked(["--game", "plo"]) or not omaha_asked(
+            ["--game-type", "plo4-cash"]):
+        fails.append("omaha_asked missed a PLO flag")
+    if omaha_asked([]) or omaha_asked(["--game", "all"]) or omaha_asked(
+            ["--game", "holdem,plo"]):
+        fails.append("omaha_asked treated Hold'em or all as Omaha")
+    if not omaha_where("game = 'OMAHA' AND street = 'flop'"):
+        fails.append("omaha_where missed game = 'OMAHA'")
+    if omaha_where("game = 'HOLDEM'"):
+        fails.append("omaha_where fired on Hold'em")
+    if omaha_where("game IN ('HOLDEM', 'OMAHA')"):
+        fails.append("omaha_where treated a Hold'em+PLO mix as Omaha")
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")

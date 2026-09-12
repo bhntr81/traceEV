@@ -551,6 +551,53 @@ def check_J(con):
         fails.append(
             f"J: ACR PLO4 flop was {made}, not Omaha overpair")
 
+    trap = con.execute(
+        "SELECT made, fd, sd FROM decisions "
+        "WHERE hand_id='cp-2459809001' AND street='flop' "
+        "AND cards LIKE 'Ah Kd 7c 2s%' LIMIT 1").fetchone()
+    if trap is None:
+        fails.append("J: 1-heart trap hand was not imported")
+    elif trap[0] != "high card" or trap[1] is not None:
+        fails.append(f"J: 1-heart trap was {trap}, not ace-high without FD")
+
+    combo = con.execute(
+        "SELECT made, fd, sd FROM decisions "
+        "WHERE hand_id='cp-2459809002' AND street='flop' "
+        "AND cards LIKE 'As Ks Qs 2d%' LIMIT 1").fetchone()
+    if combo is None:
+        fails.append("J: combo golden hand was not imported")
+    elif combo[0] in ("straight flush", "flush", "straight"):
+        fails.append(f"J: royal-looking PLO flop was named {combo[0]}")
+    elif combo[2] != "wrap" or combo[1] != "nut":
+        fails.append(f"J: combo golden was {combo}, not high card + nut + wrap")
+
+    hist = query.hist_postflop_of(
+        con, plo_w, argv=["--game-type", "plo4-cash"])
+    keys = {r["key"] for r in hist["rows"]}
+    if hist.get("kind") != "omaha":
+        fails.append("J: PLO histogram stayed on Hold'em groups")
+    if "top_pair" in keys:
+        fails.append("J: PLO histogram still has a Hold'em top_pair bar")
+    for need in ("combo", "wrap", "fd", "air", "weak_made",
+                 "medium", "strong", "nuts"):
+        if need not in keys:
+            fails.append(f"J: PLO hist missing {need}")
+    hby = {r["key"]: r for r in hist["rows"]}
+    if not hby.get("medium", {}).get("n"):
+        fails.append("J: overpair did not sit on Medium")
+    if not hby.get("combo", {}).get("n"):
+        fails.append("J: wrap+FD did not sit on Combo")
+    if hby.get("combo", {}).get("is_weak") is not True:
+        fails.append("J: Combo is not tagged is_weak")
+    if hby.get("medium", {}).get("is_weak"):
+        fails.append("J: Medium was tagged weak")
+    # Combo (weak) + any air/wrap/fd/weak_made over the shown count.
+    if hist["weak_n"] > hist["n"]:
+        fails.append("J: Weak % counted more hands than were shown")
+    hold_hist = query.hist_postflop_of(con, hold_w)
+    if hold_hist.get("kind") == "omaha":
+        fails.append("J: default Hold'em hist switched to Omaha groups")
+
     dcols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
     if "game_type" not in dcols:
         fails.append("J: decisions is missing game_type")

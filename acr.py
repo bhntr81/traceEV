@@ -441,6 +441,68 @@ Seat 1: Alice (small blind) showed [Qs Js Tc 8d] and lost
 Seat 2: Bob (big blind) showed [As Ad Kh 7d] and won $0.20
 """
 
+# The 1-heart trap: Hold'em nut flush draw, Omaha ace-high. Golden
+# for verify-parity -- if `made` comes back flush, the 2+3 walk died.
+PLO4_TRAP = """\
+Hand #2459809001 - Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:40:00 UTC
+Lincolnwood 6-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Bob [Ah Kd 7c 2s]
+Alice calls $0.05
+*** FLOP *** [5h 9h Qh]
+Alice checks
+Bob checks
+*** TURN *** [5h 9h Qh] [3c]
+Alice checks
+Bob checks
+*** RIVER *** [5h 9h Qh 3c] [Kd]
+Alice checks
+Bob checks
+*** SHOW DOWN ***
+Alice shows [Qs Js Tc 8d]
+Bob shows [Ah Kd 7c 2s]
+*** SUMMARY ***
+Total pot $0.20 | Rake $0
+Board [5h 9h Qh 3c Kd]
+Seat 1: Alice (small blind) showed [Qs Js Tc 8d] and lost
+Seat 2: Bob (big blind) showed [Ah Kd 7c 2s] and won $0.20
+"""
+
+# Ace-high wrap + nut FD. Hold'em of all four is a royal. Histogram
+# must land on Combo, never a straight-flush bar.
+PLO4_COMBO = """\
+Hand #2459809002 - Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:45:00 UTC
+Lincolnwood 6-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Bob [As Ks Qs 2d]
+Alice calls $0.05
+*** FLOP *** [Js Ts 3c]
+Alice checks
+Bob checks
+*** TURN *** [Js Ts 3c] [2h]
+Alice checks
+Bob checks
+*** RIVER *** [Js Ts 3c 2h] [7d]
+Alice checks
+Bob checks
+*** SHOW DOWN ***
+Alice shows [9c 8d 4h 3d]
+Bob shows [As Ks Qs 2d]
+*** SUMMARY ***
+Total pot $0.20 | Rake $0
+Board [Js Ts 3c 2h 7d]
+Seat 1: Alice (small blind) showed [9c 8d 4h 3d] and lost
+Seat 2: Bob (big blind) showed [As Ks Qs 2d] and won $0.20
+"""
+
 HOLDEM = """\
 Hand #2459218653 - Holdem (No Limit) - $0.05/$0.10 - 2025/05/18 22:43:28 UTC
 Mount Shasta 6-max Seat #1 is the button
@@ -592,8 +654,11 @@ def check():
         # reading NULL and every bar is empty.
         show = Path(tmp) / "plo4show.txt"
         show.write_text(PLO4_SHOW)
+        (Path(tmp) / "plo4trap.txt").write_text(PLO4_TRAP)
+        (Path(tmp) / "plo4combo.txt").write_text(PLO4_COMBO)
         db2 = Path(tmp) / "show.db"
-        importer.load([show], db2)
+        importer.load([show, Path(tmp) / "plo4trap.txt",
+                       Path(tmp) / "plo4combo.txt"], db2)
         import decisions
         import lines
         import spots
@@ -612,6 +677,25 @@ def check():
               f"{'yes' if ok else 'NO -> ' + str(named)}")
         if not ok:
             fails.append(f"imported PLO4 flop was {named}, want {want}")
+        trap = sqlite3.connect(db2).execute(
+            "SELECT made, fd, sd FROM decisions "
+            "WHERE cards = 'Ah Kd 7c 2s' AND street = 'flop'"
+        ).fetchone()
+        trap_ok = trap and trap[0] == "high card" and trap[1] is None
+        print(f"1-heart trap is not a flush     "
+              f"{'yes' if trap_ok else 'NO -> ' + str(trap)}")
+        if not trap_ok:
+            fails.append(f"1-heart trap imported as {trap}")
+        combo = sqlite3.connect(db2).execute(
+            "SELECT made, fd, sd FROM decisions "
+            "WHERE cards = 'As Ks Qs 2d' AND street = 'flop'"
+        ).fetchone()
+        combo_ok = (combo and combo[0] == "high card"
+                    and combo[1] == "nut" and combo[2] == "wrap")
+        print(f"royal-looking flop is combo     "
+              f"{'yes' if combo_ok else 'NO -> ' + str(combo)}")
+        if not combo_ok:
+            fails.append(f"combo golden imported as {combo}")
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")

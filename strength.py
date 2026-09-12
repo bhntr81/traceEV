@@ -83,6 +83,21 @@ ORDER = ("straight flush", "quads", "boat", "flush", "straight", "set",
 # much of a betting range is hands that cannot call.
 WEAK = ("high card", "board pair", "weak pair", "under pair")
 
+# PLO Weak %. One pair is not a calling hand in Omaha the way a
+# middle pair is in Hold'em -- that is the line, and it lives here
+# so disagreeing is a list change. Magnum AA classes are deferred.
+OMAHA_WEAK = ("high card", "board pair", "weak pair", "under pair",
+              "middle pair", "top pair")
+
+# Hold'em placement names. On a PLO filter these are not offered
+# as `--made` chips -- the histogram speaks in nuts+/strong/medium/
+# weak made, not "top pair". Shared labels (flush, set, high card)
+# stay, because they mean the same 2+3 hand.
+HOLDEM_ONLY_MADE = frozenset((
+    "top pair", "middle pair", "weak pair", "under pair", "overpair",
+    "board pair", "two pair", "trips",
+))
+
 # Postflop histogram groups. First match wins; Other is implicit and
 # never listed here -- a leftover (an unexpected `made`, a future
 # label) has to land somewhere, and inventing a fifteenth bar for
@@ -120,6 +135,27 @@ HIST_SPEC = (
     ("straight_flush", "Straight flush", False, ("straight flush",), None),
 )
 
+# Omaha default postflop groups. First match wins. Made hands stay
+# on a made bar even with a draw -- same rule as Hold'em -- so
+# "how does the pool play a wrap" is air-like hands, not the sets
+# that happen to have one. Combo is FD+SD; wrap is any straight
+# draw without a flush draw (gutshot/oesd sit here so they do not
+# vanish into Other); FD is a flush draw with no straight draw.
+#
+# Nuts+ / strong / medium / weak made are opinion, one list, the
+# same way WEAK is. Full Magnum AA taxonomy is deferred.
+OMAHA_HIST_SPEC = (
+    ("combo", "Combo", True, ("high card", "board pair"), "combo"),
+    ("wrap", "Wrap", True, ("high card", "board pair"), "wrap"),
+    ("fd", "FD", True, ("high card", "board pair"), "fd"),
+    ("air", "Air", True, ("high card", "board pair"), False),
+    ("weak_made", "Weak made", True,
+     ("weak pair", "under pair", "middle pair", "top pair"), None),
+    ("medium", "Medium", False, ("overpair", "two pair", "trips"), None),
+    ("strong", "Strong", False, ("set", "straight", "flush"), None),
+    ("nuts", "Nuts+", False, ("boat", "quads", "straight flush"), None),
+)
+
 
 def _quote_sql(name):
     return "'" + str(name).replace("'", "''") + "'"
@@ -130,16 +166,47 @@ def _draw_sql(draw):
         return "(fd IS NOT NULL OR sd IS NOT NULL)"
     if draw is False:
         return "(fd IS NULL AND sd IS NULL)"
+    if draw == "combo":
+        return "(fd IS NOT NULL AND sd IS NOT NULL)"
+    if draw == "wrap":
+        return "(sd IS NOT NULL AND fd IS NULL)"
+    if draw == "fd":
+        return "(fd IS NOT NULL AND sd IS NULL)"
     return None
 
 
-def group_key(name):
+def _draw_match(draw, fd, sd):
+    """Same facts as `_draw_sql`, for an in-memory hand."""
+    drawing = bool(fd or sd)
+    if draw is True:
+        return drawing
+    if draw is False:
+        return not drawing
+    if draw == "combo":
+        return bool(fd and sd)
+    if draw == "wrap":
+        return bool(sd and not fd)
+    if draw == "fd":
+        return bool(fd and not sd)
+    return True
+
+
+def group_key(name, specs=None):
     """The registry key for a typed group, or None."""
     raw = (name or "").strip().lower().replace(" ", "_").replace("-", "_")
-    if raw == HIST_OTHER:
+    if raw in (HIST_OTHER, "other"):
         return HIST_OTHER
-    for key, label, _w, _made, _draw in HIST_SPEC:
-        if raw in (key, label.lower().replace(" ", "_")):
+    if raw in ("nuts+", "nuts"):
+        raw = "nuts"
+    search = list(specs or []) + ([] if specs else list(HIST_SPEC))
+    if specs is None:
+        # A typed key from either family, so `--help` and a leftover
+        # click still resolve. The filter that *uses* the key picks
+        # the spec; this only names it.
+        search = list(HIST_SPEC) + list(OMAHA_HIST_SPEC)
+    for key, label, _w, _made, _draw in search:
+        lab = label.lower().replace(" ", "_").replace("+", "")
+        if raw in (key, lab, label.lower()):
             return key
     return None
 
@@ -183,16 +250,34 @@ def group_of(made, fd=None, sd=None, specs=None):
     """
     if not made:
         return None
-    drawing = bool(fd or sd)
     for key, _lab, _w, names, draw in (specs or HIST_SPEC):
         if made not in names:
             continue
-        if draw is True and not drawing:
-            continue
-        if draw is False and drawing:
+        if not _draw_match(draw, fd, sd):
             continue
         return key
     return HIST_OTHER
+
+
+def hist_spec_for(argv=None, where=None):
+    """Hold'em bars, or the Omaha family, from the filter that was asked."""
+    import games
+    if games.omaha_asked(argv) or games.omaha_where(where):
+        return OMAHA_HIST_SPEC
+    return HIST_SPEC
+
+
+def weak_names_for(specs=None):
+    """The `made` labels that count as weak under this family."""
+    if specs is OMAHA_HIST_SPEC:
+        return OMAHA_WEAK
+    return WEAK
+
+
+def holdem_made_refused(name):
+    """True if this `--made` word is a Hold'em group on a PLO filter."""
+    raw = (name or "").strip().lower()
+    return raw in HOLDEM_ONLY_MADE
 
 
 def hist_groups(specs=None, weak=None):
@@ -347,6 +432,20 @@ def _named(shape, hole, table):
     elif shape[0] == 0:
         name = "high card"
     return name, kicker
+
+
+def best_omaha_hand(hole, board):
+    """
+    Best PLO hand: exactly two hole cards and exactly three board cards.
+
+    PLO5 still uses exactly two of five -- the extra card is another
+    pair to choose from, not a third hole card in the five. Scoring
+    all four (or five) as seven-card Hold'em is the lie this exists
+    to refuse -- a royal on the felt with three suited hole cards is
+    ace-high in Omaha, and one hole heart on a three-heart board is
+    not a flush.
+    """
+    return best_omaha(hole, board)
 
 
 def best_omaha(hole, board):
@@ -702,14 +801,26 @@ def check(db_path=DB):
     if lie[0] in ("straight flush", "flush", "straight"):
         fails.append(f"Omaha royal-looking hand was named {lie[0]}")
 
+    # One hole heart on a three-heart flop is the trap: Hold'em
+    # flush-draw, Omaha nothing. best_omaha_hand must walk 2+3.
+    trap_cards, trap_board = "Ah Kd 7c 2s", "5h 9h Qh"
+    trap = classify(trap_cards, trap_board)
+    if trap[0] != "high card" or trap[2] is not None:
+        fails.append(f"1-heart trap was {trap}, not ace-high without an FD")
+    picked = best_omaha_hand(parse(trap_cards), parse(trap_board))
+    if picked is None or picked[0][0] != 0:
+        fails.append("best_omaha_hand used more than two hole cards "
+                     "on the 1-heart flop")
+    if len(picked[1]) != 2 or len(picked[2]) != 3:
+        fails.append("best_omaha_hand did not return a 2+3")
+
     # Histogram groups do not need a corpus. They have to pass on a
     # machine that has not imported yet, the same way query.py's
     # fixture checks do -- otherwise --check invents a failure that
     # is really "no hands.db".
     hist_ok = len(fails)
     grouped = 0
-    shown = list(KNOWN) + list(KNOWN_OMAHA)
-    for cards, board, made, kicker, fd, sd in shown:
+    for cards, board, made, kicker, fd, sd in KNOWN:
         got = group_of(made, fd, sd)
         if got is None:
             fails.append(f"{cards} on {board} was shown and grouped None")
@@ -722,7 +833,28 @@ def check(db_path=DB):
                 fails.append(f"{cards} on {board}: group {got}, want {want}")
         elif made in ("weak pair", "under pair") and got != "weak_pair":
             fails.append(f"{cards} on {board}: group {got}, want weak_pair")
-    print(f"known hands grouped          {grouped}/{len(shown)}")
+    omaha_grouped = 0
+    want_omaha = {
+        ("As Ad Kh 7d", "Kc 2h 3s"): "medium",
+        ("As Ks Qs 2d", "Js Ts 3c"): "combo",
+        ("Ah Kd 7c 2s", "5h 9h Qh"): "air",
+        ("Ah Kd 7c 2s", "5h 9h Qh 3h"): "wrap",
+        ("Ah Kh 7c 2s", "2h 5h 9h"): "strong",
+        ("Ah Ad 7c 2s", "As Kh 3d"): "strong",
+        ("9h 8h 7d 6c", "5s 4c 2d"): "wrap",
+        ("Qh Jh Qd Kc 2c", "Th 3d 4s"): "medium",
+    }
+    for cards, board, made, kicker, fd, sd in KNOWN_OMAHA:
+        got = group_of(made, fd, sd, OMAHA_HIST_SPEC)
+        if got is None:
+            fails.append(f"Omaha {cards} on {board} grouped None")
+            continue
+        omaha_grouped += 1
+        want = want_omaha.get((cards, board))
+        if want and got != want:
+            fails.append(f"Omaha {cards} on {board}: group {got}, want {want}")
+    print(f"known hands grouped          {grouped}/{len(KNOWN)}")
+    print(f"Omaha hands grouped          {omaha_grouped}/{len(KNOWN_OMAHA)}")
     if group_of(None) is not None:
         fails.append("ungrouped cards were not None")
     if group_of("mystery pair") != HIST_OTHER:
@@ -736,6 +868,12 @@ def check(db_path=DB):
                      f"not WEAK {list(WEAK)}")
     if group_of("top pair", "nut", "oesd") != "top_pair":
         fails.append("top pair plus a draw left its pair bar")
+    if group_of("top pair", None, None, OMAHA_HIST_SPEC) != "weak_made":
+        fails.append("PLO top pair did not sit on Weak made")
+    if group_of("top pair", "nut", "oesd", OMAHA_HIST_SPEC) != "weak_made":
+        fails.append("PLO top pair plus a draw left Weak made")
+    if "top_pair" in {k for k, *_ in OMAHA_HIST_SPEC}:
+        fails.append("Omaha hist still has a Hold'em top_pair bar")
     print(f"hist groups / Other / weak   "
           f"{'yes' if len(fails) == hist_ok else 'NO'}")
 

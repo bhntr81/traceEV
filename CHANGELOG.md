@@ -8,6 +8,30 @@ Newest first.
 
 ---
 
+## PLO hand-strength: Omaha groups, not Hold'em bars
+
+The histogram on `--game plo` was honest labels on Hold'em bars —
+overpair sat on Overpair, ace-high wrap+FD sat on Draws, and Weak %
+read `strength.WEAK` (under middle pair). That is a Hold'em diagram
+with a new heading.
+
+- **`best_omaha_hand`** — the public 2+3 walk. PLO5 still uses
+  exactly two of five. One hole heart on a three-heart flop is
+  ace-high, not a flush and not an FD.
+- **`OMAHA_HIST_SPEC` / `OMAHA_WEAK`** — Combo, Wrap, FD, Air,
+  Weak made, Medium, Strong, Nuts+. One pair is Weak made. Made
+  hands stay on a made bar even with a draw, same rule as Hold'em.
+- **Hist / Flop Hand / range Weak %** switch by variant.
+  `--made "top pair"` is refused on a PLO filter;
+  `--hist-group weak_made` is the click.
+- **verify-parity J** golden trap + combo fixtures in
+  `fixtures/plo_parity/`. NLHE A–I and the default Hold'em
+  histogram stay on Hold'em groups.
+
+Deferred: PLO combinatoric ranges, PLO6/8, hi/lo, Magnum AA classes.
+
+---
+
 ## Multi-game v1: Game Type, Bodog/Bovada, 4/5-card compact, 13×13 gate
 
 The PLO study track widened past strength. Same branch, same freeze

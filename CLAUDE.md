@@ -166,13 +166,17 @@ Facts that stay true, and that have each been got wrong at least once:
 - **Where "weak" stops is opinion, and lives in one list.** `strength.WEAK`
   draws the line under middle pair, on the grounds that a middle pair calls
   a river bet and a bottom pair does not. Disagreeing with it should be a
-  line changed, not an argument.
+  line changed, not an argument. Omaha's line is `OMAHA_WEAK` — one pair
+  is not a calling hand the way a middle pair is in Hold'em.
 - **Histogram Weak % is of groups, of the hands that were SEEN.**
-  `strength.HIST_SPEC` orders the bars; Air / Draws / Weak pair default
-  to `is_weak`. Other is implicit leftover and is never weak. A made
-  pair keeps its pair bar even when it also has a draw. Ignition
-  shows every hand including folds; ACR shows 23%. Flipping `is_weak`
-  on a group changes the percentage; the classifier does not.
+  `strength.HIST_SPEC` orders the Hold'em bars; Air / Draws / Weak pair
+  default to `is_weak`. On a PLO filter the family is `OMAHA_HIST_SPEC`
+  (combo / wrap / FD / air / weak made / medium / strong / nuts+).
+  Other is implicit leftover and is never weak. A made hand keeps its
+  made bar even when it also has a draw. `--made "top pair"` is refused
+  on `--game plo`; the filter is `--hist-group weak_made`. One hole
+  heart on a three-heart flop is ace-high, not a flush. Flipping
+  `is_weak` on a group changes the percentage; the classifier does not.
 - **Nothing draws on the river.** `flush_draw` always knew; `straight_draw`
   did not, and a river range came back a third "straight draw" — drawing to
   a card that was never coming.

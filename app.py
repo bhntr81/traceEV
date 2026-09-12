@@ -48,6 +48,7 @@ import sqlite3
 import compact
 import diag
 import importer
+import strength
 import notes
 import players
 import sessions
@@ -137,7 +138,9 @@ MADE = ("high card", "board pair", "weak pair", "under pair", "middle pair",
         "flush", "boat", "quads", "straight flush")
 KICKERS = ("top", "good", "weak")
 FLUSH_DRAWS = ("nut", "second", "weak", "backdoor")
-STRAIGHT_DRAWS = ("oesd", "double gutshot", "gutshot")
+STRAIGHT_DRAWS = ("oesd", "double gutshot", "gutshot", "wrap")
+OMAHA_STRENGTH = ("air", "combo", "wrap", "fd", "weak_made",
+                  "medium", "strong", "nuts")
 # Who the other seat is. "The big blind against a button open" is the shape
 # most real questions have, and it needs both halves of the matchup named.
 VS_SIDE = [("--vs-hero", "vs me"), ("--vs-pool", "vs the pool")]
@@ -1862,7 +1865,16 @@ class App(ImportMixin, ttk.Frame):
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card")):
             if self.multi.get(group):
-                argv += [flag, ",".join(sorted(self.multi[group]))]
+                vals = sorted(self.multi[group])
+                if group == "made" and (
+                        self.vals["game"].get() in ("plo", "plo4", "plo5",
+                                                    "omaha")
+                        or "plo" in (self.vals["game_type"].get() or "")):
+                    vals = [v for v in vals
+                            if not strength.holdem_made_refused(v)]
+                    if not vals:
+                        continue
+                argv += [flag, ",".join(vals)]
         for name, flag in (("site", "--site"), ("game", "--game"),
                            ("game_type", "--game-type"),
                            ("stake", "--stake"),
@@ -4726,9 +4738,13 @@ class FilterDialog(tk.Toplevel):
             side="left")
         ttk.Label(row, text="Axs  Kxo  22+  pairs  broadways",
                   style="Dim.TLabel").pack(side="left", padx=14)
-        self._heading(page, "what the hand became")
+        self._heading(page, "what the hand became  (Hold'em)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("made", v))) for v in MADE])
+        self._heading(page, "PLO hand strength  (Omaha groups)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("hist_group", v)))
+            for v in OMAHA_STRENGTH])
         self._heading(page, "kicker, where a pair uses one")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("kicker", v))) for v in KICKERS])
@@ -4750,9 +4766,14 @@ class FilterDialog(tk.Toplevel):
                        "all of Ignition's hands, including the ones that "
                        "folded, and 23% of ACR's. So these narrow hard, and "
                        "a small n here is the data and not the filter.\n\n"
+                       "Hold'em made labels (top pair, overpair, …) are "
+                       "refused on --game plo. PLO uses the Omaha groups: "
+                       "nuts+ / strong / medium / weak made, combo, wrap, "
+                       "FD, air.\n\n"
                        "A draw has to be the player's own: four hearts on "
                        "the board is not a flush draw, it is a board "
-                       "everybody shares."
+                       "everybody shares. One hole heart on a three-heart "
+                       "flop is not an Omaha flush."
                   ).pack(anchor="w", padx=18, pady=(8, 0))
 
     def _lines_tab(self, nb):

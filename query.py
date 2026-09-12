@@ -2642,8 +2642,26 @@ def study_combos_of(con, where, argv=None):
 
 
 def study_made_of(con, where, argv=None):
-    """`--by hand` (what the flop became). Clicking is `--made`."""
-    argv = situation_only(list(argv or []))
+    """`--by hand` (what the flop became). Clicking is `--made`.
+
+    On a PLO filter this is the Omaha hist groups, not Hold'em
+    `made` labels -- "top pair" is not a PLO bar. Clicking ANDs
+    `--hist-group`.
+    """
+    raw_argv = list(argv or [])
+    argv = situation_only(raw_argv)
+    if strength.hist_spec_for(argv=raw_argv, where=where) is \
+            strength.OMAHA_HIST_SPEC:
+        hist = hist_postflop_of(con, where, argv=raw_argv)
+        rows = []
+        for r in hist["rows"]:
+            if r["key"] != strength.HIST_OTHER and not r["n"]:
+                continue
+            rows.append(_row(r["key"], r["label"], r["n"], hist["n"] or r["n"],
+                             "--hist-group", r["key"], argv))
+        return {"id": "made", "flag": "--hist-group", "kind": "omaha",
+                "n": hist["n"], "rows": rows, "gated": False,
+                "note": "PLO Flop Hand uses Omaha groups, not Hold'em made."}
     got = report_of(con, where, "hand", [], argv)
     # report_of with no columns still has counts/keys.
     opps = sum(got["counts"].values()) if got["counts"] else 0
@@ -3438,17 +3456,35 @@ def build(argv):
                 continue
             if a == "--hist-group":
                 words = []
-                known = [k for k, *_rest in strength.HIST_SPEC] + [
-                    strength.HIST_OTHER]
+                family = strength.hist_spec_for(argv=argv)
+                known = [k for k, *_rest in family] + [strength.HIST_OTHER]
                 for name in v.split(","):
-                    key = strength.group_key(name)
+                    key = strength.group_key(name, family)
                     if key is None:
+                        extra = ""
+                        if family is strength.OMAHA_HIST_SPEC:
+                            extra = (" -- PLO groups are combo, wrap, fd, "
+                                     "air, weak_made, medium, strong, nuts")
                         raise SystemExit(
                             f"unknown hist group {name!r} -- one of: "
-                            f"{', '.join(known)}")
-                    parts.append("(" + strength.group_filter_sql(key) + ")")
+                            f"{', '.join(known)}{extra}")
+                    parts.append("(" + strength.group_filter_sql(key, family)
+                                 + ")")
                     words.append(key)
                 described.append("hist-group " + ", ".join(words))
+                continue
+            if a == "--made":
+                names = [x.strip() for x in str(v).split(",") if x.strip()]
+                if games.omaha_asked(argv):
+                    bad = [n for n in names if strength.holdem_made_refused(n)]
+                    if bad:
+                        raise SystemExit(
+                            f"--made {bad[0]!r} is a Hold'em group. On PLO "
+                            "use --hist-group weak_made / medium / strong / "
+                            "nuts (or a shared label: flush, set, straight).")
+                items = ", ".join(q(n) for n in names)
+                parts.append(f"made IN ({items})")
+                described.append("made " + ",".join(names))
                 continue
             if a == "--result":
                 words = []
@@ -4622,6 +4658,20 @@ def range_of(con, where):
     seen = con.execute(
         f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
         f"AND made IS NOT NULL").fetchone()[0]
+    family = strength.hist_spec_for(where=where)
+    if family is strength.OMAHA_HIST_SPEC:
+        # Same bars as the histogram -- a range that still lists
+        # "top pair" on PLO is the Hold'em diagram with a new heading.
+        hist = hist_postflop_of(con, where)
+        rows = [{"made": r["label"], "n": r["n"],
+                 "pct": r["pct"], "weak": r["is_weak"]}
+                for r in hist["rows"] if r["n"] or r["key"] == strength.HIST_OTHER]
+        return {"rows": rows, "draws": [], "n": hist["n"], "total": total,
+                "weak": hist["weak_pct"],
+                "strong": 100.0 * (hist["n"] - hist["weak_n"]) / hist["n"]
+                if hist["n"] else 0.0,
+                "coverage": coverage_of(con, where),
+                "kind": "omaha"}
     counts = dict(con.execute(
         f"SELECT made, COUNT(*) FROM decisions WHERE ({where}) "
         f"AND made IS NOT NULL GROUP BY made").fetchall())
@@ -4657,7 +4707,8 @@ def range_of(con, where):
     return {"rows": rows, "draws": draws, "n": seen, "total": total,
             "weak": 100.0 * weak / seen if seen else 0.0,
             "strong": 100.0 * (seen - weak) / seen if seen else 0.0,
-            "coverage": coverage_of(con, where)}
+            "coverage": coverage_of(con, where),
+            "kind": "holdem"}
 
 
 def show_range(con, where, label, parts=()):
@@ -4719,8 +4770,10 @@ def hist_postflop_of(con, where, groups=None, argv=None):
     `groups` is the flip surface. Changing one row's `is_weak` and
     calling again is how Weak % moves without a group editor.
     """
-    argv = situation_only(list(argv or []))
-    specs = list(groups) if groups is not None else strength.hist_groups()
+    raw_argv = list(argv or [])
+    argv = situation_only(raw_argv)
+    family = strength.hist_spec_for(argv=raw_argv, where=where)
+    specs = list(groups) if groups is not None else strength.hist_groups(family)
     total = con.execute(
         f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
     shown = f"({where}) AND made IS NOT NULL"
@@ -4744,15 +4797,19 @@ def hist_postflop_of(con, where, groups=None, argv=None):
         # different set than the number beside it.
         other_sql = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {shown} "
-            f"AND ({strength.leftover_sql()})").fetchone()[0]
+            f"AND ({strength.leftover_sql(family)})").fetchone()[0]
         other_n = other_sql
     rows.append(_hist_row(strength.HIST_OTHER, "Other", other_n, seen,
                           False, argv))
     weak_n = sum(r["n"] for r in rows if r["is_weak"])
+    omaha = family is strength.OMAHA_HIST_SPEC
+    weak_note = ("Combo, Wrap, FD, Air, Weak made" if omaha
+                 else "Air, Draws, Weak pair")
     return {
         "id": "hist",
         "title": "Hand Values",
         "flag": "--hist-group",
+        "kind": "omaha" if omaha else "holdem",
         "rows": rows,
         "n": seen,
         "total": total,
@@ -4762,7 +4819,7 @@ def hist_postflop_of(con, where, groups=None, argv=None):
         "coverage": coverage_of(con, where),
         "note": (
             "Weak % is the share of the SEEN range in groups tagged "
-            "weak (Air, Draws, Weak pair by default). Ignition shows "
+            f"weak ({weak_note} by default). Ignition shows "
             "every hand including folds; ACR shows the showdown slice."
         ),
     }
@@ -6456,8 +6513,8 @@ def usage():
     print(f"    {'--graph':14} four-line win graph (Amount Won, All-in EV, "
           f"W/O SD, at SD)")
     print(f"    {'--hist-postflop':14} postflop hand-value histogram + Weak %")
-    print(f"    {'--hist-group':14} histogram bar: air, draws, weak_pair, "
-          f"…, other")
+    print(f"    {'--hist-group':14} histogram bar (Hold'em: air, draws, "
+          f"top_pair, …; PLO: combo, wrap, fd, weak_made, …)")
     print(f"    {'--csv':14} with --graph: write the series as CSV "
           f"(also: --out file.csv)")
     print(f"    {'--unit':14} bb (default) or currency / $")
@@ -8083,6 +8140,8 @@ def check_hist():
     _hold_col(con)
     got = hist_postflop_of(con, "1=1")
     by = {r["key"]: r for r in got["rows"]}
+    if got.get("kind") != "holdem":
+        fails.append("default hist left Hold'em groups")
     if got["n"] != 11:
         fails.append(f"hist seen {got['n']}, not 11 shown hands")
     if got["total"] != 12:
@@ -8191,29 +8250,44 @@ def check_hist():
     hold_chart = chart_of(plo, hold_w)
     if hold_chart.get("gated"):
         fails.append("default Hold'em chart was gated")
-    plo_hist = hist_postflop_of(plo, plo_w)
+    plo_hist = hist_postflop_of(plo, plo_w, argv=["--game", "plo"])
     pby = {r["key"]: r for r in plo_hist["rows"]}
+    if plo_hist.get("kind") != "omaha":
+        fails.append("PLO hist stayed on Hold'em groups")
     if plo_hist["n"] != 4:
         fails.append(f"--game plo hist seen {plo_hist['n']}, not 4 "
                      "shown Omaha hands")
-    if pby.get("overpair", {}).get("n") != 1:
-        fails.append("Omaha overpair (not Hold'em two pair) missed the bar")
-    if pby.get("draws", {}).get("n") != 1:
-        fails.append("Omaha wrap did not land on Draws")
-    if pby.get("set", {}).get("n") != 1 or pby.get("flush", {}).get("n") != 1:
-        fails.append("Omaha set/flush bars drifted")
-    if pby.get("top_pair", {}).get("n"):
-        fails.append("--game plo hist included the Hold'em top pair")
+    if pby.get("medium", {}).get("n") != 1:
+        fails.append("Omaha overpair missed Medium")
+    if pby.get("combo", {}).get("n") != 1:
+        fails.append("Omaha wrap+FD did not land on Combo")
+    if pby.get("strong", {}).get("n") != 2:
+        fails.append("Omaha set/flush missed Strong")
+    if "top_pair" in pby:
+        fails.append("--game plo hist still has a Hold'em top_pair bar")
+    if pby.get("draws", {}).get("n"):
+        fails.append("PLO hist kept the Hold'em Draws bar")
     if abs(plo_hist["weak_pct"] - 25.0) > 1e-9:
         fails.append(f"Omaha Weak % was {plo_hist['weak_pct']}, not 25 "
-                     "(the wrap, not the made hands)")
-    # The royal-looking 2+3 is ace-high + wrap, so Draws -- never
-    # a straight-flush bar.
+                     "(the combo draw, not the made hands)")
+    flop_hand = study_made_of(plo, plo_w, argv=["--game", "plo"])
+    flop_keys = {r["key"] for r in flop_hand["rows"]}
+    if "top pair" in flop_keys or flop_hand.get("flag") != "--hist-group":
+        fails.append("PLO Flop Hand still offered Hold'em --made labels")
+    try:
+        build(["--game", "plo", "--made", "top pair"])
+        fails.append("--made top pair was accepted on --game plo")
+    except SystemExit as e:
+        if "Hold'em" not in str(e) and "hist-group" not in str(e):
+            fails.append(f"--made gate said {e}")
+    # The royal-looking 2+3 is ace-high + wrap + nut FD -- Combo,
+    # never a straight-flush bar and never Hold'em Draws.
     royal_made, _rk, royal_fd, royal_sd = strength.classify(
         "As Ks Qs 2d", "Js Ts 3c")
-    if strength.group_of(royal_made, royal_fd, royal_sd) != "draws":
+    if strength.group_of(royal_made, royal_fd, royal_sd,
+                         strength.OMAHA_HIST_SPEC) != "combo":
         fails.append(f"Omaha royal-looking hand grouped "
-                     f"{(royal_made, royal_fd, royal_sd)}, not draws")
+                     f"{(royal_made, royal_fd, royal_sd)}, not combo")
     plo.close()
     print(f"postflop histogram / Weak %  "
           f"{'yes' if not fails else 'NO'}")
