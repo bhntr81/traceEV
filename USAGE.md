@@ -200,9 +200,163 @@ really is 0.1% of the range.
 
 ---
 
+### Smart Reports, and walking to a neighbouring spot
+
+The report box is a Hand2Note-style tree of **named situations** -- steal
+attempts, flop c-bets, facing a 3-bet, river in a 3-bet pot -- not a list
+of five guesses. Opening one replaces the street / pot / facing you had
+clicked and keeps who you are measuring, so "Flop c-bets" as hero is that
+spot on your own hands, not that spot AND leftover river chips.
+
+```bash
+python query.py --preset "Flop c-bets"
+python query.py --preset "Flop c-bets" --hero --by position
+python query.py --presets                 # the tree, then your saved ones
+python query.py --preset "Flop c-bets" --related
+```
+
+`--stats` (the default) now leads with the popup report Hand2Note opens
+on a filter:
+
+- **Hits / opportunities / hits per 1000 hands.** Hits and opportunities
+  are the two halves of a stat (`--quick cbet_flop` is hits; the chance
+  without the action is opportunities). Hits/1000 is per thousand
+  player-hands of the person being measured, not per thousand
+  opportunities -- a 70% cbet on 12 flops is still a rare event.
+- **Action profit** in bb/hand, attributed to *this* action, not the
+  hand. The mean is over **priced hits** -- the matching actions v1
+  can score -- sitting next to Hits/Opps. It is not opportunities
+  (times they could have acted and did not), not Won$ of those hands,
+  not all-in EV, and not Call Profit Rate.
+
+  - fold → always 0
+  - bet 5 into pot 10, everyone folds → **+10** (they take the pot;
+    their bet comes back, so it is not subtracted)
+  - bet 5, face a raise, fold → **−5** (the chips they put in on
+    THIS action)
+
+  `--hands` prints `act bb` beside `net bb` so the two cannot be
+  mixed up. A dash is unpriced. Open cases, left unpriced on purpose:
+
+  - a call that is played on (later pot is not assigned back)
+  - multiway unless every other seat folds
+  - later streets after a call
+  - rake: not subtracted from +pot; if rake ate the pot (`won=0`)
+    the line is unpriced
+  - MTT (chips are not dollars)
+  - uncalled extra chips come back; v1 credits `+pot_before` only
+- **This spot** -- fold / check / call / bet / raise of the filtered
+  decisions, each with its `n` and a Wilson interval.
+- **Faced next** / **next actions** -- a report, not just a mix. Each
+  row is what the other seat did next, or what this player did next,
+  with frequency, hits/opps (branch / parent), and Action Profit v1
+  on the parent action given that continuation. `--after fold` and
+  `--then bet` open a row; `--after none` is "nothing further".
+  `--after fold-out` and `--after 3bet` are aliases for fold and
+  raise (an open's 3-bet is a raise). Squeeze is not its own verb --
+  it is `--live 3` plus `--after raise`.
+
+```bash
+python query.py --from "Flop c-bets" --faced-next
+python query.py --from "Flop c-bets" --next-actions
+python query.py --from "Flop c-bets" --branch fold
+python query.py --from "Flop c-bets" --after fold --stats
+python query.py --hit cbet_flop --stats
+```
+
+  `--from` is `--filter`. `--branch fold` applies `--after fold`
+  (or `--then` under `--next-actions`). `--hit` is `--quick`: click-
+  stat on the command line. In the window, double-click a row; on
+  the page, click it.
+- **Outcome** -- what the pot did with this bet, which is a different
+  question from Faced Next. Faced Next is the first later action;
+  outcome is fold-out / call / raise-back over everybody still in.
+  `--outcome fold-out` opens that row; a click does the same.
+
+A Quick Filter also **swaps the report columns** to the pack for that
+spot. `--quick raise_cbet` leads with raise c-bet, not VPIP.
+
+```bash
+python query.py --hero --filter "Flop c-bets"
+python query.py --hero --filter raise_cbet --by position
+python query.py --filter "Flop c-bets" --pin "Flop vs c-bet"
+python query.py --hero --compare "Flop c-bets" "Flop vs c-bet"
+python query.py --presets                 # also --filters
+```
+
+`--filter` is `--preset` with a wider lock: a Smart Report, a `--quick`
+key, or a JSON argv list.
+
+**`--pin`** freezes another named report, same person, and prints a
+two-column summary: hits/opps, the primary frequency, hits per 1k,
+and Action Profit v1 when priced. The frequency gap is an interval
+on the difference. Changing the filter leaves the pin where it is --
+that is the point. In the window and on the page the pin box does
+the same thing above the rest of this report.
+
+**`--compare A B`** is the same table with both sides named. Who-flags
+(`--hero`) apply to both.
+
+**`--versus`** is the other verb: every stat, Holm-corrected, for when
+the question is "is this gap real?" not "what did each spot do?"
+
+v1 does not draw two full `--by` grids. Pin the spot summary; `--versus`
+is still the test. No Multi-Player pane.
+
+The custom action builder is flags, not a second language.
+`FilterDef` is those flags as a value -- line patterns plus the
+modifiers -- so a saved JSON object and a typed command compile to
+the same argv `build` already runs.
+
+```bash
+python query.py --street flop --first-in --size m --outcome fold-out
+python query.py --players 6 --live 2 --last-raise --aggressive
+python query.py --street flop --first-raise --last-action --size 0.4-0.75
+python query.py --flop XBmC --stack 100+ --stats
+python query.py --filter '{"street":"flop","first_raise":true,"size":"m"}'
+python query.py --save "flop first-raise half-pot"
+python query.py --filters                  # also --presets
+```
+
+Modifiers:
+
+| flag | means |
+|---|---|
+| `--first-in` | first to put chips in on this street |
+| `--first-raise` | first raise on this street (an open, or the first raise of a bet -- a cbet is not) |
+| `--last-raise` | this player already raised on the street (`was_agg`) |
+| `--last-action` | this decision ended the street |
+| `--players` / `--live` | who sat / who is still in |
+| `--size m` | pot-frac bucket (`s m l p o`, same as `lines.bucket`) |
+| `--size 0.4-0.75` | a numeric pot-frac range (`50%+`, `<=0.33`, `40-75`) |
+| `--stack 100+` | effective stack in bb (`<40`, `80-200`). `--deep` / `--short` still work |
+| `--flop XBmC` | the street's action line, already the graph |
+
+`--save` / `--filter` / `--filters` / `--forget` are list, load and
+delete. There is no `filter list\|save\|load` subcommand -- those
+would be a second door on the same file.
+
+v1 does not let a line token name a seat (BTN bets). The line is the
+sequence; `--pos` / `--vs` name who this decision is. No graph widget.
+
+Then the named stats that can still occur inside the filter. Asking for
+a preflop stat inside `--street flop` gives nothing, which is correct
+rather than a bug.
+
+Under that sit **related spots**: the other seat, the next street, the
+same idea in a fatter pot. Each line is a `--preset` you can paste, or a
+row you can click in the window and on the page. `--related` prints only
+those, when you want to walk the tree without another stats dump.
+
+The report tab / `--by` **changes its columns to match the situation**.
+A river filter used to lead with VPIP, whose chance is preflop, so every
+cell came back empty and the `n` column printed as zero. `--show` still
+wins when you name the columns; without it, flop spots show flop stats
+and river spots show river stats.
+
 ### Saving the filter as a report
 
-The five reports in the box are the ones this project guessed at. The sixth
+The reports in the box are the built-in situations above. The next one
 is whatever you were looking at last Tuesday:
 
 ```bash
@@ -414,36 +568,60 @@ Every filter above narrows *situations*. This one narrows *people* first, and
 then the situation filters apply inside what is left:
 
 ```bash
+python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+python query.py --cohort 'Value(wtsd) > 30 and Opps(wtsd) > 50' --pos BTN
+python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10 --pos BTN
 python query.py --cohort --hands ">=500" --site acr
 python query.py --cohort --vpip ">=35" --pfr "<12" --pos BTN --street flop
-python query.py --cohort --class reg --durable 1 --pot 3bet --by position
+python query.py --cohort --class fish --hands ">=100" --pot 3bet --by position
 ```
 
-`--cohort` turns the flags after it into a player filter: `--hands`,
-`--vpip`, `--pfr`, `--gap`, `--threebet`, `--fold-to-threebet`, `--wwsf`,
-`--wtsd`, `--wsd`, `--bb100`, each taking a comparator and a number
-(`>=500`, `<12`, `28`), plus `--site`, `--class` (reg, fish, unknown) and
-`--durable` (1 for a named player, 0 for a session-only seat). In the window
-it is the **Players** button.
+`--cohort` selects people first; every situation filter, Smart Report, Pin
+and Faced Next then runs on the **pooled** hands of those players. One
+aggregated report, not a row per name.
 
-The heading says which players, not just how many:
+Three writings of the same idea:
+
+- **`--cohort 'vpip>=40,pfr<=10,hands>=100'`** — compact string. `40+` is
+  `>=40`. `class=fish` / `site=acr` / `durable=1` are allowed in the
+  string.
+- **`--cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100'`** — expression over
+  plain stats. `and` / `or` / `Value(` switch out of the compact list.
+  Do not mix `class=fish` into that string; use `--class` beside it.
+- **`--cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10`** — aliases
+  that do not collide with `--hands` the view. A bare number on
+  `--cohort-hands` means at least that many.
+- **`--cohort --hands ">=500" --vpip ">=28"`** — the original flags. The
+  first `--hands` after `--cohort` is the player's hand count; a second
+  `--hands` is the view. If the compact string or `--cohort-hands` already
+  set the sample, `--hands` is only the view.
+
+`--class` (reg / fish / unknown) and `--durable` still work. In the window
+it is the **Players** button (a compact box plus the same fields). On the
+page it is the **multiple players** fieldset.
+
+The heading says which players **and** how many hands they cover:
 
 ```
-filter: pos BTN, cohort: hands >=500, site acr (8 players)
+COHORT  vpip >=40, pfr <=10, hands >=100
+  12 players · 4,810 hands
+
+filter: 3-bet pots, cohort: vpip >=40, pfr <=10, hands >=100 (12 players, 4,810 hands)
 ```
 
-Two of these words already mean something else, and both work anyway:
-
-- **`--hands`** is a player's hand count here and the name of a view in
-  `query.py`. The first one after `--cohort` is the cohort's; a second is
-  the view. `--cohort --hands ">=500" --hands` means "players with 500
-  hands, listed as hands".
-- **`--site`** picks the pool a player belongs to. The cohort is joined on
-  site as well as name, so the situations are narrowed to that site too.
+`--site` picks the pool a player belongs to. The cohort is joined on site
+as well as name, so the situations are narrowed to that site too.
 
 **A cohort is not a saved report and cannot be part of one.** A cohort
 chooses people and a report describes a situation; save the situation and
 pick the players beside it.
+
+Not this, on purpose: nested `Value(Value(...))`; H2N's full stat-name
+catalog and positional `[MP;IP]` suffixes; `VsHeroCases` / `AmountWon` /
+`ActionProfit` as expression atoms; Preflop Range on the pool; Bet Sizes
+as a cohort view; two cohorts side by side (that is `--versus` of two
+populations, already shipped, not a second Multi-Player compare).
 
 Bear the sample size in mind before reading anything into a small cohort. 85
 ACR players have 100+ hands and eight have 500+, so `--hands ">=500"` is
@@ -456,10 +634,15 @@ eight people, and eight people are not a pool.
 ```bash
 python query.py --reg --vs-reg          # how regulars play each other
 python query.py --reg --vs-fish         # and how they play a recreational
+python query.py --villain-type fish --reg --stats
 python query.py --vs-player NAME        # against one named opponent
 python players.py --list reg            # who the regs are
 python players.py NAME                  # one player in full
 ```
+
+`--villain-type` / `--vs-class` is the typed form of `--vs-fish` /
+`--vs-reg`: `vs_class IN ('fish')`, or a comma list (`reg,unknown`).
+The classification is still `players.py` -- reg, fish, or unknown.
 
 A **reg** plays a third of hands or fewer and raises at least one in ten. A
 **fish** is loose or passive — over a third of hands, or almost never
@@ -494,19 +677,31 @@ python query.py --where "eff_bb > 150 AND fl_paired=1" --stats
 
 Filters combine freely, and there are three things to ask for.
 
-**`--stats`** (the default) runs every stat that *can* occur inside the
-filter, and silently drops the ones that cannot — asking for a preflop stat
-inside `--street flop` gives nothing, which is correct rather than a bug.
+**`--stats`** (the default) leads with what they did in the spot the filter
+already named -- fold / check / call / bet / raise, each with its `n` --
+then every named stat that *can* occur inside it, and silently drops the
+ones that cannot. Asking for a preflop stat inside `--street flop` gives
+nothing, which is correct rather than a bug.
 
 ```
 filter: pool, site acr, pot 3bet, street flop, ip
 524 decisions match
 
+  [this spot]
+  fold                     28.1%    +/-4    n=524
+  check                    31.0%    +/-4    n=524
+  bet                      22.4%    +/-4    n=524
   [flop]
   cbet flop                70.7%    +/-7   n=184
   fold to cbet             42.6%    +/-7   n=190
   [sizing]
   bets a third or less     50.6%    +/-7   n=170
+
+related spots:
+  Flop in 3-bet pots           related report
+    --preset 'Flop in 3-bet pots'
+  same spot, out of position   the other seat
+    --oop --pot 3bet --street flop
 ```
 
 **`--results`** is the money, and it works differently on purpose. Money is
@@ -532,8 +727,25 @@ hard and you will be looking at frequencies, which is the right thing to
 look at anyway.
 
 **`--hands`** lists the hands themselves, newest first, with the board and
-what each one made. In the interface a row opens; on the command line you
-open one by id:
+what each one made. Under each row is a **compact hand** -- the same
+single-line encoding Hand2Note puts in a report list: position, then
+`X` / `B` / `C` / `R` and a size in bb, with `'` for all-in. Street
+cuts show the flop (three cards) or the card that arrived, and the pot
+in bb. The marked action (`_R3_` on the command line and in the
+window; underlined on the page) is the seat that row is about, not
+always the session hero. Double-click a row (or click it on the page)
+to open the full replay; that path is unchanged.
+
+```
+  2024-03-01 12:04  acr         0.50  BTN  AhKd    +12.4    +3.0  7h Ks 8c 8d Th
+    BTN _R3_  BB C2 | 7h Ks 8c (6)  BB X  BTN X | 8d (6)  BB B4.5  BTN C4.5 | Th (15)  BB B86'  BTN C86
+```
+
+v1 does not write blind posts, hole cards (the combo column has those),
+or EP1–EP3 labels this project does not use. Early folds stay in the
+line. A six-way flop is not truncated.
+
+On the command line you open one hand by id:
 
 ```bash
 python query.py --hand 5331315698
@@ -544,6 +756,115 @@ street with the pot before each decision. On Ignition every player's cards
 are there including the folded ones, because the site shows them. On ACR a
 seat reads `--` when the hand was never shown, which is different from
 having been dealt nothing.
+
+---
+
+### Notes, marks, and tags
+
+Off-table study. A report is what the pool did; a note is what you thought
+about it. The store is `notes.db` beside the database -- gitignored, and
+not rebuilt with `hands.db`, so a derivation rebuild does not delete a
+sentence you wrote last Tuesday.
+
+```bash
+python notes.py --add "calls too wide" --player NAME
+python notes.py --add "too wide here" --hand cp-123 --spot "Flop c-bets"
+python notes.py --list --player NAME
+python notes.py --bind cp-123 --note-id 4
+python notes.py --mark cp-123 --tag leak
+python notes.py --marked --tag leak
+python notes.py --templates
+python notes.py --template review --text "Come back to this."
+```
+
+`--hand` without `--player` picks the player from the hand: the report
+row's seat if you passed `--seat`, otherwise hero, otherwise any named
+seat.
+
+The same store as a filter:
+
+```bash
+python query.py --marked --hands
+python query.py --tag leak --hero --stats
+python query.py --noted --filter 3bet
+python query.py --hand cp-123 --mark --tag leak
+python query.py --hand cp-123 --note "calls too wide"
+```
+
+The hand list prints a `*` on starred rows and the tags after the board.
+In the window: Filter → General → marked / tag, and Mark / Unmark / Note
+on the hands tab (and on the replay). On the page: the study chips and
+the star on each row.
+
+Not this, on purpose: live HUD "Add Note"; exporting tagged hands as a
+history file; pasting a raw HH into a stat note. Compact Hand View is
+already the line on the row -- this does not redo it.
+
+### Expressions over plain stats
+
+A plain stat is a frequency in a spot (`stats.BY_KEY`). An expression is
+math over those frequencies, used first as a Multi-Player cohort:
+
+```bash
+python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+python query.py --cohort 'Value(wtsd) > 30 and Opps(wtsd) > 50'
+python query.py --cohort 'vpip>=40 and pfr<=10 and Hands()>=100'
+```
+
+| atom | meaning |
+|---|---|
+| `Value(S)` | `100 * hits / opps` (0 if they never faced the chance) |
+| `Cases(S)` | hits |
+| `Opps(S)` | opportunities |
+| `Hands()` / `HandsCount()` | the `players` table hand count |
+
+`S` is a registry key or a short alias: `3Bet` → `threebet`, `cbet` →
+`cbet_flop`, `WentToSD` → `wtsd`. There is no `WentToSDCases` name --
+that is `Cases(wtsd)`, and the denominator is `Opps(wtsd)` (hands that
+saw a flop), not `Hands()`. `and` / `or`, comparisons, `+ - * /`, and
+`if(cond, a, b)` are the rest. Expressions do not nest:
+`Value(Value(vpip))` is refused.
+
+A comma compact string without `and`/`or`/`Value(` is still the v1
+field list. `--class fish` stays a flag beside the expression.
+
+Not this, on purpose: the full Hand2Note stat-name catalog; positional
+`[MP;IP]` suffixes; `VsHeroCases`, `AmountWon`, `ActionProfit` as
+expression atoms (those stay report columns).
+
+### Aliases
+
+A named group of `(username, room)` accounts, stored in `aliases.json`
+(gitignored, like `stats.json`). Not a table inside `hands.db`.
+
+```bash
+python aliases.py --create me --player HeroACR --site acr --single
+python aliases.py --add me --player HeroPS --site pokerstars
+python aliases.py --list
+python aliases.py --import accounts.csv
+python aliases.py --export accounts.csv
+
+python query.py --alias me --filter "Flop c-bets"
+python query.py --hero --vs-alias nits --street flop
+```
+
+CSV columns, Hand2Note's order: `Alias, Username, Room, Is Single Person`.
+`Room` accepts the registry keys and the usual nicknames (`wpn`, `ps`,
+`bovada`). **Is Single Person = true** merges those histories as one
+player (hero on a second site). **false** is a style / group, usable as
+`--vs-alias` -- the other seat is in that set.
+
+`--hero` already merges every imported hero seat via `is_hero = 1`.
+`--alias` is the same idea for names that are not that flag.
+`--player me` does **not** expand an alias -- a screen name and an
+alias can share a word.
+
+Reports: pick a person, a single-person alias, or a group alias as a
+pool (`--vs-alias`). `--by player` still splits the members; the alias
+is a filter, not a rewritten identity.
+
+Not this, on purpose: save-cohort-as-alias; HUD; treating `--player`
+as an alias lookup.
 
 ### When nothing matches
 

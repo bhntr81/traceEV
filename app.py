@@ -39,12 +39,14 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
 
+import compact
 import diag
 import importer
+import notes
 import players
 import sites
 import query
@@ -133,7 +135,12 @@ WHO = [("--reg", "the player is a reg"), ("--fish", "the player is a fish"),
        ("--regs-only", "everyone left is a reg"),
        ("--with-fish", "a fish is in the pot")]
 SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
-              ("--pfa", "was the raiser"), ("--vs-pfa", "facing the raiser"),
+              ("--pfa", "was the raiser"), ("--not-pfa", "was not the raiser"),
+              ("--vs-pfa", "facing the raiser"),
+              ("--first-in", "first in on this street"),
+              ("--first-raise", "first raise on this street"),
+              ("--last-raise", "already raised on the street"),
+              ("--last-action", "last action on this street"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
 # Turning one of these on turns its opposite off, or the filter selects
@@ -141,6 +148,7 @@ SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
 OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--oop": "--ip", "--multiway": "--headsup",
              "--headsup": "--multiway",
+             "--pfa": "--not-pfa", "--not-pfa": "--pfa",
              "--reg": "--fish", "--fish": "--reg",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
              "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero"}
@@ -544,6 +552,8 @@ class App(ImportMixin, ttk.Frame):
         # it has been built yet. These used to appear as a side effect of
         # drawing the rail, so deleting the rail silently emptied the filter.
         self.flags = {f: tk.BooleanVar() for f in query.SWITCHES}
+        self.flags["--marked"] = tk.BooleanVar()
+        self.flags["--noted"] = tk.BooleanVar()
         self.multi = {"pos": set(), "vs": set(), "street": set(),
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
@@ -554,7 +564,10 @@ class App(ImportMixin, ttk.Frame):
         self.vals = {n: tk.StringVar() for n in
                      ("site", "stake", "player", "deep", "short",
                       "since", "until", "where",
-                      "line", "node", "pre", "flop", "turn", "river")}
+                      "line", "node", "pre", "flop", "turn", "river",
+                      "after", "then", "size", "outcome",
+                      "players", "live", "stack", "tag",
+                      "alias", "vs_alias", "villain_type")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -669,10 +682,20 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box = ttk.Combobox(
             bar, textvariable=self.preset,
             values=["" ] + list(query.reports()), state="readonly",
-            width=22)
+            width=28)
         self.preset_box.pack(side="left")
         self.preset_box.bind("<<ComboboxSelected>>",
-                             lambda _e: self.refresh())
+                             lambda _e: self._on_preset())
+        ttk.Label(bar, text="pin", style="Dim.TLabel").pack(
+            side="left", padx=(14, 6))
+        self.pin = tk.StringVar(value="")
+        self.pin_box = ttk.Combobox(
+            bar, textvariable=self.pin,
+            values=[""] + list(query.reports()), state="readonly",
+            width=22)
+        self.pin_box.pack(side="left")
+        self.pin_box.bind("<<ComboboxSelected>>",
+                          lambda _e: self.refresh())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
@@ -695,7 +718,101 @@ class App(ImportMixin, ttk.Frame):
         self.cohort_spec = None
         self.cohort_btn.configure(text="Players")
         self.preset.set("")
+        self.pin.set("")
         self.refresh()
+
+    # Who is being measured, as opposed to the situation they are in. A
+    # Smart Report replaces the situation and keeps the person -- opening
+    # "Flop c-bets" while hero is selected would otherwise AND the leftover
+    # street/pot clicks onto the report and often match nothing.
+    WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
+                    "--reg", "--fish", "--vs-reg", "--vs-fish",
+                    "--with-fish", "--regs-only")
+    WHO_VALS = ("site", "stake", "player", "since", "until",
+                "alias", "vs_alias", "villain_type")
+
+    def clear_situation(self, keep_preset=False):
+        """Drop the situation filters; keep the player, the site, the cohort."""
+        for flag, var in self.flags.items():
+            if flag not in self.WHO_SWITCHES:
+                var.set(False)
+        for group in self.multi:
+            self.multi[group] = set()
+        for name, var in self.vals.items():
+            if name not in self.WHO_VALS:
+                var.set("")
+        if not keep_preset:
+            self.preset.set("")
+
+    def _on_preset(self):
+        """Opening a named report replaces the situation, the way H2N does."""
+        if self.preset.get():
+            self.clear_situation(keep_preset=True)
+        self.refresh()
+
+    def apply_report(self, name):
+        """Open a named Smart Report and keep who is being measured."""
+        self.clear_situation()
+        self.preset.set(name)
+        self.refresh()
+
+    def apply_spot(self, name, argv):
+        """
+        Open a neighbouring spot. A named report goes through the box;
+        a generated variant (same filter, in position) is written onto
+        the widgets so it is the filter you would have built by hand.
+        """
+        self.clear_situation()
+        if name in query.reports():
+            self.preset.set(name)
+        else:
+            self._apply_argv(argv)
+        self.refresh()
+
+    def _apply_argv(self, argv):
+        """Set the widgets from a flag list. The inverse of `argv`."""
+        i = 0
+        argv = query.situation_only(list(argv))
+        while i < len(argv):
+            a = argv[i]
+            if a in self.flags:
+                self.flags[a].set(True)
+                twin = OPPOSITES.get(a)
+                if twin:
+                    self.flags[twin].set(False)
+                i += 1
+                continue
+            if a in query.VALUE_FLAGS and i + 1 < len(argv):
+                v = argv[i + 1]
+                group = {"--pos": "pos", "--vs": "vs", "--street": "street",
+                         "--pot": "pot", "--board": "board", "--quick": "quick",
+                         "--made": "made", "--kicker": "kicker",
+                         "--fd": "fd", "--sd": "sd",
+                         "--turn-card": "turn_card",
+                         "--river-card": "river_card"}.get(a)
+                if group:
+                    self.multi[group] = set(x.strip() for x in v.split(",")
+                                            if x.strip())
+                else:
+                    name = {"--site": "site", "--stake": "stake",
+                            "--player": "player", "--deep": "deep",
+                            "--short": "short", "--since": "since",
+                            "--until": "until", "--where": "where",
+                            "--line": "line", "--node": "node",
+                            "--pre": "pre", "--flop": "flop",
+                            "--turn": "turn", "--river": "river",
+                            "--after": "after", "--then": "then",
+                            "--size": "size", "--outcome": "outcome",
+                            "--players": "players", "--live": "live",
+                            "--stack": "stack", "--tag": "tag",
+                            "--alias": "alias", "--vs-alias": "vs_alias",
+                            "--villain-type": "villain_type",
+                            "--vs-class": "villain_type"}.get(a)
+                    if name:
+                        self.vals[name].set(v)
+                i += 2
+                continue
+            i += 1
 
     def open_cohort(self):
         CohortDialog(self)
@@ -712,8 +829,11 @@ class App(ImportMixin, ttk.Frame):
         """
         keep = self.preset.get()
         known = list(query.reports())
-        self.preset_box.configure(values=["" ] + known)
+        self.preset_box.configure(values=[""] + known)
         self.preset.set(keep if keep in known else "")
+        pinned = self.pin.get()
+        self.pin_box.configure(values=[""] + known)
+        self.pin.set(pinned if pinned in known else "")
 
 
     def _views(self, right):
@@ -741,7 +861,12 @@ class App(ImportMixin, ttk.Frame):
         self.bar = bar
 
         self.filter_line = ttk.Label(right, text="", style="Dim.TLabel")
-        self.filter_line.pack(anchor="w", padx=14, pady=(0, 8))
+        self.filter_line.pack(anchor="w", padx=14, pady=(0, 4))
+        # Neighbouring spots, the way Hand2Note's report tree lets you
+        # walk from a flop c-bet to the other seat and the next street
+        # without rebuilding the filter. Built empty; `refresh` fills it.
+        self.related_bar = ttk.Frame(right)
+        self.related_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         self.tabs = {}
         for name in ("stats", "range", "chart", "report", "results", "graph",
@@ -766,6 +891,27 @@ class App(ImportMixin, ttk.Frame):
         self.chart = None
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        wrap = self.tree["hands"].master
+        study = ttk.Frame(self.tabs["hands"])
+        study.pack(fill="x", padx=8, pady=(6, 0), before=wrap)
+        ttk.Button(study, text="Mark",
+                   command=lambda: self._mark_selected(True)).pack(
+                       side="left")
+        ttk.Button(study, text="Unmark",
+                   command=lambda: self._mark_selected(False)).pack(
+                       side="left", padx=(6, 0))
+        ttk.Label(study, text="tag", style="Dim.TLabel").pack(
+            side="left", padx=(12, 4))
+        self.hand_tag = tk.StringVar()
+        ttk.Entry(study, textvariable=self.hand_tag, width=12).pack(
+            side="left")
+        ttk.Button(study, text="Note",
+                   command=self._note_selected).pack(
+                       side="left", padx=(12, 0))
+        # A stat or a Faced Next row is a filter. Double-clicking it is
+        # how Hand2Note walks from a frequency to the hands that made it,
+        # without going back through the dialog.
+        self.tree["stats"].bind("<Double-1>", self._drill_stat)
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -802,6 +948,9 @@ class App(ImportMixin, ttk.Frame):
             argv.append("--cohort")
             flags = {"fold_to_threebet": "--fold-to-threebet"}
             for field, value in conditions:
+                if field == "_expr":
+                    argv.append(value)
+                    continue
                 argv += [flags.get(field, "--" + field), value]
             if site:
                 argv += ["--site", site]
@@ -824,7 +973,14 @@ class App(ImportMixin, ttk.Frame):
                            ("until", "--until"), ("where", "--where"),
                            ("line", "--line"), ("node", "--node"),
                            ("pre", "--pre"), ("flop", "--flop"),
-                           ("turn", "--turn"), ("river", "--river")):
+                           ("turn", "--turn"), ("river", "--river"),
+                           ("after", "--after"), ("then", "--then"),
+                           ("size", "--size"), ("outcome", "--outcome"),
+                           ("players", "--players"), ("live", "--live"),
+                           ("stack", "--stack"), ("tag", "--tag"),
+                           ("alias", "--alias"),
+                           ("vs_alias", "--vs-alias"),
+                           ("villain_type", "--villain-type")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -862,6 +1018,7 @@ class App(ImportMixin, ttk.Frame):
         diag.event("refresh", view=view, filter=label)
         self.filter_line.configure(text="filter: " + label)
         self.summary.configure(text=self.describe_filter())
+        self._paint_related(query.related_spots(query_argv))
         if self.argv():
             self.clear_btn.pack(side="left", padx=(6, 0))
         else:
@@ -871,8 +1028,29 @@ class App(ImportMixin, ttk.Frame):
         self.status.configure(text="working…")
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
-                               self.by.get(), cohort_spec, self.chart_stat())
+                               self.by.get(), cohort_spec, self.chart_stat(),
+                               query_argv, self.pin.get())
                          ).start()
+
+    def _paint_related(self, related):
+        """Clickable neighbours under the filter line."""
+        for kid in self.related_bar.winfo_children():
+            kid.destroy()
+        if not related:
+            return
+        ttk.Label(self.related_bar, text="related",
+                  style="Dim.TLabel").pack(side="left", padx=(0, 8))
+        for spot in related:
+            lab = tk.Label(self.related_bar, text=spot["name"],
+                           bg=BG, fg=ACCENT, cursor="hand2",
+                           font=(UI, 9), padx=6)
+            lab.pack(side="left")
+            if spot.get("why"):
+                lab.configure(text=spot["name"])
+            lab.bind("<Button-1>",
+                     lambda _e, s=spot: self.apply_spot(s["name"], s["argv"]))
+            lab.bind("<Enter>", lambda _e, w=lab: w.configure(fg=INK))
+            lab.bind("<Leave>", lambda _e, w=lab: w.configure(fg=ACCENT))
 
     def chart_stat(self):
         """Which stat the chart is of, or None for the range itself."""
@@ -883,7 +1061,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None):
+              stat=None, argv=None, pin=""):
         """
         Every query runs here, never on the interface thread.
 
@@ -893,30 +1071,40 @@ class App(ImportMixin, ttk.Frame):
         through a queue, with a token so that a slow answer to a filter the
         user has already changed is discarded rather than drawn.
         """
+        argv = list(argv or [])
         con = sqlite3.connect(DB)
         try:
+            notes.attach(con)
             if cohort_spec is not None:
-                count = query.select_cohort(con, cohort_spec)
-                label += (f", cohort: "
-                          f"{players.describe_cohort(cohort_spec)} "
-                          f"({count} players)")
-                where = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
-                         "WHERE c.site = decisions.site AND "
-                         "c.player = decisions.player)")
-            out = {"view": view}
+                where, _header, label = query.apply_cohort(
+                    con, cohort_spec, where, label)
+            out = {"view": view, "label": label}
             if view == "stats":
                 out["n"], out["rows"] = query.stats_of(con, where)
+                out["actions"] = query.actions_of(con, where)
+                out["summary"] = query.spot_summary(con, where, argv)
+                out["profit"] = query.action_profit_of(con, where)
+                out["faced"] = query.chain_report(con, where, argv, False)
+                out["next"] = query.chain_report(con, where, argv, True)
+                out["outcomes"] = query.outcomes_of(con, where)
+                if pin:
+                    try:
+                        argv_a, argv_b = query.pin_sides(argv, pin)
+                        out["compare"] = query.compare_of(
+                            con, argv_a, argv_b, None, pin)
+                    except SystemExit as e:
+                        out["pinned"] = {"error": str(e), "name": pin}
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "chart":
                 out.update(query.chart_of(con, where, stat))
             elif view == "report":
                 expr, order = query.DIMENSIONS[dim]
-                cols = query.DEFAULT_COLUMNS
+                cols = query.columns_for(argv)
                 grid = {c: query.rates_by(con, BY_KEY[c], expr, where)
                         for c in cols}
-                counts = query.rates_by(con, BY_KEY["vpip"], expr, where)
-                keys = sorted({k for g in grid.values() for k in g},
+                counts = query.counts_by(con, expr, where)
+                keys = sorted({k for g in grid.values() for k in g} | set(counts),
                               key=lambda k: order(k) if k is not None else "")
                 out.update(dim=dim, cols=cols, grid=grid, counts=counts,
                            keys=keys)
@@ -924,13 +1112,10 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = con.execute(
-                    f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site,"
-                    f" d.bb, d.position, d.combo, d.board, s.net_bb "
-                    f"FROM (SELECT * FROM decisions WHERE {where}) d "
-                    f"LEFT JOIN spots s ON s.hand_id=d.hand_id "
-                    f"AND s.seat=d.seat ORDER BY d.played_at DESC LIMIT 500"
-                ).fetchall()
+                rows = query.matching_hands(con, where, limit=500)
+                notes.decorate(con, rows)
+                compact.attach(con, rows, fmt="text")
+                out["rows"] = rows
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if not self._any(out):
@@ -992,6 +1177,8 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        if out.get("label"):
+            self.filter_line.configure(text="filter: " + out["label"])
         if view == "graph":
             self.series = out.get("series")
             self._draw_graph(out.get("why") or out.get("error"))
@@ -1035,22 +1222,166 @@ class App(ImportMixin, ttk.Frame):
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
+    def _drill_stat(self, _event):
+        """Open the clicked stat or next-action as a filter on this spot."""
+        tv = self.tree["stats"]
+        iid = tv.focus()
+        if not iid or ":" not in iid:
+            return
+        kind, key = iid.split(":", 1)
+        if not key:
+            return
+        if kind == "stat":
+            self.multi["quick"] = {key}
+            self.refresh()
+        elif kind == "after":
+            self.vals["after"].set(key)
+            self.refresh()
+        elif kind == "then":
+            self.vals["then"].set(key)
+            self.refresh()
+        elif kind == "outcome":
+            self.vals["outcome"].set(key)
+            self.refresh()
+
     def _render_stats(self, tv, out):
-        self._cols(tv, ("stat", "value", "±", "n"), (230, 90, 70, 100),
+        self._cols(tv, ("stat", "value", "±", "n", "act bb"),
+                   (220, 80, 60, 100, 80),
                    {"stat": "w"})
+        self._stat_iids = {}
+        cmp = out.get("compare")
+        if cmp:
+            a, b = cmp["a"], cmp["b"]
+            sa, sb = a.get("summary") or {}, b.get("summary") or {}
+            pa, pb = a.get("profit") or {}, b.get("profit") or {}
+            tv.insert("", "end", values=("THIS vs PINNED", "", "", "", ""),
+                      tags=("group",))
+            tv.insert("", "end", values=(
+                "", (a.get("name") or "this")[:22],
+                "", (b.get("name") or "pinned")[:22], ""))
+            tv.insert("", "end", values=(
+                "hits / opps",
+                f"{sa.get('hits', 0):,} / {sa.get('opps', 0):,}",
+                "",
+                f"{sb.get('hits', 0):,} / {sb.get('opps', 0):,}", ""))
+            tv.insert("", "end", values=(
+                "freq",
+                f"{sa.get('pct', 0):.1f}%" if sa.get("opps") else "–",
+                "",
+                f"{sb.get('pct', 0):.1f}%" if sb.get("opps") else "–", ""))
+            tv.insert("", "end", values=(
+                "hits / 1000",
+                f"{sa.get('per_1k', 0):.1f}", "",
+                f"{sb.get('per_1k', 0):.1f}", ""))
+            this_ap = (f"{pa['bb_per_hand']:+.2f} bb"
+                       if pa.get("bb_per_hand") is not None else "–")
+            pin_ap = (f"{pb['bb_per_hand']:+.2f} bb"
+                      if pb.get("bb_per_hand") is not None else "–")
+            tv.insert("", "end", values=(
+                "action profit", this_ap, "", pin_ap, ""))
+            diff = cmp.get("freq_diff") or {}
+            if diff.get("d") is not None:
+                tv.insert("", "end", values=(
+                    "freq this − pin",
+                    f"{100 * diff['d']:+.1f} pts",
+                    f"[{100 * diff['lo']:+.1f}, {100 * diff['hi']:+.1f}]",
+                    "", ""), tags=("note",))
+        else:
+            summ = out.get("summary")
+            if summ and summ["opps"]:
+                tv.insert("", "end", values=("HITS / OPPORTUNITIES", "", "", "", ""),
+                          tags=("group",))
+                tv.insert("", "end", values=(
+                    f"hits  ({summ['label']})", f"{summ['hits']:,}", "",
+                    f"{summ['opps']:,} opps", ""))
+                tv.insert("", "end", values=(
+                    "hits / 1000 hands", f"{summ['per_1k']:.1f}",
+                    f"±{summ['band']:.1f}" if summ["band"] < 1
+                    else f"±{summ['band']:.0f}",
+                    f"{summ['hands']:,} hands", ""))
+                tv.insert("", "end", values=(
+                    f"{summ['label']}", f"{summ['pct']:.1f}%",
+                    f"±{summ['band']:.1f}" if summ["band"] < 1
+                    else f"±{summ['band']:.0f}",
+                    f"{summ['opps']:,}", ""))
+        pinned = out.get("pinned")
+        if pinned and pinned.get("error"):
+            tv.insert("", "end", values=(pinned["error"], "", "", "", ""),
+                      tags=("note",))
+        prof = out.get("profit")
+        if prof and prof["n"]:
+            if prof["bb_per_hand"] is not None:
+                tv.insert("", "end", values=(
+                    "action profit", f"{prof['bb_per_hand']:+.2f} bb",
+                    "priced hits", f"{prof['priced']:,} of {prof['n']:,}", ""))
+            else:
+                tv.insert("", "end", values=(
+                    "action profit", "unpriced", "", f"{prof['n']:,}", ""),
+                    tags=("note",))
+            tv.insert("", "end", values=(prof["note"], "", "", "", ""),
+                      tags=("note",))
+            for edge in prof.get("edges") or []:
+                tv.insert("", "end", values=(edge, "", "", "", ""),
+                          tags=("note",))
+        acts = out.get("actions") or {}
+        if acts.get("mix"):
+            tv.insert("", "end", values=("THIS SPOT", "", "", "", ""),
+                      tags=("group",))
+            for r in acts["mix"]:
+                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['n']:,}", ""))
+            for r in acts.get("extra") or []:
+                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['n']:,}", ""))
+        outs = out.get("outcomes") or {}
+        if outs.get("rows"):
+            tv.insert("", "end", values=("OUTCOME", "", "", "", ""),
+                      tags=("group",))
+            for r in outs["rows"]:
+                tv.insert("", "end", iid=f"outcome:{r['key']}",
+                          tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['k']:,}", ""))
+        for title, key, blob in (
+                ("FACED NEXT  (the other seat)", "after", out.get("faced")),
+                ("NEXT ACTIONS  (this player)", "then", out.get("next"))):
+            if not (blob and blob.get("rows")):
+                continue
+            tv.insert("", "end", values=(title, "", "", "", ""), tags=("group",))
+            for r in blob["rows"]:
+                iid = f"{key}:{r['key']}" if r.get("key") else ""
+                ap = (r.get("profit") or {})
+                act = (f"{ap['bb_per_hand']:+.2f}" if ap.get("bb_per_hand")
+                       is not None else "–")
+                tv.insert("", "end", iid=iid or None,
+                          tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r.get('hits', r['k']):,} / {r.get('opps', r['n']):,}",
+                                  act))
         group = None
         for r in out["rows"]:
             if r["group"] != group:
                 group = r["group"]
-                tv.insert("", "end", values=(group.upper(), "", "", ""),
+                tv.insert("", "end", values=(group.upper(), "", "", "", ""),
                           tags=("group",))
-            tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+            tv.insert("", "end", iid=f"stat:{r['key']}",
+                      tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
                               # A band under a point still has a size, and
                               # "±0" reads as a number that failed to print.
                               f"±{r['band']:.1f}" if r["band"] < 1
                               else f"±{r['band']:.0f}",
-                              f"{r['n']:,}"))
+                              f"{r['n']:,}", ""))
 
     def _render_range(self, tv, out):
         """
@@ -1112,7 +1443,10 @@ class App(ImportMixin, ttk.Frame):
                 n, kk = out["grid"][c].get(k, (0, 0))
                 row.append("–" if not n else f"{100 * kk / n:.1f}%")
                 thin = thin or (0 < n < 30)
-            row.append(f"{out['counts'].get(k, (0, 0))[0]:,}")
+            n_here = out["counts"].get(k, 0)
+            if isinstance(n_here, tuple):
+                n_here = n_here[0]
+            row.append(f"{n_here:,}")
             tv.insert("", "end", values=row, tags=("thin",) if thin else ())
 
     def _render_results(self, tv, out):
@@ -1136,33 +1470,87 @@ class App(ImportMixin, ttk.Frame):
             "error on a win rate is about 1170/√n", ""))
 
     def _render_hands(self, tv, out):
-        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb", "board"),
-                   (140, 90, 60, 60, 70, 90, 200),
-                   {"when": "w", "site": "w", "pos": "w", "hand": "w",
-                    "board": "w"})
+        # Compact replaces the board column: the board is already in
+        # the line, and a Treeview cannot underline a substring so the
+        # focus seat's action is marked _R3_. Double-click still opens
+        # the full replay -- that path is unchanged.
+        self._cols(tv, ("*", "when", "site", "bb", "pos", "hand", "net bb",
+                        "act bb", "compact"),
+                   (36, 140, 90, 60, 60, 70, 80, 80, 480),
+                   {"*": "w", "when": "w", "site": "w", "pos": "w", "hand": "w",
+                    "compact": "w"})
         self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net in out["rows"]:
+        for r in out["rows"]:
+            net, act = r.get("net"), r.get("act")
+            star = "*" if r.get("marked") else ""
+            extra = ",".join(r.get("tags") or [])
+            compact_line = r.get("compact") or r.get("board") or ""
+            if extra:
+                compact_line = f"[{extra}]  {compact_line}"
             iid = tv.insert("", "end", values=(
-                (when or "")[:16], site, f"{bb:g}" if bb else "",
-                pos or "", combo or "–",
+                star,
+                (r.get("when") or "")[:16], r.get("site") or "",
+                f"{r['bb']:g}" if r.get("bb") else "",
+                r.get("pos") or "", r.get("combo") or "–",
                 f"{net:+.1f}" if net is not None else "",
-                board or ""),
-                tags=("pos",) if (net or 0) > 0 else
-                     ("neg",) if (net or 0) < 0 else ())
-            self._hand_ids[iid] = (hid, seat)
+                f"{act:+.1f}" if act is not None else "–",
+                compact_line),
+                tags=("pos",) if (act or 0) > 0 else
+                     ("neg",) if (act or 0) < 0 else ())
+            self._hand_ids[iid] = (r["id"], r["seat"])
         if out["rows"]:
-            tv.insert("", "end", values=("", "", "", "", "", "", ""))
+            tv.insert("", "end", values=("", "", "", "", "", "", "", "", ""))
             tv.insert("", "end", tags=("note",),
-                      values=("double-click a hand to replay it", "", "", "",
-                              "", "", ""))
+                      values=("", "act bb is this action; net bb is the hand. "
+                              "– is unpriced. _marked_ actions are this "
+                              "row's seat. Mark / Unmark / Note on the row. "
+                              "Double-click to replay.",
+                              "", "", "", "", "", "", ""))
 
-    def _open_hand(self, _event):
+    def _selected_hand(self):
         tv = self.tree["hands"]
         sel = tv.selection()
         if not sel or sel[0] not in getattr(self, "_hand_ids", {}):
+            return None
+        return self._hand_ids[sel[0]]
+
+    def _open_hand(self, _event):
+        got = self._selected_hand()
+        if not got:
             return
-        hid, seat = self._hand_ids[sel[0]]
+        hid, seat = got
         HandWindow(self, self.con, hid, seat)
+
+    def _mark_selected(self, star):
+        got = self._selected_hand()
+        if not got:
+            return
+        hid, _seat = got
+        raw = self.hand_tag.get().strip()
+        tags = [x.strip() for x in raw.split(",") if x.strip()]
+        if star:
+            notes.mark(hid, tags)
+        else:
+            notes.unmark(hid, tags or None)
+        self.refresh()
+
+    def _note_selected(self):
+        got = self._selected_hand()
+        if not got:
+            return
+        hid, seat = got
+        text = simpledialog.askstring(
+            "Note", f"Note on {hid}", parent=self.master)
+        if not text or not text.strip():
+            return
+        hands_con = sqlite3.connect(DB)
+        hands_con.row_factory = sqlite3.Row
+        try:
+            notes.add(text.strip(), hand_id=hid, seat=seat,
+                      hands_con=hands_con)
+        finally:
+            hands_con.close()
+        self.refresh()
 
     def _draw_chart(self, message=None):
         """
@@ -1326,8 +1714,21 @@ class App(ImportMixin, ttk.Frame):
         except SystemExit:
             return "…"
         if cohort_spec is not None:
-            label += ", player cohort"
+            label += ", cohort: " + players.describe_cohort(cohort_spec)
         return "all hands" if label == "everything" else label
+
+
+def _cohort_expr(conditions):
+    """The compact string the dialog started from, so it can be edited back."""
+    parts = []
+    for field, value in conditions:
+        if field == "_expr":
+            return value
+        if str(value)[:1] in "<>=":
+            parts.append(f"{field}{value}")
+        else:
+            parts.append(f"{field}={value}")
+    return ",".join(parts)
 
 
 class CohortDialog(tk.Toplevel):
@@ -1349,7 +1750,7 @@ class CohortDialog(tk.Toplevel):
         self.app = app
         self.title("Players")
         self.configure(background=BG)
-        self.geometry("520x430")
+        self.geometry("520x500")
         self.transient(app.master)
         self.grab_set()
 
@@ -1358,7 +1759,8 @@ class CohortDialog(tk.Toplevel):
         self.values = {field: tk.StringVar(value=current.get(field, default))
                        for field, _label, default in self.FIELDS}
         current_spec = app.cohort_spec or ([], None, None, None)
-        _conditions, site, klass, durable = current_spec
+        conditions, site, klass, durable = current_spec
+        self.expr = tk.StringVar(value=_cohort_expr(conditions))
         self.site = tk.StringVar(value=site or "")
         self.klass = tk.StringVar(value=klass or "")
         self.durable = tk.StringVar(
@@ -1367,8 +1769,15 @@ class CohortDialog(tk.Toplevel):
         ttk.Label(self, text="PLAYER COHORT", style="Title.TLabel").pack(
             anchor="w", padx=24, pady=(22, 4))
         ttk.Label(self, text="Filter players first; the selected cohort is "
-                  "then used by every report tab.",
-                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 18))
+                  "then used by every report tab. 40+ means >=40.",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
+        compact = ttk.Frame(self)
+        compact.pack(fill="x", padx=24, pady=(0, 10))
+        ttk.Label(compact, text="or type", width=14).pack(side="left")
+        ttk.Entry(compact, textvariable=self.expr, width=36).pack(side="left")
+        ttk.Label(self, text="vpip>=40,pfr<=10,hands>=100  or  "
+                  "Value(3Bet)<2 and Opps(3Bet)>100",
+                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
         body = ttk.Frame(self)
         body.pack(fill="x", padx=24)
         for field, label, _default in self.FIELDS:
@@ -1400,6 +1809,7 @@ class CohortDialog(tk.Toplevel):
         self.bind("<Return>", lambda _e: self.apply())
 
     def clear(self):
+        self.expr.set("")
         for value in self.values.values():
             value.set("")
         self.site.set("")
@@ -1408,10 +1818,14 @@ class CohortDialog(tk.Toplevel):
 
     def apply(self):
         argv = ["--cohort"]
+        compact = self.expr.get().strip()
+        if compact:
+            argv.append(compact)
+        flags = {"fold_to_threebet": "--fold-to-threebet"}
         for field, _label, _default in self.FIELDS:
             value = self.values[field].get().strip()
             if value:
-                argv += ["--" + field, value]
+                argv += [flags.get(field, "--" + field), value]
         for flag, value in (("--site", self.site.get()),
                             ("--class", self.klass.get()),
                             ("--durable", self.durable.get())):
@@ -1725,6 +2139,7 @@ class FilterDialog(tk.Toplevel):
 
         nb = ttk.Notebook(self, style="Big.TNotebook")
         nb.pack(fill="both", expand=True, padx=16, pady=(14, 0))
+        self._reports_tab(nb)
         self._quick_tab(nb)
         self._positions_tab(nb)
         self._actions_tab(nb)
@@ -1865,6 +2280,18 @@ class FilterDialog(tk.Toplevel):
         return (lambda: m.add(value), lambda: m.discard(value),
                 lambda: value in m)
 
+    def _val_item(self, name, value):
+        """A one-of pick written onto a string var, used by Faced Next."""
+        var = self.app.vals[name]
+
+        def on():
+            var.set(value)
+
+        def off():
+            if var.get() == value:
+                var.set("")
+        return on, off, (lambda: var.get() == value)
+
     def _flag_item(self, flag):
         v = self.app.flags[flag]
 
@@ -1876,6 +2303,33 @@ class FilterDialog(tk.Toplevel):
         return on, (lambda: v.set(False)), (lambda: bool(v.get()))
 
     # ---- the tabs ------------------------------------------------------
+    def _reports_tab(self, nb):
+        """Hand2Note's Smart Reports tree: named spots, grouped by street."""
+        page = self._page(nb, "Reports")
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="A report is a situation, not a stat. Opening one "
+                       "replaces the street / pot / facing you have clicked "
+                       "and keeps who you are measuring -- the same split "
+                       "the command line already makes between --preset and "
+                       "--hero."
+                  ).pack(anchor="w", padx=18, pady=(12, 0))
+        for family, names in query.reports_by_family():
+            self._heading(page, family)
+            self._grid(page, [
+                (lambda parent, n=n: self._pick(
+                    parent, n, *self._report_item(n),
+                    note=" ".join(query.reports()[n])))
+                for n in names])
+
+    def _report_item(self, name):
+        def on():
+            self.app.clear_situation()
+            self.app.preset.set(name)
+        def off():
+            if self.app.preset.get() == name:
+                self.app.preset.set("")
+        return on, off, (lambda n=name: self.app.preset.get() == n)
+
     def _quick_tab(self, nb):
         page = self._page(nb, "Quick Filters")
         by_group = {}
@@ -1932,6 +2386,37 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "situation")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in SITUATIONS])
+        self._heading(page, "faced next  (the other seat then)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("after", v)))
+            for v in list(query.AFTER) + ["none"]])
+        self._heading(page, "next actions  (this player then)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("then", v)))
+            for v in list(query.AFTER) + ["none"]])
+        self._heading(page, "outcome of this bet")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, query.OUTCOMES[v][1], *self._val_item("outcome", v)))
+            for v in ("fold-out", "call", "raise-back")])
+        self._heading(page, "bet size  (fraction of the pot)")
+        self._grid(page, [(lambda parent, v=v, t=t: self._pick(
+            parent, t, *self._val_item("size", v)))
+            for v, t in (("s", "small"), ("m", "medium"), ("l", "large"),
+                         ("p", "pot+"), ("o", "overbet"))])
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(2, 0))
+        ttk.Label(row, text="or a range", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["size"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="0.4-0.75   50%+   <=0.33",
+                  style="Dim.TLabel").pack(side="left")
+        self._heading(page, "stack  (effective bb)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        ttk.Entry(row, textvariable=self.app.vals["stack"], width=14).pack(
+            side="left")
+        ttk.Label(row, text="100+   <40   80-200   — same column as at least / less than",
+                  style="Dim.TLabel").pack(side="left", padx=14)
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -2068,6 +2553,15 @@ class FilterDialog(tk.Toplevel):
                 self.app.vals[name].set(blank)
             box.pack(side="left", padx=(0, 14))
 
+        self._heading(page, "how many sat, how many are left")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("players", "players at the table"),
+                           ("live", "still in the pot")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=6).pack(
+                side="left", padx=(6, 18))
+
         self._heading(page, "stack depth, in big blinds")
         row = ttk.Frame(page)
         row.pack(fill="x", padx=18)
@@ -2083,6 +2577,40 @@ class FilterDialog(tk.Toplevel):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=14).pack(
                 side="left", padx=(6, 18))
+
+        self._heading(page, "study  (marked hands and tags)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(0, 8))
+        ttk.Checkbutton(row, text="marked only",
+                        variable=self.app.flags["--marked"]).pack(side="left")
+        ttk.Checkbutton(row, text="has a note",
+                        variable=self.app.flags["--noted"]).pack(
+                            side="left", padx=(14, 0))
+        ttk.Label(row, text="tag", style="Dim.TLabel").pack(
+            side="left", padx=(18, 6))
+        ttk.Entry(row, textvariable=self.app.vals["tag"], width=16).pack(
+            side="left")
+
+        self._heading(page, "aliases  (username + room groups)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(0, 8))
+        ttk.Label(row, text="alias", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["alias"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="vs alias", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["vs_alias"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="villain type", style="Dim.TLabel").pack(
+            side="left")
+        ttk.Combobox(row, textvariable=self.app.vals["villain_type"],
+                     values=("", "fish", "reg", "unknown"), width=10,
+                     state="readonly").pack(side="left", padx=(6, 0))
+        ttk.Label(page, style="Dim.TLabel", wraplength=900, justify="left",
+                  text="A single-person alias merges those accounts as "
+                       "the player. A group alias is a villain pool "
+                       "(--vs-alias). --player does not expand a name "
+                       "into an alias."
+                  ).pack(anchor="w", padx=18, pady=(0, 8))
 
         self._heading(page, "anything else, as SQL over `decisions`")
         ttk.Entry(page, textvariable=self.app.vals["where"]).pack(
@@ -2142,7 +2670,24 @@ class HandWindow(tk.Toplevel):
         super().__init__(master)
         self.configure(background=BG)
         self.title(f"hand {hand_id}")
-        self.geometry("760x620")
+        self.geometry("760x680")
+        self.hand_id = hand_id
+        self.seat = seat
+        study = ttk.Frame(self)
+        study.pack(fill="x", padx=12, pady=(8, 0))
+        ttk.Button(study, text="Mark",
+                   command=lambda: notes.mark(hand_id)).pack(side="left")
+        ttk.Button(study, text="Unmark",
+                   command=lambda: notes.unmark(hand_id)).pack(
+                       side="left", padx=(6, 0))
+        self._tag = tk.StringVar()
+        ttk.Entry(study, textvariable=self._tag, width=12).pack(
+            side="left", padx=(12, 4))
+        ttk.Button(study, text="Tag", command=self._tag_hand).pack(side="left")
+        self._note = tk.StringVar()
+        ttk.Entry(study, textvariable=self._note, width=28).pack(
+            side="left", padx=(12, 4))
+        ttk.Button(study, text="Note", command=self._add_note).pack(side="left")
         d = query.hand_detail(con, hand_id, seat)
         mono = tkfont.Font(family=MONO, size=10)
         text = tk.Text(self, background=BG, foreground=INK, borderwidth=0,
@@ -2164,7 +2709,11 @@ class HandWindow(tk.Toplevel):
         stake = f"${d['sb']}/${d['bb']}" if d["bb"] else "-"
         text.insert("end", f"{d['hand_id']}\n", "head")
         text.insert("end", f"{d['site']}  {d['fmt']}  {stake}  "
-                           f"{d['played_at']}  {d['table']}\n\n", "dim")
+                           f"{d['played_at']}  {d['table']}\n", "dim")
+        line = compact.CompactHandRenderer(d, fmt="text")
+        if line:
+            text.insert("end", f"{line}\n", "hi")
+        text.insert("end", "\n")
         for s in d["seats"]:
             net = (s["won"] or 0) - (s["put_in"] or 0)
             mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
@@ -2190,6 +2739,24 @@ class HandWindow(tk.Toplevel):
             rake = f"   rake {d['rake']:.2f}" if d["rake"] else ""
             text.insert("end", f"\nTOTAL POT {d['pot']:.2f}{rake}\n", "dim")
         text.configure(state="disabled")
+
+    def _tag_hand(self):
+        raw = self._tag.get().strip()
+        tags = [x.strip() for x in raw.split(",") if x.strip()]
+        notes.mark(self.hand_id, tags)
+
+    def _add_note(self):
+        text = self._note.get().strip()
+        if not text:
+            return
+        hands_con = sqlite3.connect(DB)
+        hands_con.row_factory = sqlite3.Row
+        try:
+            notes.add(text, hand_id=self.hand_id, seat=self.seat,
+                      hands_con=hands_con)
+        finally:
+            hands_con.close()
+        self._note.set("")
 
 
 def check(db_path=DB):
@@ -2389,6 +2956,47 @@ def check(db_path=DB):
     if not known_reports <= offered_reports:
         fails.append("the report box is missing "
                      f"{sorted(known_reports - offered_reports)}")
+
+    # Applying a neighbouring spot must produce the same filter the
+    # command line would. The leftover street/pot clicks used to stay
+    # set, so opening "Flop c-bets" while river was still clicked
+    # matched nothing and looked like a broken report.
+    for f, var in app.flags.items():
+        var.set(False)
+    for g in app.multi:
+        app.multi[g] = set()
+    for _n, var in app.vals.items():
+        var.set("")
+    app.preset.set("")
+    app._apply_argv(["--street", "flop", "--pfa", "--facing", "check"])
+    a, _la, _ = query.build(app.argv())
+    b, _lb, _ = query.build(list(query.SMART_REPORTS["Flop c-bets"]))
+    print(f"applying a spot matches its flags  "
+          f"{'yes' if a == b else 'NO -- ' + a}")
+    if a != b:
+        fails.append("apply_argv does not rebuild the filter it was given")
+    app.multi["street"] = {"river"}
+    app.apply_report("Flop vs c-bet")
+    leftover = bool(app.multi["street"])
+    same = query._canonical(app.argv()) == query._canonical(
+        query.SMART_REPORTS["Flop vs c-bet"])
+    print(f"opening a report drops the old street  "
+          f"{'yes' if same and not leftover else 'NO'}")
+    if leftover or not same:
+        fails.append("opening a Smart Report left the previous situation on")
+
+    app.clear_situation()
+    app._apply_argv(["--first-in", "--first-raise", "--last-action",
+                     "--size", "0.4-0.75", "--stack", "100+",
+                     "--outcome", "fold-out"])
+    built, _, _ = query.build(app.argv())
+    want, _, _ = query.build(["--first-in", "--first-raise",
+                              "--last-action", "--size", "0.4-0.75",
+                              "--stack", "100+", "--outcome", "fold-out"])
+    print(f"custom builder flags round-trip  "
+          f"{'yes' if built == want else 'NO -- ' + built}")
+    if built != want:
+        fails.append("custom builder flags did not survive apply_argv")
 
     theme = ttk.Style(root).theme_use()
     print(f"theme in use                   {theme}")

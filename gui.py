@@ -31,6 +31,7 @@ disagree eventually, and the disagreement will be silent.
 """
 
 import json
+import shlex
 import sqlite3
 import sys
 import threading
@@ -39,6 +40,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import compact
+import notes
+import players
 import query
 from stats import BY_KEY, STATS
 
@@ -50,9 +54,13 @@ PORT = 8765
 # a flag to `query.py` is the only place a filter is ever defined.
 SWITCH_FIELDS = {
     "hero": "--hero", "pool": "--pool", "ip": "--ip", "oop": "--oop",
-    "pfa": "--pfa", "multiway": "--multiway", "headsup": "--headsup",
+    "pfa": "--pfa", "not_pfa": "--not-pfa",
+    "multiway": "--multiway", "headsup": "--headsup",
     "vs_pfa": "--vs-pfa", "standard": "--standard", "allin": "--allin",
     "vs_hero": "--vs-hero", "vs_pool": "--vs-pool",
+    "first_in": "--first-in", "last_raise": "--last-raise",
+    "first_raise": "--first-raise", "last_action": "--last-action",
+    "marked": "--marked", "noted": "--noted",
 }
 VALUE_FIELDS = {
     "site": "--site", "player": "--player", "pos": "--pos",
@@ -61,12 +69,33 @@ VALUE_FIELDS = {
     "combo": "--combo", "stake": "--stake", "deep": "--deep",
     "short": "--short", "board": "--board", "since": "--since",
     "until": "--until", "where": "--where",
+    "after": "--after", "then": "--then",
+    "quick": "--quick",
+    "size": "--size", "outcome": "--outcome",
+    "players": "--players", "live": "--live",
+    "stack": "--stack",
+    "tag": "--tag",
+    "alias": "--alias",
+    "vs_alias": "--vs-alias",
+    "villain_type": "--villain-type",
+    "pre": "--pre", "flop": "--flop", "turn": "--turn",
+    "river": "--river", "line": "--line", "node": "--node",
 }
 
 
 def argv_from(params):
     """A form's fields as the argument list `query.build` already understands."""
     argv = []
+    preset = (params.get("preset", [""])[0] or "").strip()
+    if preset:
+        argv += list(query.preset_argv(preset))
+    spot = (params.get("spot", [""])[0] or "").strip()
+    if spot:
+        # A neighbouring spot that is not a named report -- same flags
+        # the command line would take, written as one string so the page
+        # does not have to grow a control for every flag a report uses
+        # (`--facing` has no chip).
+        argv += shlex.split(spot)
     for field, flag in SWITCH_FIELDS.items():
         if params.get(field, [""])[0] in ("1", "true", "on"):
             argv.append(flag)
@@ -74,22 +103,61 @@ def argv_from(params):
         v = (params.get(field, [""])[0] or "").strip()
         if v:
             argv += [flag, v]
-    return argv
+    # A typed pot-frac range is `--size`, not a second flag -- the
+    # letter select and this box are one modifier, and two sizes AND-ed
+    # would match nothing and look like a broken builder.
+    pot_frac = (params.get("pot_frac", [""])[0] or "").strip()
+    if pot_frac:
+        argv = [a for i, a in enumerate(argv)
+                if a != "--size" and (i == 0 or argv[i - 1] != "--size")]
+        argv += ["--size", pot_frac]
+    # Cohort first so parse_cohort sees `--site` / `--class` after it
+    # as the player filter, the same order the command line uses.
+    cohort = (params.get("cohort", [""])[0] or "").strip()
+    klass = (params.get("cohort_class", [""])[0] or "").strip()
+    extra = []
+    if cohort:
+        extra += ["--cohort", cohort]
+    elif klass:
+        extra.append("--cohort")
+    if klass and klass not in ("any",):
+        extra += ["--class", klass]
+    return extra + argv
 
 
 def payload(con, params):
     """Whatever the page asked for, as plain data."""
     view = params.get("view", ["stats"])[0]
-    where, label, parts = query.build(argv_from(params))
+    argv = argv_from(params)
+    spec, argv = players.parse_cohort(argv)
+    where, label, parts = query.build(argv)
+    notes.attach(con)
+    if spec is not None:
+        where, _header, label = query.apply_cohort(con, spec, where, label)
 
     def nothing():
         """Why this filter is empty, so the page never just goes blank."""
         return query.why_empty(con, parts)
-
     if view == "stats":
         n_dec, rows = query.stats_of(con, where)
-        return {"label": label, "decisions": n_dec, "rows": rows,
-                "why": None if n_dec else nothing()}
+        out = {"label": label, "decisions": n_dec, "rows": rows,
+               "actions": query.actions_of(con, where),
+               "summary": query.spot_summary(con, where, argv),
+               "profit": query.action_profit_of(con, where),
+                "faced": query.chain_report(con, where, argv, False),
+                "next": query.chain_report(con, where, argv, True),
+               "outcomes": query.outcomes_of(con, where),
+               "related": query.related_spots(argv),
+               "why": None if n_dec else nothing()}
+        pin = (params.get("pin", [""])[0] or "").strip()
+        if pin:
+            try:
+                argv_a, argv_b = query.pin_sides(argv, pin)
+                out["compare"] = query.compare_of(
+                    con, argv_a, argv_b, None, pin)
+            except SystemExit as e:
+                out["pinned"] = {"name": pin, "error": str(e)}
+        return out
 
     if view == "report":
         dim = params.get("by", ["position"])[0]
@@ -97,17 +165,18 @@ def payload(con, params):
             return {"error": f"unknown dimension {dim}"}
         expr, order = query.DIMENSIONS[dim]
         cols = [c for c in (params.get("show", [""])[0] or "").split(",") if c]
-        cols = [c for c in cols if c in BY_KEY] or query.DEFAULT_COLUMNS
+        cols = [c for c in cols if c in BY_KEY] or query.columns_for(argv)
         grid = {c: query.rates_by(con, BY_KEY[c], expr, where) for c in cols}
-        counts = query.rates_by(con, BY_KEY["vpip"], expr, where)
-        keys = sorted({k for g in grid.values() for k in g},
+        counts = query.counts_by(con, expr, where)
+        keys = sorted({k for g in grid.values() for k in g} | set(counts),
                       key=lambda k: order(k) if k is not None else "")
         return {
             "label": label, "dim": dim,
             "columns": [{"key": c, "label": BY_KEY[c].label} for c in cols],
+            "related": query.related_spots(argv),
             "why": None if keys else nothing(),
             "rows": [{
-                "key": str(k), "n": counts.get(k, (0, 0))[0],
+                "key": str(k), "n": counts.get(k, 0),
                 "cells": [
                     None if not grid[c].get(k, (0, 0))[0] else {
                         "pct": 100 * grid[c][k][1] / grid[c][k][0],
@@ -135,23 +204,32 @@ def payload(con, params):
                 "why": None if got else nothing()}
 
     if view == "hands":
-        rows = con.execute(
-            f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site, d.bb, "
-            f"       d.position, d.combo, d.board, s.net_bb "
-            f"FROM (SELECT * FROM decisions WHERE {where}) d "
-            f"LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
-            f"ORDER BY d.played_at DESC LIMIT 300").fetchall()
-        return {"label": label, "rows": [
-            {"when": r[2], "site": r[3], "bb": r[4], "pos": r[5],
-             "combo": r[6], "board": r[7], "net": r[8], "id": r[0],
-             "seat": r[1]}
-            for r in rows], "why": None if rows else nothing()}
+        rows = query.matching_hands(con, where, limit=300)
+        notes.decorate(con, rows)
+        compact.attach(con, rows, fmt="html")
+        return {"label": label, "rows": rows,
+                "why": None if rows else nothing()}
+
+    if view == "mark":
+        hid = (params.get("id", [""])[0] or "").strip()
+        if not hid:
+            return {"error": "mark needs a hand id"}
+        raw = (params.get("tag", [""])[0] or "").strip()
+        tags = [x.strip() for x in raw.split(",") if x.strip()]
+        if params.get("unmark", [""])[0] in ("1", "true", "on"):
+            notes.unmark(hid, tags or None)
+            return {"ok": True, "marked": False, "id": hid}
+        notes.mark(hid, tags)
+        return {"ok": True, "marked": True, "id": hid}
 
     if view == "hand":
         hid = params.get("id", [""])[0]
         seat = params.get("seat", [""])[0]
-        return {"hand": query.hand_detail(
-            con, hid, int(seat) if seat.isdigit() else None)}
+        d = query.hand_detail(
+            con, hid, int(seat) if seat.isdigit() else None)
+        if d:
+            d["compact"] = compact.CompactHandRenderer(d, fmt="html")
+        return {"hand": d}
 
     if view == "graph":
         pairs = query.matching_seats(con, where)
@@ -197,6 +275,9 @@ def options(con):
         "stats": [{"key": s.key, "label": s.label, "group": s.group,
                    "note": s.note} for s in STATS],
         "defaults": query.DEFAULT_COLUMNS,
+        "reports": [{"name": n, "family": fam}
+                    for fam, names in query.reports_by_family()
+                    for n in names],
     }
 
 
@@ -230,6 +311,8 @@ input:focus,select:focus{outline:1px solid var(--accent);border-color:var(--acce
 .chips{display:flex;flex-wrap:wrap;gap:5px}
 .chip{border:1px solid var(--edge);border-radius:20px;padding:3px 10px;
   cursor:pointer;color:var(--dim);user-select:none;font-size:12px}
+button.mark{background:transparent;border:0;color:var(--accent);cursor:pointer;
+  font-size:16px;padding:0 4px;line-height:1}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#08111f;
   font-weight:600}
 nav{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap}
@@ -244,10 +327,16 @@ th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
   letter-spacing:.05em}
 tbody tr:hover{background:var(--panel)}
 tr.click{cursor:pointer}
+.compact{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;letter-spacing:0;text-align:left}
+.compact u{text-underline-offset:2px}
+td.compact{text-align:left;font-weight:500}
 .link{color:var(--accent);cursor:pointer}
 .thin{color:var(--dim)}
 .thin::after{content:' ?';color:#b8892a}
 .n{color:var(--dim);font-size:11px}
+.drill{cursor:pointer}
+.thin{color:#b8892a}
 .pos{color:var(--good)} .neg{color:var(--bad)}
 .filter{color:var(--dim);margin:0 0 14px;font-size:12px}
 .group{color:var(--dim);font-size:11px;text-transform:uppercase;
@@ -261,16 +350,50 @@ tr.click{cursor:pointer}
 </header>
 <main>
 <aside>
+  <fieldset><legend>smart reports</legend>
+    <label><select id="preset"><option value="">no report</option></select></label>
+    <label>pin / compare
+      <select id="pin"><option value="">none</option></select></label>
+  </fieldset>
   <fieldset><legend>who</legend>
     <div class="chips" id="who">
       <span class="chip" data-f="hero">hero</span>
       <span class="chip" data-f="pool">pool</span>
     </div>
   </fieldset>
+  <fieldset><legend>study</legend>
+    <div class="chips">
+      <span class="chip" data-f="marked">marked</span>
+      <span class="chip" data-f="noted">has a note</span>
+    </div>
+    <label>tag <input id="tag" placeholder="leak,bluff"></label>
+  </fieldset>
+  <fieldset><legend>multiple players</legend>
+    <label>cohort
+      <input id="cohort" placeholder="vpip>=40,pfr<=10,hands>=100 or Value(3Bet)<2 and Opps(3Bet)>100"></label>
+    <label>class
+      <select id="cohort_class">
+        <option value="">any class</option>
+        <option value="fish">fish</option>
+        <option value="reg">reg</option>
+        <option value="unknown">unknown</option>
+      </select></label>
+  </fieldset>
   <fieldset><legend>site &amp; stake</legend>
     <label><select id="site"><option value="">any site</option></select></label>
     <label><select id="stake"><option value="">any stake</option></select></label>
     <label><select id="player"><option value="">any player</option></select></label>
+    <label>alias
+      <input id="alias" placeholder="me (single-person merge)"></label>
+    <label>vs alias
+      <input id="vs_alias" placeholder="nits (group as pool)"></label>
+    <label>villain type
+      <select id="villain_type">
+        <option value="">any</option>
+        <option value="fish">fish</option>
+        <option value="reg">reg</option>
+        <option value="unknown">unknown</option>
+      </select></label>
   </fieldset>
   <fieldset><legend>my position</legend>
     <div class="chips" id="pos"></div>
@@ -293,7 +416,12 @@ tr.click{cursor:pointer}
       <span class="chip" data-f="ip">in position</span>
       <span class="chip" data-f="oop">out of position</span>
       <span class="chip" data-f="pfa">was the raiser</span>
+      <span class="chip" data-f="not_pfa">was not the raiser</span>
       <span class="chip" data-f="vs_pfa">facing the raiser</span>
+      <span class="chip" data-f="first_in">first in</span>
+      <span class="chip" data-f="first_raise">first raise</span>
+      <span class="chip" data-f="last_raise">last raise</span>
+      <span class="chip" data-f="last_action">last action</span>
       <span class="chip" data-f="multiway">multiway</span>
       <span class="chip" data-f="headsup">heads up</span>
     </div>
@@ -308,6 +436,42 @@ tr.click{cursor:pointer}
   <fieldset><legend>dates</legend>
     <label>from <input id="since" type="date"></label>
     <label>to <input id="until" type="date"></label>
+  </fieldset>
+  <fieldset><legend>faced next / next actions</legend>
+    <label>the other seat then
+      <select id="after"><option value="">any</option></select></label>
+    <label>this player then
+      <select id="then"><option value="">any</option></select></label>
+  </fieldset>
+  <fieldset><legend>custom action</legend>
+    <label>outcome of this bet
+      <select id="outcome"><option value="">any</option>
+        <option value="fold-out">all villains fold</option>
+        <option value="call">one villain call</option>
+        <option value="raise-back">villain raise</option>
+      </select></label>
+    <label>bet size
+      <select id="size"><option value="">any</option>
+        <option value="s">small</option>
+        <option value="m">medium</option>
+        <option value="l">large</option>
+        <option value="p">pot+</option>
+        <option value="o">overbet</option>
+        <option value="0.4-0.75">0.4–0.75 pot</option>
+        <option value="50%+">50%+</option>
+      </select></label>
+    <label>or pot-frac range <input id="pot_frac" placeholder="0.4-0.75"></label>
+    <label>stack bb <input id="stack" placeholder="100+  or  80-200"></label>
+    <label>players at the table <input id="players" type="number" min="2" max="10"></label>
+    <label>still in the pot <input id="live" type="number" min="2" max="10"></label>
+  </fieldset>
+  <fieldset><legend>action line</legend>
+    <label>preflop <input id="pre" placeholder="*R*R*"></label>
+    <label>flop <input id="flop" placeholder="XBmC"></label>
+    <label>turn <input id="turn" placeholder="XX"></label>
+    <label>river <input id="river" placeholder="*Bo*"></label>
+    <label>line <input id="line" placeholder="*R*/XBC"></label>
+    <label>node <input id="node" placeholder="*/XB"></label>
   </fieldset>
   <fieldset><legend>raw sql over decisions</legend>
     <label><input id="where" placeholder="eff_bb > 150 AND fl_paired=1"></label>
@@ -325,12 +489,13 @@ tr.click{cursor:pointer}
     <select id="by" style="width:auto;min-width:150px"></select>
   </div>
   <p class="filter" id="filter"></p>
+  <p class="filter" id="related"></p>
   <div id="out"><p class="empty">…</p></div>
 </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
-const state = {view:'stats', by:'position', flags:{}, multi:{}};
+const state = {view:'stats', by:'position', flags:{}, multi:{}, preset:'', spot:''};
 let OPT = {};
 
 const POSITIONS = ['UTG','HJ','CO','BTN','SB','BB'];
@@ -355,6 +520,7 @@ document.addEventListener('click', e => {
     // hero and pool are opposites, as are in and out of position; turning
     // one on has to turn its twin off or the filter selects nothing.
     const twins = {hero:'pool', pool:'hero', ip:'oop', oop:'ip',
+                   pfa:'not_pfa', not_pfa:'pfa',
                    multiway:'headsup', headsup:'multiway',
                    vs_hero:'vs_pool', vs_pool:'vs_hero'};
     state.flags[c.dataset.f] = !state.flags[c.dataset.f];
@@ -376,21 +542,39 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
+    if (id === 'preset'){
+      state.preset = $('#preset').value;
+      state.spot = '';
+      // Opening a report replaces leftover situation chips.
+      ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin','first_in','last_raise','first_raise','last_action'].forEach(f => {
+        state.flags[f] = false;
+      });
+      ['pos','vs','street','pot','board'].forEach(g => { state.multi[g] = []; });
+      ['after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node'].forEach(fid => {
+        const el = $('#'+fid); if (el) el.value = '';
+      });
+      paintChips();
+    }
     load();
   }));
-$('#where').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+['where','pot_frac','stack','pre','flop','turn','river','line','node','cohort']
+  .forEach(id => $('#'+id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') load();
+  }));
 
 function params(){
   const p = new URLSearchParams();
   p.set('view', state.view);
   if (state.view === 'report' || state.view === 'results') p.set('by', state.by);
+  if (state.preset) p.set('preset', state.preset);
+  if (state.spot) p.set('spot', state.spot);
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -399,28 +583,156 @@ function params(){
 const money = v => `<span class="${v>=0?'pos':'neg'}">${v>=0?'+':''}${
   v.toLocaleString(undefined,{maximumFractionDigits:1})}</span>`;
 
+function paintRelated(items){
+  const host = $('#related');
+  if (!items || !items.length){ host.innerHTML = ''; return; }
+  host.innerHTML = 'related: ' + items.map((s,i) =>
+    `<a href="#" data-i="${i}" style="color:var(--accent);margin-right:10px">${s.name}</a>`
+  ).join('');
+  host.querySelectorAll('a').forEach(a => {
+    a.onclick = e => {
+      e.preventDefault();
+      const s = items[+a.dataset.i];
+      openSpot(s);
+    };
+  });
+}
+function openSpot(s){
+  // A report replaces the situation and keeps who, the same way the
+  // window's report box does -- leftover street chips AND-ed onto a
+  // flop report are how those reports used to open empty.
+  const keep = {hero: state.flags.hero, pool: state.flags.pool,
+                vs_hero: state.flags.vs_hero, vs_pool: state.flags.vs_pool};
+  state.flags = keep;
+  state.multi = {};
+  state.spot = '';
+  state.preset = s.preset || '';
+  if (!s.preset && s.argv && s.argv.length)
+    state.spot = s.argv.map(x => /\\s/.test(x) ? JSON.stringify(x) : x).join(' ');
+  const box = $('#preset');
+  if (box) box.value = state.preset;
+  paintChips();
+  load();
+}
+
 function render(d){
   const out = $('#out');
   $('#filter').textContent = 'filter: ' + (d.label || 'everything');
+  paintRelated(d.related);
   if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
   const nope = msg => `<p class="empty">nothing matches<br><span class="n">${
     d.why || msg || ''}</span></p>`;
 
   if (state.view === 'stats'){
-    if (!d.rows.length){
+    if (!d.rows.length && !(d.actions && d.actions.mix && d.actions.mix.length)){
       out.innerHTML = d.decisions
         ? `<p class="empty">no stat can occur inside this filter<br><span class="n">asking for a preflop stat inside street=flop does this</span></p>`
         : nope(); return; }
     let g = null, h = `<p class="n">${d.decisions.toLocaleString()} decisions match</p><table><tbody>`;
+    if (d.compare && d.compare.a && d.compare.b){
+      const A = d.compare.a, B = d.compare.b;
+      const sa = A.summary || {}, sb = B.summary || {};
+      const pa = A.profit || {}, pb = B.profit || {};
+      const ap = p => p.bb_per_hand == null ? '–'
+        : ((p.bb_per_hand>=0?'+':'') + p.bb_per_hand.toFixed(2) + ' bb');
+      h += `<tr><td class="group">this vs pinned</td>`
+        + `<td class="group">${A.name || 'this'}</td><td></td>`
+        + `<td class="group">${B.name || 'pinned'}</td></tr>`
+        + `<tr><td>hits / opps</td>`
+        + `<td>${(sa.hits||0).toLocaleString()} / ${(sa.opps||0).toLocaleString()}</td><td></td>`
+        + `<td>${(sb.hits||0).toLocaleString()} / ${(sb.opps||0).toLocaleString()}</td></tr>`
+        + `<tr><td>freq</td>`
+        + `<td>${sa.opps ? sa.pct.toFixed(1)+'%' : '–'}</td><td></td>`
+        + `<td>${sb.opps ? sb.pct.toFixed(1)+'%' : '–'}</td></tr>`
+        + `<tr><td>hits / 1000</td>`
+        + `<td>${(sa.per_1k||0).toFixed(1)}</td><td></td>`
+        + `<td>${(sb.per_1k||0).toFixed(1)}</td></tr>`
+        + `<tr><td>action profit</td><td>${ap(pa)}</td><td></td><td>${ap(pb)}</td></tr>`;
+      const fd = d.compare.freq_diff;
+      if (fd && fd.d != null)
+        h += `<tr><td>freq this − pin</td>`
+          + `<td>${(100*fd.d).toFixed(1)} pts</td>`
+          + `<td class="n" colspan="2">[${(100*fd.lo).toFixed(1)}, ${(100*fd.hi).toFixed(1)}]</td></tr>`;
+    } else if (d.summary && d.summary.opps){
+      h += `<tr><td colspan="4" class="group">hits / opportunities</td></tr>`
+        + `<tr><td>hits (${d.summary.label})</td><td>${d.summary.hits.toLocaleString()}</td>`
+        + `<td class="n"></td><td class="n">${d.summary.opps.toLocaleString()} opps</td></tr>`
+        + `<tr><td>hits / 1000 hands</td><td>${d.summary.per_1k.toFixed(1)}</td>`
+        + `<td class="n">±${d.summary.band.toFixed(0)}</td>`
+        + `<td class="n">${d.summary.hands.toLocaleString()} hands</td></tr>`
+        + `<tr><td>${d.summary.label}</td><td>${d.summary.pct.toFixed(1)}%</td>`
+        + `<td class="n">±${d.summary.band.toFixed(0)}</td>`
+        + `<td class="n">n=${d.summary.opps.toLocaleString()}</td></tr>`;
+    }
+    if (d.pinned && d.pinned.error){
+      h += `<tr><td colspan="4" class="n">${d.pinned.error}</td></tr>`;
+    }
+    if (d.profit && d.profit.n){
+      const ap = d.profit.bb_per_hand == null ? 'unpriced'
+        : (d.profit.bb_per_hand>=0?'+':'') + d.profit.bb_per_hand.toFixed(2) + ' bb/hand';
+      h += `<tr><td>action profit</td><td>${ap}</td><td class="n">priced hits</td>`
+        + `<td class="n">${d.profit.priced.toLocaleString()} of ${d.profit.n.toLocaleString()}</td></tr>`
+        + `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
+      for (const edge of (d.profit.edges || []))
+        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+    }
+    if (d.actions && d.actions.mix && d.actions.mix.length){
+      h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
+      for (const r of d.actions.mix.concat(d.actions.extra || []))
+        h += `<tr><td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
+    }
+    if (d.outcomes && d.outcomes.rows && d.outcomes.rows.length){
+      h += `<tr><td colspan="4" class="group">outcome</td></tr>`;
+      for (const r of d.outcomes.rows)
+        h += `<tr class="drill" data-flag="outcome" data-key="${r.key}">`
+          + `<td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.k.toLocaleString()}</td></tr>`;
+    }
+    for (const [title, flag, blob] of [
+        ['faced next (the other seat)', 'after', d.faced],
+        ['next actions (this player)', 'then', d.next]]){
+      if (!blob || !blob.rows || !blob.rows.length) continue;
+      h += `<tr><td colspan="4" class="group">${title}</td></tr>`;
+      for (const r of blob.rows){
+        const ap = r.profit || {};
+        const act = ap.bb_per_hand == null ? '–'
+          : ((ap.bb_per_hand>=0?'+':'') + ap.bb_per_hand.toFixed(2));
+        const hits = r.hits != null ? r.hits : r.k;
+        const opps = r.opps != null ? r.opps : r.n;
+        h += `<tr class="drill" data-flag="${flag}" data-key="${r.key}">`
+          + `<td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">${hits.toLocaleString()} / ${opps.toLocaleString()}</td>`
+          + `<td class="n">${act}</td></tr>`;
+      }
+    }
     for (const r of d.rows){
       if (r.group !== g){ g = r.group;
         h += `<tr><td colspan="4" class="group">${g}</td></tr>`; }
-      h += `<tr><td title="${r.note||''}">${r.label}</td>`
+      h += `<tr class="drill" data-flag="quick" data-key="${r.key}"`
+        + ` title="${r.note||''}"><td>${r.label}</td>`
         + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
         + `<td class="n">±${r.band.toFixed(0)}</td>`
         + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
     }
     out.innerHTML = h + '</tbody></table>';
+    out.querySelectorAll('tr.drill').forEach(tr => {
+      tr.onclick = () => {
+        const flag = tr.dataset.flag, key = tr.dataset.key;
+        if (!key) return;
+        if (flag === 'quick'){
+          state.multi.quick = [key];
+        } else {
+          $('#'+flag).value = key;
+        }
+        load();
+      };
+    });
 
   } else if (state.view === 'report'){
     if (!d.rows.length){ out.innerHTML = nope(); return; }
@@ -468,16 +780,31 @@ function render(d){
 
   } else {
     if (!d.rows.length){ out.innerHTML = nope(); return; }
-    let h = '<p class="n">click a hand to replay it</p>'
-      + '<table><thead><tr><th>when</th><th>site</th><th>bb</th><th>pos</th>'
-      + '<th>hand</th><th>net bb</th><th>board</th></tr></thead><tbody>';
-    for (const r of d.rows)
+    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Underlined actions are this row\'s seat. Click a hand to replay it. The star marks it.</p>'
+      + '<table><thead><tr><th></th><th>when</th><th>site</th><th>bb</th><th>pos</th>'
+      + '<th>hand</th><th>net bb</th><th>act bb</th><th>compact</th></tr></thead><tbody>';
+    for (const r of d.rows){
+      const tags = (r.tags||[]).join(',');
       h += `<tr class="click" data-id="${r.id}" data-seat="${r.seat}">`
+        + `<td><button type="button" class="mark" data-id="${r.id}" data-unmark="${r.marked?1:0}">${r.marked?'★':'☆'}</button></td>`
         + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site}</td>`
         + `<td class="n">${r.bb??''}</td><td>${r.pos||''}</td>`
         + `<td>${r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
-        + `<td class="n">${r.board||''}</td></tr>`;
+        + `<td>${r.act==null?'–':money(r.act)}</td>`
+        + `<td class="compact">${tags?('['+tags+'] '):''}${r.compact||r.board||''}</td></tr>`;
+    }
     out.innerHTML = h + '</tbody></table>';
+    out.querySelectorAll('button.mark').forEach(b => {
+      b.onclick = async e => {
+        e.stopPropagation();
+        const p = new URLSearchParams({view:'mark', id:b.dataset.id});
+        if (b.dataset.unmark === '1') p.set('unmark','1');
+        const tag = ($('#tag') && $('#tag').value.trim()) || '';
+        if (tag) p.set('tag', tag);
+        await fetch('/api?' + p);
+        load();
+      };
+    });
   }
 }
 
@@ -495,6 +822,7 @@ function renderHand(d){
   let h = `<p><span class="link" id="back">&larr; back to hands</span></p>`
     + `<p class="filter">${d.hand_id} · ${d.site} · ${d.fmt} · ${stake}`
     + ` · ${d.played_at} · ${d.table}</p>`
+    + (d.compact ? `<p class="compact">${d.compact}</p>` : '')
     + '<table><thead><tr><th>seat</th><th>player</th><th>stack</th>'
     + '<th>cards</th><th>net</th></tr></thead><tbody>';
   for (const s of d.seats){
@@ -556,6 +884,25 @@ async function load(){
   chips('street', STREETS, 'street');
   chips('pot', POTS, 'pot');
   chips('board', OPT.boards, 'board');
+  for (const id of ['after','then']){
+    $('#'+id).innerHTML = '<option value="">any</option>'
+      + ['fold','check','call','bet','raise','continue','none','fold-out','3bet']
+          .map(v=>`<option>${v}</option>`).join('');
+  }
+  if (OPT.reports){
+    let fam = null, html = '<option value="">no report</option>';
+    for (const r of OPT.reports){
+      if (r.family !== fam){
+        if (fam) html += '</optgroup>';
+        fam = r.family;
+        html += `<optgroup label="${fam}">`;
+      }
+      html += `<option>${r.name}</option>`;
+    }
+    if (fam) html += '</optgroup>';
+    $('#preset').innerHTML = html;
+    $('#pin').innerHTML = html.replace('>no report<', '>none<');
+  }
   $('#sub').textContent = OPT.sites.join(' · ');
   paintChips();
   load();
@@ -626,10 +973,37 @@ def check(db_path=DB):
           "--pot", "3bet"]),
         ({"where": ["eff_bb > 150"]}, ["--where", "eff_bb > 150"]),
         ({}, []),
+        ({"preset": ["3-bet pots"]}, list(query.SMART_REPORTS["3-bet pots"])),
+        ({"first_in": ["1"], "size": ["m"], "outcome": ["fold-out"]},
+         ["--first-in", "--size", "m", "--outcome", "fold-out"]),
+        ({"first_raise": ["1"], "last_action": ["1"], "stack": ["100+"],
+          "pot_frac": ["0.4-0.75"], "flop": ["XBmC"]},
+         ["--first-raise", "--last-action", "--size", "0.4-0.75",
+          "--stack", "100+", "--flop", "XBmC"]),
+        ({"players": ["6"], "live": ["2"]},
+         ["--players", "6", "--live", "2"]),
+        ({"after": ["none"]}, ["--after", "none"]),
+        ({"after": ["3bet"]}, ["--after", "3bet"]),
+        ({"cohort": ["vpip>=40,pfr<=10,hands>=100"], "hero": ["1"]},
+         ["--cohort", "vpip>=40,pfr<=10,hands>=100", "--hero"]),
+        ({"cohort": ["hands>=100"], "cohort_class": ["fish"], "pos": ["BTN"]},
+         ["--cohort", "hands>=100", "--class", "fish", "--pos", "BTN"]),
+        ({"marked": ["1"], "tag": ["leak"]},
+         ["--marked", "--tag", "leak"]),
+        ({"cohort": ["Value(3Bet) < 2 and Opps(3Bet) > 100"],
+          "pos": ["BTN"]},
+         ["--cohort", "Value(3Bet) < 2 and Opps(3Bet) > 100",
+          "--pos", "BTN"]),
+        ({"villain_type": ["fish"]},
+         ["--villain-type", "fish"]),
     ]
     for form, argv in cases:
-        a, _label_a, _pa = query.build(argv_from(form))
-        b, _label_b, _pb = query.build(argv)
+        spec_a, rest_a = players.parse_cohort(argv_from(form))
+        spec_b, rest_b = players.parse_cohort(list(argv))
+        a, _label_a, _pa = query.build(rest_a)
+        b, _label_b, _pb = query.build(rest_b)
+        if spec_a != spec_b:
+            fails.append(f"{form} cohort {spec_a!r} but CLI gives {spec_b!r}")
         if sorted(a.split(" AND ")) != sorted(b.split(" AND ")):
             fails.append(f"{form} -> {a!r} but CLI gives {b!r}")
     print(f"page and command line agree  {len(cases) - len(fails)}/{len(cases)}")
@@ -638,6 +1012,15 @@ def check(db_path=DB):
 
     # Every view must answer, including on a filter that matches nothing --
     # which a user will type within a minute of being handed a form.
+    # Connecting when `hands.db` is missing creates an empty file, and
+    # every later `--cohort` / `--pin` then finds that file and fails
+    # inside it instead of saying to load hands.
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- form/CLI only)")
+        return not fails
     con = sqlite3.connect(db_path)
     views = ("stats", "report", "results", "hands", "graph")
     broke = []
@@ -660,7 +1043,8 @@ def check(db_path=DB):
     # The dropdowns must offer things this database actually has, or the
     # first click produces an empty page and looks broken.
     opt = options(con)
-    for name in ("sites", "stakes", "players", "boards", "dimensions", "stats"):
+    for name in ("sites", "stakes", "players", "boards", "dimensions", "stats",
+                 "reports"):
         if not opt[name]:
             fails.append(f"no {name} offered")
     print(f"dropdowns are populated      "

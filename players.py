@@ -41,6 +41,7 @@ import sys
 import re
 from pathlib import Path
 
+import expr
 import sites
 from stats import wilson
 
@@ -108,7 +109,14 @@ def cohort(con, conditions=(), site=None, klass=None, durable=None):
     """Return players matching safe, player-level Multiple Players filters."""
     where, params = ["1=1"], []
     for field, value in conditions:
+        # An expression is evaluated after this SELECT, against
+        # `stats.rates_by`. Unpacking it as a comparator would raise
+        # "invalid condition" on a string that parse_cohort already
+        # accepted, and look like the box was broken.
+        if field == "_expr":
+            continue
         column = COHORT_FIELDS.get(field)
+        value = normalize_condition(value)
         match = CONDITION.fullmatch(value)
         if column is None or match is None:
             raise ValueError(f"invalid cohort condition: {field} {value}")
@@ -199,6 +207,106 @@ COHORT_FLAGS = {
     "--wwsf": "wwsf", "--wtsd": "wtsd", "--wsd": "wsd", "--bb100": "bb100",
 }
 COHORT_OPTIONS = ("--site", "--class", "--durable")
+# Aliases that do not collide with `--hands` the VIEW. A bare number on
+# `--cohort-hands` is `>=`, because that is how the research brief writes
+# a minimum sample; `--hands 6` under `--cohort` stays `= 6`.
+COHORT_ALIASES = {
+    "--cohort-hands": "hands",
+    "--cohort-vpip": "vpip",
+    "--cohort-pfr": "pfr",
+}
+# Compact-string field names, including the ones people type instead of
+# the column. Anything not in this map is refused, not interpolated.
+COHORT_EXPR_FIELDS = {
+    "hands": "hands", "vpip": "vpip", "pfr": "pfr", "gap": "gap",
+    "threebet": "threebet", "3bet": "threebet",
+    "fold_to_threebet": "fold_to_threebet",
+    "fold-to-threebet": "fold_to_threebet",
+    "fold_to_3bet": "fold_to_threebet",
+    "wwsf": "wwsf", "wtsd": "wtsd", "wsd": "wsd", "bb100": "bb100",
+}
+_FLAG_FOR_FIELD = {field: flag for flag, field in COHORT_FLAGS.items()}
+_EXPR_ONE = re.compile(
+    r"^([a-z_][a-z0-9_-]*)\s*(>=|<=|=|>|<)?\s*"
+    r"(-?(?:\d+(?:\.\d*)?|\.\d+))(\+)?$",
+    re.I)
+_EXPR_OPT = re.compile(r"^(class|site|durable)\s*=\s*(.+)$", re.I)
+
+
+def normalize_condition(value, default_ge=False):
+    """
+    `40+` is `>=40`. A bare number on `--cohort-hands` is `>=` too.
+
+    The compact string and the Players dialog both write it that way,
+    and treating `40+` as a literal would fail the comparator check
+    and look like a broken box rather than a threshold.
+    """
+    text = str(value).strip()
+    match = re.fullmatch(
+        r"(>=|<=|=|>|<)?\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*(\+)?", text)
+    if match is None:
+        return text
+    operator, number, plus = match.group(1), match.group(2), match.group(3)
+    if plus and not operator:
+        operator = ">="
+    elif default_ge and not operator:
+        operator = ">="
+    return f"{operator}{number}" if operator else number
+
+
+def parse_cohort_expr(text):
+    """
+    `vpip>=40,pfr<=10,hands>=100` as the conditions `parse_cohort` already
+    feeds `cohort()`, or a Value/Cases/Opps expression stashed as `_expr`.
+
+    The compact form is still a comma list over the players-table
+    columns. `and` / `or` / `Value(` switch to `expr.parse` -- mixing
+    a comma `class=fish` into that string is refused (use `--class`).
+    """
+    text = str(text).strip()
+    if expr.is_expression(text):
+        try:
+            expr.parse(text)
+        except ValueError as e:
+            raise SystemExit(f"invalid expression: {e}")
+        return [("_expr", text)], None, None, None
+    conditions, site, klass, durable = [], None, None, None
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if not parts:
+        raise SystemExit(
+            "--cohort needs an expression -- "
+            "e.g. vpip>=40,pfr<=10,hands>=100")
+    for part in parts:
+        assign = _EXPR_OPT.fullmatch(part)
+        if assign:
+            key, raw = assign.group(1).lower(), assign.group(2).strip()
+            if key == "class":
+                if raw not in ("reg", "fish", "unknown"):
+                    raise SystemExit(
+                        f"invalid player class {raw!r} -- reg, fish, unknown")
+                klass = raw
+            elif key == "site":
+                site = raw
+            else:
+                if raw not in ("0", "1"):
+                    raise SystemExit("--durable must be 0 or 1")
+                durable = int(raw)
+            continue
+        match = _EXPR_ONE.fullmatch(part)
+        if match is None:
+            raise SystemExit(
+                f"invalid cohort expression {part!r} -- "
+                "e.g. vpip>=40,pfr<=10,hands>=100")
+        name = match.group(1).lower()
+        field = COHORT_EXPR_FIELDS.get(name)
+        if field is None:
+            raise SystemExit(
+                f"unknown cohort field {name!r} -- "
+                f"one of: {', '.join(sorted(set(COHORT_EXPR_FIELDS.values())))}")
+        value = normalize_condition(
+            f"{match.group(2) or ''}{match.group(3)}{match.group(4) or ''}")
+        conditions.append((field, value))
+    return conditions, site, klass, durable
 
 
 def parse_cohort(argv):
@@ -218,8 +326,11 @@ def parse_cohort(argv):
     appears, and every later copy is passed through untouched. That is the
     only reading under which `--cohort --hands ">=500" --hands` can mean
     what it plainly means: players with 500 hands, shown as a list of hands.
+
+    `--cohort 'vpip>=40,hands>=100'` and `--cohort-hands 100` claim the
+    player-hand filter themselves, so a later `--hands` is the VIEW.
     """
-    if "--cohort" not in argv:
+    if "--cohort" not in argv and not any(a in COHORT_ALIASES for a in argv):
         return None, list(argv)
     conditions, remaining, seen = [], [], set()
     site = klass = durable = None
@@ -227,7 +338,41 @@ def parse_cohort(argv):
     while i < len(argv):
         a = argv[i]
         if a == "--cohort":
-            i += 1
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            # `-Value(vpip)<0` is an expression that happens to start
+            # with a minus; treating it as a flag would swallow it.
+            if nxt is not None and (
+                    not nxt.startswith("-") or expr.is_expression(nxt)):
+                extra, e_site, e_klass, e_durable = parse_cohort_expr(nxt)
+                conditions.extend(extra)
+                for field, _value in extra:
+                    flag = _FLAG_FOR_FIELD.get(field)
+                    if flag:
+                        seen.add(flag)
+                if e_site is not None:
+                    site = e_site
+                    seen.add("--site")
+                if e_klass is not None:
+                    klass = e_klass
+                    seen.add("--class")
+                if e_durable is not None:
+                    durable = e_durable
+                    seen.add("--durable")
+                i += 2
+            else:
+                i += 1
+            continue
+        if a in COHORT_ALIASES:
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{a} needs a value")
+            field = COHORT_ALIASES[a]
+            conditions.append((
+                field,
+                normalize_condition(argv[i + 1], default_ge=(field == "hands"))))
+            flag = _FLAG_FOR_FIELD.get(field)
+            if flag:
+                seen.add(flag)
+            i += 2
             continue
         if (a in COHORT_FLAGS or a in COHORT_OPTIONS) and a not in seen:
             if i + 1 >= len(argv):
@@ -235,7 +380,8 @@ def parse_cohort(argv):
             value = argv[i + 1]
             seen.add(a)
             if a in COHORT_FLAGS:
-                conditions.append((COHORT_FLAGS[a], value))
+                conditions.append(
+                    (COHORT_FLAGS[a], normalize_condition(value)))
             elif a == "--site":
                 site = value
             elif a == "--class":
@@ -262,7 +408,12 @@ def describe_cohort(spec):
     does not say it: eight players is the same eight whatever picked them.
     """
     conditions, site, klass, durable = spec
-    said = [f"{field} {value}" for field, value in conditions]
+    said = []
+    for field, value in conditions:
+        if field == "_expr":
+            said.append(value)
+        else:
+            said.append(f"{field} {value}")
     if site:
         said.append(f"site {site}")
     if klass:
@@ -483,9 +634,18 @@ def check(db_path=DB):
     one half and a fish on the other is a failure, and it is the only kind
     that would not show up as anything else.
     """
+    fails = check_parse()
+    # Connecting when the file is missing creates an empty hands.db,
+    # and every later --cohort then finds that file and fails inside
+    # it instead of saying to load hands.
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- parse only)")
+        return not fails
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
-    fails = []
 
     n = con.execute("SELECT COUNT(*) FROM players").fetchone()[0]
     people = con.execute("SELECT COUNT(*) FROM players WHERE durable=1").fetchone()[0]
@@ -581,38 +741,6 @@ def check(db_path=DB):
         fails.append(f"{bad} decisions where the liveness walk and n_live "
                      f"disagree for no reason")
 
-    # ---- the cohort, which nothing used to check ----------------------
-    #
-    # A cohort narrows every report in the program and had no test of any
-    # kind. What it gets wrong is not arithmetic, it is argument splitting:
-    # the vocabulary here shares two words with `query.py`, and a parser
-    # that mishandles them removes somebody else's filter without saying so.
-    # Both cases below were real and both were reproduced before they were
-    # fixed.
-    splits = [
-        # A value the cohort used, appearing again as another flag's value.
-        # The old parser dropped every token equal to one it had consumed,
-        # so this deleted both sixes and left `--players` dangling.
-        (["--cohort", "--hands", "6", "--players", "6"],
-         [("hands", "6")], ["--players", "6"]),
-        # `--hands` twice: the player's hand count, then the hands VIEW.
-        # The old parser deleted both and the view could not be reached.
-        (["--cohort", "--hands", ">=500", "--hands"],
-         [("hands", ">=500")], ["--hands"]),
-        # Everything that is not the cohort's survives in order.
-        (["--cohort", "--vpip", ">=28", "--pos", "BTN", "--street", "flop"],
-         [("vpip", ">=28")], ["--pos", "BTN", "--street", "flop"]),
-        (["--pos", "BTN"], None, ["--pos", "BTN"]),
-    ]
-    for argv, want_conditions, want_rest in splits:
-        spec, rest = parse_cohort(list(argv))
-        got = None if spec is None else spec[0]
-        if got != want_conditions or rest != want_rest:
-            fails.append(f"parse_cohort{argv} -> {got}, {rest}")
-    print(f"the cohort takes only its own flags  "
-          f"{len(splits) - len([f for f in fails if 'parse_cohort' in f])}"
-          f"/{len(splits)}")
-
     # A condition is a comparator and a number and nothing else. It reaches
     # SQL as a column name and an operator chosen from a fixed list, with
     # the number bound -- but the column and the operator are interpolated,
@@ -653,8 +781,91 @@ def check(db_path=DB):
     return not fails
 
 
+def check_parse():
+    """
+    Argument splitting, no database.
+
+    The live narrowing below needs `players`. These cases are the ones
+    that used to delete somebody else's filter, plus the compact string
+    and the aliases that exist so `--hands` the VIEW is not the only
+    way to say "100+ hands".
+    """
+    fails = []
+    splits = [
+        # A value the cohort used, appearing again as another flag's value.
+        # The old parser dropped every token equal to one it had consumed,
+        # so this deleted both sixes and left `--players` dangling.
+        (["--cohort", "--hands", "6", "--players", "6"],
+         [("hands", "6")], ["--players", "6"]),
+        # `--hands` twice: the player's hand count, then the hands VIEW.
+        # The old parser deleted both and the view could not be reached.
+        (["--cohort", "--hands", ">=500", "--hands"],
+         [("hands", ">=500")], ["--hands"]),
+        # Everything that is not the cohort's survives in order.
+        (["--cohort", "--vpip", ">=28", "--pos", "BTN", "--street", "flop"],
+         [("vpip", ">=28")], ["--pos", "BTN", "--street", "flop"]),
+        (["--pos", "BTN"], None, ["--pos", "BTN"]),
+        # Compact string. `--filter` is a situation and must survive.
+        (["--cohort", "vpip>=40,pfr<=10,hands>=100", "--filter", "3bet"],
+         [("vpip", ">=40"), ("pfr", "<=10"), ("hands", ">=100")],
+         ["--filter", "3bet"]),
+        # Aliases that do not steal `--hands` the VIEW; `40+` is `>=40`.
+        (["--cohort-hands", "100", "--cohort-vpip", "40+",
+          "--cohort-pfr", "<=10", "--pos", "BTN"],
+         [("hands", ">=100"), ("vpip", ">=40"), ("pfr", "<=10")],
+         ["--pos", "BTN"]),
+        # Compact `hands` claims the player filter, so `--hands` is the VIEW.
+        (["--cohort", "hands>=100", "--hands"],
+         [("hands", ">=100")], ["--hands"]),
+        (["--cohort-hands", "100", "--hands"],
+         [("hands", ">=100")], ["--hands"]),
+        # `40+` on the existing `--vpip` flag, and class in the string.
+        (["--cohort", "vpip 40+,class=fish", "--street", "flop"],
+         [("vpip", ">=40")], ["--street", "flop"]),
+        (["--cohort", "Value(3Bet) < 2 and Opps(3Bet) > 100",
+          "--filter", "3bet"],
+         [("_expr", "Value(3Bet) < 2 and Opps(3Bet) > 100")],
+         ["--filter", "3bet"]),
+        (["--cohort", "vpip>=40 and pfr<=10", "--pos", "BTN"],
+         [("_expr", "vpip>=40 and pfr<=10")], ["--pos", "BTN"]),
+    ]
+    for argv, want_conditions, want_rest in splits:
+        spec, rest = parse_cohort(list(argv))
+        got = None if spec is None else spec[0]
+        if got != want_conditions or rest != want_rest:
+            fails.append(f"parse_cohort{argv} -> {got}, {rest}")
+    spec, rest = parse_cohort(
+        ["--cohort", "vpip>=40,class=fish,site=acr"])
+    if spec is None or spec[0] != [("vpip", ">=40")] or spec[1] != "acr" \
+            or spec[2] != "fish" or rest:
+        fails.append(f"compact class/site -> {spec}, {rest}")
+    refused = 0
+    for bad in ("vpip>=", "hands>=1;DROP", "nonsense>=40", ""):
+        try:
+            parse_cohort_expr(bad)
+        except SystemExit:
+            refused += 1
+        else:
+            fails.append(f"parse_cohort_expr({bad!r}) was accepted")
+    if refused < 4:
+        fails.append("a compact expression that is not a condition was accepted")
+    try:
+        parse_cohort_expr("Value(notastat) < 1")
+        fails.append("unknown stat in an expression was accepted")
+    except SystemExit:
+        pass
+    if describe_cohort(
+            ([("_expr", "Value(3Bet) < 2 and Opps(3Bet) > 100")],
+             None, None, None)) != "Value(3Bet) < 2 and Opps(3Bet) > 100":
+        fails.append("describe_cohort hid the expression text")
+    print(f"the cohort takes only its own flags  "
+          f"{len(splits) - len([f for f in fails if 'parse_cohort' in f])}"
+          f"/{len(splits)}")
+    return fails
+
+
 def main(argv):
-    if "--cohort" in argv:
+    if "--cohort" in argv or any(a in COHORT_ALIASES for a in argv):
         spec, _remaining = parse_cohort(argv)
         show_cohort(*spec)
         return 0

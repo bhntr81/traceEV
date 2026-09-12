@@ -8,6 +8,388 @@ Newest first.
 
 ---
 
+## Expression syntax + aliases
+
+Two v1 slices that close the planned H2N reports/filters arc.
+
+**Expressions.** A plain stat is a frequency in a spot. An expression is
+math over those frequencies -- no nesting, no second filter language.
+
+    python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+    python query.py --cohort 'Value(wtsd) > 30 and Opps(wtsd) > 50'
+
+`Value(S)` / `Cases(S)` / `Opps(S)` bind S to `stats.BY_KEY` (`3Bet` is
+`threebet`, `WentToSD` is `wtsd`). `Hands()` is the players-table count.
+`and` / `or`, comparisons, `+ - * /`, and `if(cond, a, b)` are the rest.
+`eval()` is not used. Rates are grouped by `site` and `player` together
+-- grouping by name alone would merge two rooms that share a screen
+name. The compact `vpip>=40,pfr<=10` string is unchanged; `and` / `Value(`
+is what switches grammars. `--class` stays a flag beside the expression.
+
+There is no `WentToSDCases` catalog entry. That is `Cases(wtsd)`, and
+the denominator is `Opps(wtsd)` (saw a flop), not `Hands()`.
+
+**Aliases.** A named group of `(username, room)` accounts in
+`aliases.json` (gitignored). Single-person merges histories as one
+player; a group is a villain pool.
+
+    python aliases.py --create me --player NAME --site acr --single
+    python aliases.py --import accounts.csv
+    python query.py --alias me --filter "Flop c-bets"
+    python query.py --hero --vs-alias nits --street flop
+    python query.py --villain-type fish --reg --stats
+
+CSV is `Alias, Username, Room, Is Single Person`. `--player me` does
+not expand an alias. `--hero` still covers imported hero seats via
+`is_hero`. `--villain-type` / `--vs-class` is the typed form of
+`--vs-fish` over `players.py` classification.
+
+`--check` on `expr.py`, `aliases.py`, and the query wiring uses
+in-memory fixtures and a temp store -- no corpus, and nothing creates
+an empty `hands.db`.
+
+### Not this, on purpose
+
+No nested expressions. No H2N full stat-name catalog or `[MP;IP]`
+suffixes. No `VsHeroCases` / `AmountWon` / `ActionProfit` in
+expressions. `--by player` still splits alias members. No
+save-cohort-as-alias. No HUD. No solver.
+
+---
+
+## Notes + marked hands
+
+Off-table study. Player notes, a star on a hand, and a tag catalog --
+Hand2Note's note/mark UX without a HUD. The store is `notes.db`, not a
+table inside `hands.db`, because a rebuild of the derived tables is
+exactly the kind of thing that used to delete columns, and a note is
+not a derived column.
+
+    python notes.py --add "calls too wide" --player NAME --hand ID
+    python notes.py --mark ID --tag leak
+    python query.py --marked --hands
+    python query.py --hand ID --mark --tag leak
+
+`--hand` on a note picks the player from the hand when you do not
+name one. Templates are a small CRUD list (seeded once). A note can
+carry a spot/stat string (`--spot "Flop c-bets"`). The window and the
+page mark from the hand list. Compact Hand View is unchanged.
+
+`--check` holds the CRUD, the seat-to-player pick, and that
+`--marked` / `--tag` / `--noted` select the starred hand on an
+in-memory table -- no corpus.
+
+### Not this, on purpose
+
+No HUD overlay. No solver. No HH export of tagged hands. No paste-HH
+into a stat note. No Compact Hand View rewrite.
+
+---
+
+## Multi-Player cohorts
+
+Hand2Note's Range Research is one report over a set of people.
+`--cohort` already selected players; it did not say how many hands
+they covered, it did not accept the compact string the research
+brief writes, and Pin / compare returned *before* the pool was
+parked -- so a two-column view of "fish with 100+ hands" was the
+whole database wearing that heading.
+
+    python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+    python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10
+
+The header is now `#players` and `#hands`, then the ordinary report
+numbers. Existing filters, Smart Reports and Pin run on the pooled
+hands. `40+` is `>=40`. `--class fish` is the cheap reg/fish
+checkbox; it was already a flag.
+
+The window's Players dialog takes the compact string. The page grew
+a Multiple Players fieldset. `--check` holds the parse, the header
+shape, and that compare under a cohort sees only those players --
+no `hands.db` required.
+
+### Not this, on purpose
+
+No HUD. No solver. No Expression Value/Opps strings
+(`VPIP>30 AND HandsCount>1000`) -- that is the Expressions
+milestone. No Preflop Range on the pool. No Bet Sizes view. No
+second Multi-Player compare (two cohorts side by side); `--versus`
+already compares two populations.
+
+---
+
+## Pin / side-by-side compare
+
+Hand2Note's `+` adds a pane; Pin freezes one report while you change
+the other. `--pin` used to be an alias for `--versus` -- the Holm
+table of every stat -- which is a test, not a pane. It is now the
+two-column summary those two spots actually need:
+
+    hits / opps     THIS              PINNED
+    freq            30.0%             40.0%
+    hits / 1000     12.0              8.0
+    action profit   +2.40 bb          −1.10 bb
+    freq THIS − PINNED   −10.0 pts  [−18, −2]
+
+`--compare "Flop c-bets" "Flop vs c-bet"` names both sides.
+`--hero` stays on both; leaving it off B would compare you to the
+pool and look like a finding. `--versus` is still the Holm table.
+
+The window and the page draw the same two columns above the rest
+of this report. Changing the filter leaves the pin where it is.
+
+`--check` holds the person-keeping, the two reports staying
+different, and a two-hand fixture whose first-in Action Profit is
+(+10 − 5) / 2.
+
+### Not this, on purpose
+
+No HUD. No second `--by` grid (richer pin). No Multi-Player view.
+No interval on Action Profit -- v1 is a mean of priced hits.
+
+---
+
+## Custom filter builder as a FilterDef, not a second language
+
+Hand2Note's custom filter is a street-by-street action graph with
+modifiers on the node. The graph here was already a line string
+(`--flop XBmC`). The modifiers were a pile of flags, some missing.
+`FilterDef` is that pair as a value: it parses argv, emits argv, and
+a JSON object `--filter '{"street":"flop","first_raise":true}'` is
+the same door as a typed command. Hits/Opps, stats, the hand list,
+Faced Next and `--save` stay one pipeline.
+
+New modifiers, over columns `decisions` already has:
+
+- `--first-raise` -- the open, or the first raise of a bet. A flop
+  cbet is `--first-in`, not this.
+- `--last-action` -- this decision ended the street.
+- `--size 0.4-0.75` / `50%+` / `40-75` -- a pot-frac range beside
+  the `s m l p o` letters.
+- `--stack 100+` / `<40` / `80-200` -- `eff_bb`. `--deep` / `--short`
+  still work.
+
+`--players`, `--live`, `--first-in`, `--last-raise` and the line
+flags were already there. The window grew first-raise / last-action
+chips, a size-range box and a stack box; the page grew the same plus
+the action-line fields the window already had.
+
+`--check` holds the AST round-trip, the JSON object, the range
+parsers, and a four-row table that tells a first raise from a cbet
+and a last action from the one before it.
+
+### Not this, on purpose
+
+No HUD. No second filter language (`filter list|save|load` is still
+`--filters` / `--save` / `--filter`). A line token cannot name a
+seat -- `--pos` / `--vs` name who this decision is. No graph widget.
+
+---
+
+## Compact Hand View in report hand lists
+
+A list of timestamps is a list you have to open. Hand2Note's compact
+hand view puts the betting on the row -- positions, sizes in bb, the
+board and pot at each street -- so a scan of forty rows is a scan of
+forty hands. `CompactHandRenderer(hand)` is that encoding, a pure
+function over the dict `hand_detail` already returns.
+
+    BTN R3  BB C2 | 7h Ks 8c (6)  BB X  BTN X | 8d (6)  BB B4.5  BTN C4.5 | Th (15)  BB B86'  BTN C86
+
+`X` is a check. `B`/`C`/`R` carry a size in bb. A trailing `'` is
+all-in. The focus seat -- the player the row is about -- is marked:
+underline on the page and in a colour terminal, `_R3_` in the window
+because Tk's Treeview cannot underline a substring. Position colours
+are fixed (H2N cannot customize yet either). Double-click still opens
+the full replay.
+
+`--hands`, the window's hands tab, and the page's hands view all
+render it. `--check` holds the H2N example, a fold/check line, an
+all-in bet, an all-in call (`C10'`, not `R10'` -- 95 of 236 all-ins
+here are calls), and the batch path the lists actually use.
+
+### Not this, on purpose
+
+No HUD. Blind posts, dead chips and a straddle are not tokens -- the
+line starts at the first voluntary action. Hole cards stay in the
+combo column. Early folds are kept. EP1–EP3 are not seats this
+project has. A six-way flop is not truncated.
+
+### What's next
+
+Unchanged from the reports work: richer pin, Call Profit Rate /
+Dispersion / EV diff, Multi-Player compare, squeeze as its own Faced
+Next verb, Missed 2nd/3rd barrel and Won$ in the Raise C-bet pack.
+
+---
+
+## Smart Reports, related spots, and a report that matches its filter
+
+The tracking half of Hand2Note is a tree of named situations, a popup
+that says what happened *here*, and a click to the neighbouring spot.
+This had the engine for all three and the surface of none of them:
+five guessed-at presets, a stats dump of whatever still had `n > 0`,
+and a report tab that led with VPIP under every filter.
+
+### Added — a Smart Reports tree, not five guesses
+
+`SMART_REPORTS` is the spots a tracker user actually clicks between:
+steal and blind defense, facing a 3-bet / 4-bet, the pot types, flop
+c-bet and the other seat, donk and check-raise, turn and river barrels,
+the same ideas in a 3-bet pot. Family and related sit beside the argv
+so `--presets`, the window's report box and the page's report menu
+draw the same tree. Saved reports still land at the end, under *saved*.
+
+Opening one **replaces the situation and keeps the person**. Leftover
+river chips AND-ed onto "Flop c-bets" used to match nothing and look
+like a broken report. The window, the page and `--preset` agree on
+that split; a cohort is still not a report, for the reason it never
+was.
+
+### Added — what they did in this spot
+
+`--stats` (and the stats tab, and the page) now leads with fold /
+check / call / bet / raise of the decisions the filter already
+selected, each with its `n` and a Wilson interval. A named stat asks
+a different question -- "of the times a cbet was possible" -- and
+stays the table underneath. The five verbs partition `decisions`;
+`--check` asserts the counts sum to the row count, because a missing
+verb would shrink every percentage and look like a tight pool. All-in
+is counted beside them: 95 of 236 here are calls.
+
+### Added — related spots
+
+From a flop c-bet: the other seat, IP / OOP, the turn, the 3-bet-pot
+version. CLI prints them under `--stats` as `--preset` lines you can
+paste; `--related` prints only those. The window draws them as
+clicks under the filter line; the page does the same. Generated
+variants that are already a named report use that name, so the box
+and the clicks stay one list.
+
+`--hero` is not part of the situation. A report opened on your own
+hands still recognises itself and still offers neighbours.
+
+### Changed — report columns follow the spot
+
+`columns_for` picks the stats the filter is about. A river filter
+that still leads with VPIP is a report of a different street: VPIP's
+chance is preflop, so every cell was empty and the `n` column --
+which was VPIP's denominator -- printed as zero. That was the report
+tab on "River bets". `--show` still wins; without it, flop spots
+show flop stats. The row `n` is now how many decisions the filter
+selected in that bucket, not VPIP's chance.
+
+### Checked
+
+`query.py --check` holds every built-in report to the same "builds
+and narrows" test as a flag, asserts every related name is a report,
+that `columns_for` drops VPIP on a river filter, that the action mix
+covers every decision, and that a report opened on hero is still
+that report. `app.py --check` asserts applying a spot rebuilds its
+flags and that opening a report drops the previous street.
+`gui.py --check` opens a preset the same way the command line does.
+
+### Added — Hits / opportunities / Hits per 1000
+
+Hand2Note prints these on every filtered report. If the filter already
+names an action (`--quick cbet_flop`), hits are the matching rows and
+opportunities are the chance with the action taken off. If it is only
+a situation, opportunities are the matching rows and hits are the
+aggressive ones among them. Hits/1000 is per thousand player-hands of
+the person being measured -- mixing that with the frequency is how a
+70% cbet on 12 flops looks like a leak you see every orbit.
+
+### Added — Action profit (v1)
+
+Profit attributed to the filtered action, not the hand, as bb/hand
+over priced hits. One SQL CASE feeds the report mean and the act bb
+column on --hands, so those two cannot drift.
+
+  * fold = 0
+  * bet 5 into pot 10, everyone folds = +10 (pot_before; the bet is
+    returned, so it is not subtracted)
+  * bet 5, face a raise, fold = -5 (amount on THIS action)
+
+Distinct from Won$ of the filtered hands, all-in EV / EV diff, and
+Call Profit Rate (deferred). The mean ignores unpriced hits rather
+than scoring them as 0 -- a called pot stuffed with zero would look
+like the action was break-even.
+
+Unpriced, on purpose: called-and-played-on (later pot is not this
+action), multiway unless everyone folds, later streets after a call,
+rake not subtracted (and won=0 after rake is unpriced, not a guessed
+loss), MTT, an uncalled overage coming back (v1 credits +pot_before
+only). The note sits next to Hits/Opps.
+
+### Added — Faced Next / Next Actions, and click-to-filter
+
+`--after fold` is the first later action by another seat; `--then bet`
+is the first later action by this player. Each row now carries
+frequency, hits/opps (branch / parent), and Action Profit v1 on the
+parent action given that continuation -- "I cbet and they folded" is
++pot, not Won$. `--faced-next` / `--next-actions` print that table
+as its own report; `--from` is `--filter`; `--branch fold` applies
+the row (`--after` or `--then`). `--after none` is nothing further;
+`fold-out` / `3bet` alias fold / raise. Squeeze is `--live` plus
+`--after raise`, not a third verb.
+
+`--hit` is `--quick`: click-stat on the command line. The window
+double-clicks a stat row into `--quick` and a Faced Next row into
+`--after`; the page does the same with a click.
+
+### Added — outcome block, StatPacks, custom builder, pin
+
+A filter is the spot. Applying it now also:
+
+- prints **All Villains Fold / One Villain Call / Villain Raise** of
+  the aggressive rows (`--outcome fold-out|call|raise-back`). That is
+  the pot's answer, not Faced Next's first later action. The three
+  partition bets; `--check` asserts the counts sum.
+- swaps `--by` columns to a **StatPack** when the filter is a top
+  `--quick` key. Raise C-bet leads with raise_cbet, not VPIP. Showdown
+  stats stay out of the pack -- they cannot see a street filter.
+- accepts the custom builder flags the research brief named:
+  `--first-in`, `--last-raise`, `--size s|m|l|p|o`, `--players`,
+  `--live`. Size letters are `lines.bucket`, so `--flop XBmC` and
+  `--size m` agree.
+- opens a spot as `--filter <name|json>` (report, then quick key,
+  then JSON argv) and compares two as `--pin "Flop vs c-bet"`.
+  `--pin` keeps who is being measured; `--versus` still takes raw
+  flags when the other side is a different population.
+
+The window and the page grew the same controls: first-in / last-raise
+chips, size and outcome picks, player-count boxes, a pin combobox
+next to the report box. Clicking an outcome row is `--outcome`.
+
+`query.py --check` runs the shape and a three-hand fixture without
+`hands.db`, then the live corpus when it is there.
+
+### Not this, on purpose
+
+No HUD. No solver. No second filter language -- every new report is
+argv `build` already understands. Custom stats and saved reports are
+untouched.
+
+### What's next
+
+- **Richer pin.** The window shows the pinned spot's hits and action
+  profit above this one. A true side-by-side report tab (two column
+  packs, same `--by`) is still `--versus` on the command line.
+- **Call Profit Rate, Dispersion, EV diff.** Action-profit v1 leaves
+  called-and-played-on unpriced on purpose; those extras need a priced
+  call or a solver.
+- **Multi-Player compare** as its own view. `--versus` already compares
+  two populations; a window for it is not this PR.
+- **Squeeze as its own Faced Next verb.** A squeeze is a raise with
+  callers already in; v1 keeps it as `--live` + `--after raise`.
+- **Missed 2nd/3rd Barrel, Won$, Won hand%** in the Raise C-bet pack.
+  The core subset (hits/opps/freq + outcomes + Action Profit + the
+  related decision stats) is what ships; those extras are either
+  already a `--quick` key or a spots-sourced stat that blanks under
+  a street filter.
+
+---
+
 ## PokerStars, the third site -- one parser and one registry entry
 
 9,961 hands of NL100 6-max from `Downloads
