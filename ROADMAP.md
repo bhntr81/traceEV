@@ -908,3 +908,17 @@ before the load: PokerStars' "raises $1 to $2" names the increment, not
 the amount added; and an All-in Cash Out leaves no "collected" line. The
 database is 22,165 hands and 173,549 decisions. Goal 1 of Part III is
 demonstrated, not just claimed.
+
+## Run 11 — Omaha (PLO), a game rather than a skipped file
+
+**Goal:** import PLO4/PLO5 where the format writes them, tag the variant
+so Hold'em pool stats cannot mix, and refuse to invent Omaha equity.
+
+**Result:** WPN/ACR `Hand #… - Omaha (Pot Limit)` loads (that was the
+sample in Downloads, not Ignition's dialect). Ignition 5-card is
+OMAHA5, not "contains OMAHA". PokerStars Omaha is the documented skip.
+`--game plo` filters; the default is Hold'em. Strength/13x13/equity
+stay two-card. Fixtures are the sample PLO4 hand and the PLO5 dealt
+line -- no invented EV. H2N tracking-half coverage went up by a game
+on the sites that already had people (ACR names) and by a tag on
+Ignition; no HUD, no solver.

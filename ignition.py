@@ -13,16 +13,25 @@ persist within a table, so on RING tables a player can be followed across a
 session; on ZONE the client moves you after every hand, so every seat is a
 stranger and only aggregates mean anything there.
 
+Omaha is tagged from the header through `games.of` -- including
+5-card, whose name contains "OMAHA" and used to be stored as OMAHA.
+Four or five hole cards are kept.
+
 This is the parser and nothing else: the header a hand begins with, how a
 file splits into hands, and one hand as the dict shape every site's parser
 returns. Loading, the schema and the checks are `importer.py` and
 `sites.py`; what is true of this site is its registry entry there.
+
+    python ignition.py --check      Omaha tagged, four and five hole cards kept
 
     python importer.py <folder>     load, whatever sites are in it
     python sites.py --check         prove the import
 """
 
 import re
+import sys
+
+import games
 
 # Ignition names itself on the first line of every hand. The header is the
 # only thing a file is identified by -- never the folder it was found in.
@@ -128,7 +137,12 @@ def parse_hand(text, source=""):
     hand_id, middle, played_at = m.groups()
     tm = TABLE_RE.search(middle)
     table_id = tm.group(1) if tm else ""
-    game = "OMAHA" if "OMAHA" in middle.upper() else "HOLDEM"
+    # The filename used to be the only place the variant was written, and
+    # "OMAHA" in the middle was a boolean. Five-card Omaha contains
+    # "OMAHA" too, so the registry decides, and a header that names
+    # nothing it knows is Hold'em -- that is still the game this site
+    # almost always writes.
+    game = games.of(middle) or "HOLDEM"
 
     seats, hero_seat = [], None
     for seat_no, label, me, stack in SEAT_RE.findall(text):
@@ -178,8 +192,12 @@ def parse_hand(text, source=""):
             cm = CARDS_RE.search(rest)
             if cm:
                 got = cm.group(1).split()
-                if len(got) in (2, 4) and (seat["cards"] is None
-                                           or rest.startswith("Card dealt")):
+                # Two, four or five. The count used to stop at four, so a
+                # 5-card Omaha deal was stored as no cards and looked like
+                # a fold that was never shown.
+                if len(got) in games.HOLE_COUNTS and (
+                        seat["cards"] is None
+                        or rest.startswith("Card dealt")):
                     seat["cards"] = " ".join(got)
             continue
         if rest.startswith("Hand result"):
@@ -267,3 +285,100 @@ def split_hands(text):
     starts = [m.start() for m in HAND_RE.finditer(text)]
     for i, a in enumerate(starts):
         yield text[a:starts[i + 1] if i + 1 < len(starts) else len(text)]
+
+
+# The WPN Omaha histories in Downloads are `acr.py`'s. These blocks are
+# the Ignition-network dialect of the same games, so a 5-card deal on
+# this site is stored rather than dropped, and so the tag is OMAHA5
+# rather than "contains the word OMAHA".
+PLO4 = """\
+Ignition Hand #2459808909: TBL#1 OMAHA Pot Limit - 2025-05-19 17:18:05
+Seat 1: Small Blind ($9.84 in chips)
+Seat 2: Big Blind [ME] ($10.00 in chips)
+Seat 3: UTG ($3.90 in chips)
+Small Blind : Posts chip $0.05
+Big Blind : Posts chip $0.10
+*** HOLE CARDS ***
+Small Blind : Card dealt [Ah Kh Qd Jd]
+Big Blind : Card dealt [3c 2h Kd 2d]
+UTG : Card dealt [5s 6s 7s 8s]
+UTG : Folds
+Small Blind : Folds
+Big Blind : Return uncalled portion of bet $0.05
+Big Blind : Hand result $0.10
+*** SUMMARY ***
+Total Pot($0.10)
+"""
+
+PLO5 = """\
+Ignition Hand #2459651456: TBL#1 5CARD OMAHA Pot Limit - 2025-05-19 17:00:00
+Seat 1: Small Blind ($10.00 in chips)
+Seat 2: Big Blind [ME] ($10.00 in chips)
+Small Blind : Posts chip $0.05
+Big Blind : Posts chip $0.10
+*** HOLE CARDS ***
+Small Blind : Card dealt [Ah Kh Qd Jd Td]
+Big Blind : Card dealt [Qh Jh Qd Kc 2c]
+Small Blind : Folds
+Big Blind : Return uncalled portion of bet $0.05
+Big Blind : Hand result $0.10
+*** SUMMARY ***
+Total Pot($0.10)
+"""
+
+
+def check():
+    """Ignition Omaha is tagged, and four or five hole cards are kept."""
+    fails = []
+    p4 = parse_hand(PLO4, source="HH - RING - $0.05-$0.10 - OMAHA.txt")
+    if p4 is None:
+        fails.append("PLO4 did not parse")
+        print("PLO4 parsed                      NO")
+    else:
+        h, seats = p4["hand"], {s["label"]: s for s in p4["seats"]}
+        inp = sum((s["posted"] or 0) + (s["invested"] or 0)
+                  for s in p4["seats"])
+        want = [
+            (h["game"] == "OMAHA", "game is OMAHA"),
+            (seats["Big Blind"]["cards"] == "3c 2h Kd 2d", "hero's four cards"),
+            (seats["UTG"]["cards"] == "5s 6s 7s 8s", "folded four cards kept"),
+            (h["fmt"] == "RING" and h["bb"] == 0.10, "stakes from the filename"),
+            (abs(inp - (h["pot"] or 0)) <= 0.011, "in = stated pot"),
+        ]
+        bad = [why for ok, why in want if not ok]
+        print(f"PLO4 fixture                    {len(want) - len(bad)}/{len(want)}")
+        for why in bad:
+            print(f"    {why}")
+            fails.append(f"PLO4: {why}")
+
+    p5 = parse_hand(PLO5, source="HH - RING - $0.05-$0.10 - OMAHA.txt")
+    if p5 is None:
+        fails.append("PLO5 did not parse")
+        print("PLO5 parsed                      NO")
+    else:
+        hero = next(s for s in p5["seats"] if s["is_hero"])
+        want = [
+            (p5["hand"]["game"] == "OMAHA5", "game is OMAHA5, not OMAHA"),
+            (hero["cards"] == "Qh Jh Qd Kc 2c", "five hole cards"),
+        ]
+        bad = [why for ok, why in want if not ok]
+        print(f"PLO5 fixture                    {len(want) - len(bad)}/{len(want)}")
+        for why in bad:
+            print(f"    {why}")
+            fails.append(f"PLO5: {why}")
+
+    print()
+    print("FAIL: " + "; ".join(fails) if fails else "PASS")
+    return not fails
+
+
+def main(argv):
+    if "--check" in argv:
+        return 0 if check() else 1
+    print(__doc__)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+

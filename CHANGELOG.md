@@ -8,6 +8,51 @@ Newest first.
 
 ---
 
+## Omaha (PLO) is a game, not a skipped file
+
+The WPN header `Hand #… - Omaha (Pot Limit)` was "unrecognised":
+`acr.HEADER` required `" - Holdem"`, and `parse_hand` returned None for
+anything else. A folder of PLO files in Downloads therefore contributed
+nothing, without a sound. The same skip lived in `pokerstars.py`. The
+sample hand is WPN format -- named seats, `Dealt to … [3c 2h Kd 2d]` --
+not Ignition's `Ignition Hand #` dialect, even though the files sat
+next to Bovada exports.
+
+A game is now a fact in `games.py`, the same shape as a site: HOLDEM,
+OMAHA, OMAHA5, how many hole cards each deals, and what `--game plo`
+means. Parsers ask; they do not decide a second time. Five-card Omaha
+is checked first because its name contains "Omaha".
+
+What loads:
+
+  * **ACR / WPN** -- PLO4 and PLO5. Four or five hole cards stored.
+    The waiting seat ("will be allowed to play after the button") stays
+    out of the hand, as it always did.
+  * **Ignition** -- already tagged `OMAHA` when the word appeared; that
+    boolean also ate 5-card. It now writes OMAHA5 and keeps five cards.
+  * **PokerStars** -- HEADER accepts an Omaha file (the site is the
+    format). `parse_hand` still returns None. The skip is the extension
+    point: flip `if game != "HOLDEM"` once a Stars Omaha file has sat
+    next to the money check. NLHE still parses; the fixture is the
+    raise-ledger case that was 0% on the first Stars hand.
+
+What does not lie:
+
+  * Strength, combo, the 13x13 and all-in equity stay Hold'em. Four
+    hole cards classified as two pair would be a complete, plausible,
+    wrong label. `classify` returns NULL; `equity()` refuses; the
+    13x13 only counts two-card combos.
+  * The default filter is Hold'em. `stats.POOL`, `population.POOL` and
+    every `query.build` that does not name `--game` pin themselves to
+    `games.HOLD`. `--game plo` is betting stats (VPIP, cbet). `--game
+    all` is how you opt in to mixing, and that has to be a choice.
+
+`--check` fixtures are the sample PLO4 hand (money, four cards, the
+waiting seat, in − house = won) and a PLO5 header with the five cards
+from the snippet. No invented equity.
+
+---
+
 ## PokerStars, the third site -- one parser and one registry entry
 
 9,961 hands of NL100 6-max from `Downloads

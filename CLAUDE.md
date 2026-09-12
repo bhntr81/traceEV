@@ -128,6 +128,13 @@ Facts that stay true, and that have each been got wrong at least once:
   in 38 places across 14 modules until 10 Sep 2026; the third site would
   have found the one that was missed. A parser provides `HEADER`,
   `split_hands`, `parse_hand` and never writes a row.
+- **A game is a fact in `games.py` and nowhere else.** HOLDEM, OMAHA and
+  OMAHA5 are named there, with their hole counts and the words `--game`
+  takes. Mixing their VPIPs is the same class of error as mixing two
+  sites under `fmt='RING'`. The default pool is Hold'em; `--game plo` is
+  how you ask for the other one. Strength, the 13x13 and all-in equity
+  are Hold'em only -- Omaha is two of four plus three board, and scoring
+  four hole cards as Hold'em is a lie.
 - **`fmt='RING'` no longer identifies a pool.** ACR ring hands match
   it too. Every population query needs a site as well, or it is averaging
   two different games into a number that describes neither.

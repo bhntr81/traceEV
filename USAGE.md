@@ -23,19 +23,45 @@ python sites.py --stats                     # what is in the database, per site
 python sites.py --check                     # prove every site's import
 ```
 
-Folders are walked recursively for `*.txt`. Omaha files are skipped. ACR
-hand ids are prefixed `cp-` so the sites can never collide.
+Folders are walked recursively for `*.txt`. ACR hand ids are prefixed
+`cp-` so the sites can never collide.
 
-`acr.py` and `ignition.py` are parsers and nothing else; neither is run
-directly.
+**Omaha (PLO) is imported**, not skipped, on the formats that write it.
+The WPN/ACR header `Hand #… - Omaha (Pot Limit)` is the one in Downloads;
+Ignition-network files that say `OMAHA` or `5CARD OMAHA` are tagged too.
+Hole cards are stored (4 or 5). Strength, the 13x13 and all-in equity
+stay Hold'em-only -- Omaha uses two of four plus three board cards, and
+scoring four hole cards as Hold'em would be a plausible lie. `--game plo`
+(or `plo5`) is how you ask for those hands; the default pool is Hold'em,
+for the same reason a pool that does not name a site is not a pool.
+
+PokerStars Omaha is recognised as a Stars file and then refused: same
+HEADER, `parse_hand` returns None, and the skip is the extension point
+once a Stars Omaha file has sat next to the money check.
+
+`acr.py`, `ignition.py` and `pokerstars.py` are parsers and nothing else;
+none is run directly, except `--check` against the fixtures in each file.
+
+### PokerStars NLHE
+
+A single export (John's `Downloads/nl100stars.txt`) is a folder of one
+file as far as the loader is concerned:
+
+```bash
+python importer.py "%USERPROFILE%\Downloads\nl100stars.txt"
+```
+
+The client's own folders under `%LOCALAPPDATA%\PokerStars*\HandHistory`
+are registered in `sites.py` and `--scan` / `--refresh` will pick them
+up once the client has written there.
 
 ### Reading `sites.py --stats`
 
 ```
-hands by site and format:
-  acr  RING     $0.10    3697
-  acr  BLITZ    $0.25     795
-  ignition   ZONE     $0.25     749
+hands by site, game and format:
+  acr        RING   HOLDEM    $0.10    3697
+  acr        RING   OMAHA     $0.10     120
+  ignition   ZONE   HOLDEM    $0.25     749
 
 coverage of what each site actually shows:
   ignition     18803 seats,   18802 with cards (100.0%),      9 distinct names
@@ -572,11 +598,16 @@ None of these is a bug. They are the filter asking for something that could
 not have happened, and the point of the message is that you can tell the
 difference without having to guess.
 
-Filters worth knowing: `--hero`/`--pool`, `--site`, `--player`, `--pos`,
+Filters worth knowing: `--hero`/`--pool`, `--site`, `--game` (holdem is
+the default; `plo` / `plo5` / `all`), `--player`, `--pos`,
 `--street`, `--pot`, `--facing`, `--ip`/`--oop`, `--deep N`/`--short N`,
 `--board mono,paired,connected,...`, `--combo`, `--multiway`/`--headsup`,
 `--since`/`--until`, and `--where` for raw SQL over `decisions` when the
 named flags run out. `--help` prints the full list with the SQL each becomes.
+
+`--game plo` is betting stats on Omaha -- VPIP, PFR, cbet. It is not a
+range and it is not a named hand: `combo`, `--made`, `--chart` and the
+all-in EV line are Hold'em, and they stay empty rather than guess.
 
 ### `stats.py` — the stat engine
 

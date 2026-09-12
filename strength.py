@@ -195,6 +195,10 @@ def classify(cards, board):
     """(made, kicker, fd, sd) for one hand on one board, or all None."""
     hole, table = parse(cards), parse(board)
     if len(hole) != 2 or len(table) < 3:
+        # Omaha is four (or five) cards and uses two of them plus three
+        # of the board. Scoring all four as Hold'em is a plausible,
+        # complete, wrong label -- the failure this function exists to
+        # refuse. Those hands stay unnamed.
         return (None, None, None, None)
 
     shape = best5(hole + table)
@@ -328,6 +332,10 @@ KNOWN = [
     # a third "straight draw" until this was tested.
     ("9h 8d", "7s 6d 2c Kh", "high card", None, None, "oesd"),
     ("9h 8d", "7s 6d 2c Kh 3s", "high card", None, None, None),
+    # Four cards is Omaha. Naming this as two pair (Ks and deuces, using
+    # all four) would be a Hold'em reading of a PLO hand, and every
+    # `--made` filter would then lie. Unnamed is the honest answer.
+    ("3c 2h Kd 2d", "8h Ks 8c", None, None, None, None),
 ]
 
 
@@ -358,8 +366,12 @@ def check(db_path=DB):
     con.row_factory = sqlite3.Row
     n = con.execute("SELECT COUNT(*) FROM decisions "
                     "WHERE made IS NOT NULL").fetchone()[0]
+    # Hold'em only. Four hole cards are known on Omaha rows and are not
+    # a Hold'em hand; classifying them as one would put made-hand filters
+    # on a lie. Those rows stay NULL, and NULL means "not this game".
     known = con.execute("SELECT COUNT(*) FROM decisions WHERE cards IS NOT NULL "
-                        "AND street <> 'preflop'").fetchone()[0]
+                        "AND street <> 'preflop' AND game = 'HOLDEM'"
+                        ).fetchone()[0]
     print(f"decisions with a hand named  {n:,}/{known:,}")
     if n != known:
         fails.append("some postflop decisions with known cards were not named")
