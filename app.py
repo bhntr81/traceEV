@@ -556,7 +556,8 @@ class App(ImportMixin, ttk.Frame):
         self.vals = {n: tk.StringVar() for n in
                      ("site", "stake", "player", "deep", "short",
                       "since", "until", "where",
-                      "line", "node", "pre", "flop", "turn", "river")}
+                      "line", "node", "pre", "flop", "turn", "river",
+                      "after", "then")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -777,7 +778,8 @@ class App(ImportMixin, ttk.Frame):
                             "--until": "until", "--where": "where",
                             "--line": "line", "--node": "node",
                             "--pre": "pre", "--flop": "flop",
-                            "--turn": "turn", "--river": "river"}.get(a)
+                            "--turn": "turn", "--river": "river",
+                            "--after": "after", "--then": "then"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -858,6 +860,10 @@ class App(ImportMixin, ttk.Frame):
         self.chart = None
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        # A stat or a Faced Next row is a filter. Double-clicking it is
+        # how Hand2Note walks from a frequency to the hands that made it,
+        # without going back through the dialog.
+        self.tree["stats"].bind("<Double-1>", self._drill_stat)
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -916,7 +922,8 @@ class App(ImportMixin, ttk.Frame):
                            ("until", "--until"), ("where", "--where"),
                            ("line", "--line"), ("node", "--node"),
                            ("pre", "--pre"), ("flop", "--flop"),
-                           ("turn", "--turn"), ("river", "--river")):
+                           ("turn", "--turn"), ("river", "--river"),
+                           ("after", "--after"), ("then", "--then")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1022,6 +1029,10 @@ class App(ImportMixin, ttk.Frame):
             if view == "stats":
                 out["n"], out["rows"] = query.stats_of(con, where)
                 out["actions"] = query.actions_of(con, where)
+                out["summary"] = query.spot_summary(con, where, argv)
+                out["profit"] = query.action_profit_of(con, where)
+                out["faced"] = query.chain_of(con, where, False)
+                out["next"] = query.chain_of(con, where, True)
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "chart":
@@ -1151,9 +1162,58 @@ class App(ImportMixin, ttk.Frame):
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
+    def _drill_stat(self, _event):
+        """Open the clicked stat or next-action as a filter on this spot."""
+        tv = self.tree["stats"]
+        iid = tv.focus()
+        if not iid or ":" not in iid:
+            return
+        kind, key = iid.split(":", 1)
+        if not key:
+            return
+        if kind == "stat":
+            self.multi["quick"] = {key}
+            self.refresh()
+        elif kind == "after":
+            self.vals["after"].set(key)
+            self.refresh()
+        elif kind == "then":
+            self.vals["then"].set(key)
+            self.refresh()
+
     def _render_stats(self, tv, out):
         self._cols(tv, ("stat", "value", "±", "n"), (230, 90, 70, 100),
                    {"stat": "w"})
+        self._stat_iids = {}
+        summ = out.get("summary")
+        if summ and summ["opps"]:
+            tv.insert("", "end", values=("HITS / OPPORTUNITIES", "", "", ""),
+                      tags=("group",))
+            tv.insert("", "end", values=(
+                f"hits  ({summ['label']})", f"{summ['hits']:,}", "",
+                f"{summ['opps']:,} opps"))
+            tv.insert("", "end", values=(
+                "hits / 1000 hands", f"{summ['per_1k']:.1f}",
+                f"±{summ['band']:.1f}" if summ["band"] < 1
+                else f"±{summ['band']:.0f}",
+                f"{summ['hands']:,} hands"))
+            tv.insert("", "end", values=(
+                f"{summ['label']}", f"{summ['pct']:.1f}%",
+                f"±{summ['band']:.1f}" if summ["band"] < 1
+                else f"±{summ['band']:.0f}",
+                f"{summ['opps']:,}"))
+        prof = out.get("profit")
+        if prof and prof["n"]:
+            if prof["bb_per_hand"] is not None:
+                tv.insert("", "end", values=(
+                    "action profit", f"{prof['bb_per_hand']:+.2f} bb",
+                    "", f"{prof['priced']:,} priced"))
+            else:
+                tv.insert("", "end", values=(
+                    "action profit", "unpriced", "", f"{prof['n']:,}"),
+                    tags=("note",))
+            tv.insert("", "end", values=(prof["note"], "", "", ""),
+                      tags=("note",))
         acts = out.get("actions") or {}
         if acts.get("mix"):
             tv.insert("", "end", values=("THIS SPOT", "", "", ""),
@@ -1170,13 +1230,28 @@ class App(ImportMixin, ttk.Frame):
                                   f"±{r['band']:.1f}" if r["band"] < 1
                                   else f"±{r['band']:.0f}",
                                   f"{r['n']:,}"))
+        for title, key, blob in (
+                ("FACED NEXT  (the other seat)", "after", out.get("faced")),
+                ("NEXT ACTIONS  (this player)", "then", out.get("next"))):
+            if not (blob and blob.get("rows")):
+                continue
+            tv.insert("", "end", values=(title, "", "", ""), tags=("group",))
+            for r in blob["rows"]:
+                iid = f"{key}:{r['key']}" if r["key"] else ""
+                tv.insert("", "end", iid=iid or None,
+                          tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['k']:,}"))
         group = None
         for r in out["rows"]:
             if r["group"] != group:
                 group = r["group"]
                 tv.insert("", "end", values=(group.upper(), "", "", ""),
                           tags=("group",))
-            tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+            tv.insert("", "end", iid=f"stat:{r['key']}",
+                      tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
                               # A band under a point still has a size, and
                               # "±0" reads as a number that failed to print.
@@ -2001,6 +2076,18 @@ class FilterDialog(tk.Toplevel):
         return (lambda: m.add(value), lambda: m.discard(value),
                 lambda: value in m)
 
+    def _val_item(self, name, value):
+        """A one-of pick written onto a string var, used by Faced Next."""
+        var = self.app.vals[name]
+
+        def on():
+            var.set(value)
+
+        def off():
+            if var.get() == value:
+                var.set("")
+        return on, off, (lambda: var.get() == value)
+
     def _flag_item(self, flag):
         v = self.app.flags[flag]
 
@@ -2095,6 +2182,14 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "situation")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in SITUATIONS])
+        self._heading(page, "faced next  (the other seat then)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("after", v)))
+            for v in query.AFTER])
+        self._heading(page, "next actions  (this player then)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("then", v)))
+            for v in query.AFTER])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))

@@ -215,11 +215,27 @@ python query.py --presets                 # the tree, then your saved ones
 python query.py --preset "Flop c-bets" --related
 ```
 
-`--stats` (the default) now leads with **what they did in this spot** --
-fold / check / call / bet / raise of the decisions the filter already
-selected, each with its `n` and a Wilson interval -- and then the named
-stats that can still occur inside it. That is the popup report Hand2Note
-opens on a filter: first the mix here, then the vocabulary.
+`--stats` (the default) now leads with the popup report Hand2Note opens
+on a filter:
+
+- **Hits / opportunities / hits per 1000 hands.** Hits and opportunities
+  are the two halves of a stat (`--quick cbet_flop` is hits; the chance
+  without the action is opportunities). Hits/1000 is per thousand
+  player-hands of the person being measured, not per thousand
+  opportunities -- a 70% cbet on 12 flops is still a rare event.
+- **Action profit** in bb/hand, attributed to *this* action: fold is 0,
+  an uncontested bet is +pot, a bet that is raised and folded is −bet.
+  Called-and-played-on is left unpriced (see CHANGELOG).
+- **This spot** -- fold / check / call / bet / raise of the filtered
+  decisions, each with its `n` and a Wilson interval.
+- **Faced next** / **next actions** -- what the other seat did after
+  this decision, and what this player did the next time they acted.
+  `--after fold` and `--then bet` open those as filters; in the window
+  a double-click does the same.
+
+Then the named stats that can still occur inside the filter. Asking for
+a preflop stat inside `--street flop` gives nothing, which is correct
+rather than a bug.
 
 Under that sit **related spots**: the other seat, the next street, the
 same idea in a fatter pot. Each line is a `--preset` you can paste, or a

@@ -63,6 +63,8 @@ VALUE_FIELDS = {
     "combo": "--combo", "stake": "--stake", "deep": "--deep",
     "short": "--short", "board": "--board", "since": "--since",
     "until": "--until", "where": "--where",
+    "after": "--after", "then": "--then",
+    "quick": "--quick",
 }
 
 
@@ -102,6 +104,10 @@ def payload(con, params):
         n_dec, rows = query.stats_of(con, where)
         return {"label": label, "decisions": n_dec, "rows": rows,
                 "actions": query.actions_of(con, where),
+                "summary": query.spot_summary(con, where, argv),
+                "profit": query.action_profit_of(con, where),
+                "faced": query.chain_of(con, where, False),
+                "next": query.chain_of(con, where, True),
                 "related": query.related_spots(argv),
                 "why": None if n_dec else nothing()}
 
@@ -266,6 +272,8 @@ tr.click{cursor:pointer}
 .thin{color:var(--dim)}
 .thin::after{content:' ?';color:#b8892a}
 .n{color:var(--dim);font-size:11px}
+.drill{cursor:pointer}
+.thin{color:#b8892a}
 .pos{color:var(--good)} .neg{color:var(--bad)}
 .filter{color:var(--dim);margin:0 0 14px;font-size:12px}
 .group{color:var(--dim);font-size:11px;text-transform:uppercase;
@@ -330,6 +338,12 @@ tr.click{cursor:pointer}
   <fieldset><legend>dates</legend>
     <label>from <input id="since" type="date"></label>
     <label>to <input id="until" type="date"></label>
+  </fieldset>
+  <fieldset><legend>faced next / next actions</legend>
+    <label>the other seat then
+      <select id="after"><option value="">any</option></select></label>
+    <label>this player then
+      <select id="then"><option value="">any</option></select></label>
   </fieldset>
   <fieldset><legend>raw sql over decisions</legend>
     <label><input id="where" placeholder="eff_bb > 150 AND fl_paired=1"></label>
@@ -400,7 +414,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset']
+['site','stake','player','deep','short','since','until','where','by','preset','after','then']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -426,7 +440,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -481,6 +495,24 @@ function render(d){
         ? `<p class="empty">no stat can occur inside this filter<br><span class="n">asking for a preflop stat inside street=flop does this</span></p>`
         : nope(); return; }
     let g = null, h = `<p class="n">${d.decisions.toLocaleString()} decisions match</p><table><tbody>`;
+    if (d.summary && d.summary.opps){
+      h += `<tr><td colspan="4" class="group">hits / opportunities</td></tr>`
+        + `<tr><td>hits (${d.summary.label})</td><td>${d.summary.hits.toLocaleString()}</td>`
+        + `<td class="n"></td><td class="n">${d.summary.opps.toLocaleString()} opps</td></tr>`
+        + `<tr><td>hits / 1000 hands</td><td>${d.summary.per_1k.toFixed(1)}</td>`
+        + `<td class="n">±${d.summary.band.toFixed(0)}</td>`
+        + `<td class="n">${d.summary.hands.toLocaleString()} hands</td></tr>`
+        + `<tr><td>${d.summary.label}</td><td>${d.summary.pct.toFixed(1)}%</td>`
+        + `<td class="n">±${d.summary.band.toFixed(0)}</td>`
+        + `<td class="n">n=${d.summary.opps.toLocaleString()}</td></tr>`;
+    }
+    if (d.profit && d.profit.n){
+      const ap = d.profit.bb_per_hand == null ? 'unpriced'
+        : (d.profit.bb_per_hand>=0?'+':'') + d.profit.bb_per_hand.toFixed(2) + ' bb/hand';
+      h += `<tr><td>action profit</td><td>${ap}</td><td class="n"></td>`
+        + `<td class="n">${d.profit.priced.toLocaleString()} priced</td></tr>`
+        + `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
+    }
     if (d.actions && d.actions.mix && d.actions.mix.length){
       h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
       for (const r of d.actions.mix.concat(d.actions.extra || []))
@@ -489,15 +521,40 @@ function render(d){
           + `<td class="n">±${r.band.toFixed(0)}</td>`
           + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
     }
+    for (const [title, flag, blob] of [
+        ['faced next (the other seat)', 'after', d.faced],
+        ['next actions (this player)', 'then', d.next]]){
+      if (!blob || !blob.rows || !blob.rows.length) continue;
+      h += `<tr><td colspan="4" class="group">${title}</td></tr>`;
+      for (const r of blob.rows)
+        h += `<tr class="drill" data-flag="${flag}" data-key="${r.key}">`
+          + `<td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.k.toLocaleString()}</td></tr>`;
+    }
     for (const r of d.rows){
       if (r.group !== g){ g = r.group;
         h += `<tr><td colspan="4" class="group">${g}</td></tr>`; }
-      h += `<tr><td title="${r.note||''}">${r.label}</td>`
+      h += `<tr class="drill" data-flag="quick" data-key="${r.key}"`
+        + ` title="${r.note||''}"><td>${r.label}</td>`
         + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
         + `<td class="n">±${r.band.toFixed(0)}</td>`
         + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
     }
     out.innerHTML = h + '</tbody></table>';
+    out.querySelectorAll('tr.drill').forEach(tr => {
+      tr.onclick = () => {
+        const flag = tr.dataset.flag, key = tr.dataset.key;
+        if (!key) return;
+        if (flag === 'quick'){
+          state.multi.quick = [key];
+        } else {
+          $('#'+flag).value = key;
+        }
+        load();
+      };
+    });
 
   } else if (state.view === 'report'){
     if (!d.rows.length){ out.innerHTML = nope(); return; }
@@ -633,6 +690,11 @@ async function load(){
   chips('street', STREETS, 'street');
   chips('pot', POTS, 'pot');
   chips('board', OPT.boards, 'board');
+  for (const id of ['after','then']){
+    $('#'+id).innerHTML = '<option value="">any</option>'
+      + ['fold','check','call','bet','raise','continue']
+          .map(v=>`<option>${v}</option>`).join('');
+  }
   if (OPT.reports){
     let fam = null, html = '<option value="">no report</option>';
     for (const r of OPT.reports){

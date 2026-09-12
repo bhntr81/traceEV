@@ -112,6 +112,13 @@ VALUE_FLAGS = {
     "--river-card": None,   # and the river
     "--quick": None,        # one or more named filters from `quick_filters`
     "--where": None,        # raw SQL escape hatch
+    # What happened AFTER this decision. Hand2Note's Faced Next / Next
+    # Actions: `--after fold` is "the next other seat folded", `--then
+    # bet` is "this player bet the next time they acted". A node prefix
+    # cannot say this -- it is cut short at THIS action -- so these look
+    # at the next row, not at a string.
+    "--after": None,
+    "--then": None,
 }
 
 # Which columns each line flag can read: the actions alone, or the actions
@@ -732,6 +739,247 @@ def actions_of(con, where):
     return {"n": n, "mix": mix, "extra": extra}
 
 
+def drop_flag(argv, flag):
+    """argv with this flag and its value (if any) taken off."""
+    out = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == flag:
+            i += 2 if (a in VALUE_FLAGS or a in OPTIONS) else 1
+            continue
+        if a in VALUE_FLAGS or a in OPTIONS:
+            out += argv[i:i + 2]
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    return out
+
+
+def who_where(argv):
+    """The person only, so Hits/1000 is per thousand of THEIR hands."""
+    out = []
+    i = 0
+    argv = situation_only(list(argv))
+    while i < len(argv):
+        a = argv[i]
+        if a in WHO_SWITCHES:
+            out.append(a)
+            i += 1
+        elif a in WHO_VALUES:
+            out += argv[i:i + 2]
+            i += 2
+        elif a in VALUE_FLAGS or a in OPTIONS:
+            i += 2
+        else:
+            i += 1
+    if not out:
+        return "1=1"
+    return build(out)[0]
+
+
+def spot_summary(con, where, argv):
+    """
+    Hits, opportunities, hits per 1000 hands, and the primary frequency.
+
+    Hand2Note prints these on every filtered report. Hits and opportunities
+    are the two halves of a stat: if the filter already names an action
+    (`--quick cbet_flop`, `--aggressive`) then hits are the matching rows
+    and opportunities are the same filter with the action taken off. If
+    it is only a situation -- a Smart Report, a street -- opportunities
+    are the matching rows and hits are the aggressive ones among them.
+
+    Hits/1000 is per thousand player-hands of the person being measured,
+    not per thousand opportunities. A rare spot with a high frequency
+    still has a small Hits/1000; mixing the two up is how a 70% cbet
+    on 12 flops looks like a leak you see every orbit.
+    """
+    argv = situation_only(argv)
+    hands = con.execute(
+        "SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE {who_where(argv)})").fetchone()[0]
+    quick = flag_values(argv, "--quick")
+    chained = "--after" in argv or "--then" in argv
+    label = "aggressive"
+    if len(quick) == 1 and quick[0] in BY_KEY and not chained:
+        st = BY_KEY[quick[0]]
+        rest, _, _ = build(drop_flag(argv, "--quick"))
+        opps = con.execute(
+            f"SELECT COUNT(*) FROM decisions "
+            f"WHERE ({st.chance}) AND ({rest})").fetchone()[0]
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions "
+            f"WHERE ({st.chance}) AND ({st.action}) AND ({rest})"
+        ).fetchone()[0]
+        label = st.label
+    elif chained:
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+        parent, _, _ = build(drop_flag(drop_flag(argv, "--after"), "--then"))
+        opps = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
+        label = "this chain"
+    elif "--aggressive" in argv or "--allin" in argv:
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+        parent, _, _ = build(drop_flag(drop_flag(argv, "--aggressive"),
+                                       "--allin"))
+        opps = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
+        label = "aggressive" if "--aggressive" in argv else "all-in"
+    else:
+        opps = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE ({where}) AND agg = 1"
+        ).fetchone()[0]
+        label = "aggressive"
+    p, lo, hi = wilson(hits, opps) if opps else (0.0, 0.0, 0.0)
+    return {
+        "hits": hits, "opps": opps, "hands": hands,
+        "per_1k": (1000.0 * hits / hands) if hands else 0.0,
+        "pct": 100 * p, "band": 100 * (hi - lo) / 2,
+        "label": label,
+    }
+
+
+def action_profit_of(con, where):
+    """
+    Profit attributed to the filtered action, not the hand, in bb/hand.
+
+    v1 prices three clean cases and leaves the rest unpriced:
+
+      * fold is 0
+      * an uncontested bet -- nobody else acts after, they win without
+        a showdown -- is +pot_before (the pot they take; their bet is
+        returned, so it is not subtracted)
+      * a bet that is raised, and they fold, is −amount (the chips they
+        put in on THIS action)
+
+    MTT is out: chips are not dollars. Everything else -- called and
+    played on, multiway pots that go to showdown, uncalled bets where
+    rake ate the pot, a later street's money assigned back to this
+    bet -- is counted as unpriced rather than guessed. Fake precision
+    here is worse than a smaller n.
+    """
+    row = con.execute(
+        f"""
+        SELECT
+          COUNT(*) AS n,
+          SUM(CASE WHEN d.action = 'F' THEN 1
+                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
+                        AND s.wtsd = 0 AND IFNULL(s.won, 0) > 0
+                        AND NOT EXISTS (
+                          SELECT 1 FROM decisions x
+                          WHERE x.hand_id = d.hand_id AND x.n > d.n
+                            AND x.seat <> d.seat AND x.action <> 'F')
+                   THEN 1
+                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
+                        AND EXISTS (
+                          SELECT 1 FROM decisions x
+                          WHERE x.hand_id = d.hand_id AND x.n > d.n
+                            AND x.seat = d.seat AND x.action = 'F')
+                        AND EXISTS (
+                          SELECT 1 FROM decisions x
+                          WHERE x.hand_id = d.hand_id AND x.n > d.n
+                            AND x.seat <> d.seat AND x.agg = 1)
+                   THEN 1
+                   ELSE 0 END) AS priced,
+          SUM(CASE WHEN d.action = 'F' THEN 0
+                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
+                        AND s.wtsd = 0 AND IFNULL(s.won, 0) > 0
+                        AND NOT EXISTS (
+                          SELECT 1 FROM decisions x
+                          WHERE x.hand_id = d.hand_id AND x.n > d.n
+                            AND x.seat <> d.seat AND x.action <> 'F')
+                        AND d.bb
+                   THEN d.pot_before / d.bb
+                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
+                        AND EXISTS (
+                          SELECT 1 FROM decisions x
+                          WHERE x.hand_id = d.hand_id AND x.n > d.n
+                            AND x.seat = d.seat AND x.action = 'F')
+                        AND EXISTS (
+                          SELECT 1 FROM decisions x
+                          WHERE x.hand_id = d.hand_id AND x.n > d.n
+                            AND x.seat <> d.seat AND x.agg = 1)
+                        AND d.bb
+                   THEN -IFNULL(d.amount, 0) / d.bb
+                   ELSE NULL END) AS profit
+        FROM (SELECT * FROM decisions WHERE {where}) d
+        JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
+        """
+    ).fetchone()
+    n, priced, profit = row[0] or 0, row[1] or 0, row[2]
+    return {
+        "n": n, "priced": priced, "unpriced": n - priced,
+        "total_bb": profit if profit is not None else 0.0,
+        "bb_per_hand": ((profit or 0.0) / priced) if priced else None,
+        "note": ("fold = 0; uncontested bet = +pot; bet-then-fold = −bet; "
+                 "called-and-played-on is unpriced"),
+    }
+
+
+def chain_of(con, where, same_seat=False):
+    """
+    The first later action, by the other seat or by this player.
+
+    Faced Next is `same_seat=False`: what the table did after this
+    decision. Next Actions is `same_seat=True`: what this player did
+    the next time they acted. Each row is a `--after` / `--then` you
+    can open, which is how Hand2Note walks a tree without a second
+    filter language.
+    """
+    cmp = "=" if same_seat else "<>"
+    rows = con.execute(
+        f"""
+        SELECT CASE
+                 WHEN x.action = 'F' THEN 'fold'
+                 WHEN x.action = 'X' THEN 'check'
+                 WHEN x.action IN ('C','A') AND x.agg = 0 THEN 'call'
+                 WHEN x.agg = 1 AND x.to_call = 0 THEN 'bet'
+                 WHEN x.agg = 1 THEN 'raise'
+                 ELSE 'other' END AS verb,
+               COUNT(*)
+        FROM (SELECT * FROM decisions WHERE {where}) d
+        JOIN decisions x
+          ON x.hand_id = d.hand_id AND x.seat {cmp} d.seat
+         AND x.n = (SELECT MIN(y.n) FROM decisions y
+                    WHERE y.hand_id = d.hand_id AND y.n > d.n
+                      AND y.seat {cmp} d.seat)
+        GROUP BY 1
+        """
+    ).fetchall()
+    none = con.execute(
+        f"""
+        SELECT COUNT(*) FROM (SELECT * FROM decisions WHERE {where}) d
+        WHERE NOT EXISTS (
+          SELECT 1 FROM decisions y
+          WHERE y.hand_id = d.hand_id AND y.n > d.n
+            AND y.seat {cmp} d.seat)
+        """
+    ).fetchone()[0]
+    total = sum(n for _v, n in rows) + none
+    out = []
+    order = ("fold", "check", "call", "bet", "raise", "other")
+    by = {v: n for v, n in rows}
+    for verb in order:
+        n = by.get(verb, 0)
+        if not n or not total:
+            continue
+        p, lo, hi = wilson(n, total)
+        out.append({"key": verb, "label": verb, "n": total, "k": n,
+                    "pct": 100 * p, "band": 100 * (hi - lo) / 2})
+    if none and total:
+        p, lo, hi = wilson(none, total)
+        out.append({"key": "", "label": "nothing further",
+                    "n": total, "k": none,
+                    "pct": 100 * p, "band": 100 * (hi - lo) / 2})
+    return {"n": total, "rows": out,
+            "flag": "--then" if same_seat else "--after"}
+
+
 def counts_by(con, expr, where):
     """Decisions per bucket of a dimension -- the n of a situational report."""
     return dict(con.execute(
@@ -897,6 +1145,35 @@ RUNOUT = {
 RUNOUT_FLAG = {"--turn-card": "tn", "--river-card": "rv"}
 
 
+# The next action after this one, by the other seat (`--after`) or by
+# the same player (`--then`). Names rather than letters so the window
+# and the command line stay on the same words the action mix already
+# uses. `raise` includes the all-in that is a raise; `call` includes
+# the all-in that is a call -- `lines.letter` again, from the other
+# direction.
+AFTER = {
+    "fold": "action = 'F'",
+    "check": "action = 'X'",
+    "call": "action IN ('C','A') AND agg = 0",
+    "bet": "agg = 1 AND to_call = 0",
+    "raise": "agg = 1 AND to_call > 0",
+    "continue": "action <> 'F'",
+}
+
+
+def _next_sql(same_seat, pred):
+    """The first later decision on this hand, by this seat or another."""
+    cmp = "=" if same_seat else "<>"
+    return (
+        "EXISTS (SELECT 1 FROM decisions x "
+        "WHERE x.hand_id = decisions.hand_id AND x.n > decisions.n "
+        f"AND x.seat {cmp} decisions.seat AND ({pred}) "
+        "AND x.n = (SELECT MIN(y.n) FROM decisions y "
+        "WHERE y.hand_id = decisions.hand_id AND y.n > decisions.n "
+        f"AND y.seat {cmp} decisions.seat))"
+    )
+
+
 # A statistic and a hand filter are the same object seen twice. A `Stat` is
 # a chance and an action -- "the times a continuation bet was possible" and
 # "the times one was made" -- so the filter "hands where a continuation bet
@@ -1036,6 +1313,19 @@ def build(argv):
                         raise SystemExit(f"unknown quick filter {name!r}")
                     parts.append("(" + known[name]["sql"] + ")")
                     described.append(known[name]["label"])
+                continue
+            if a in ("--after", "--then"):
+                same = a == "--then"
+                words = []
+                for name in v.split(","):
+                    if name not in AFTER:
+                        raise SystemExit(
+                            f"unknown next action {name!r} -- one of: "
+                            f"{', '.join(AFTER)}")
+                    parts.append(_next_sql(same, AFTER[name]))
+                    words.append(name)
+                described.append(
+                    ("then " if same else "after ") + ", ".join(words))
                 continue
             if a in LINE_FLAGS:
                 # Normalised rather than taken as typed, because the columns
@@ -1542,7 +1832,20 @@ def _print_related(related):
     print()
 
 
-def show_stats(con, where, label, parts=(), related=None):
+def _print_chain(title, chain):
+    if not chain["rows"]:
+        return
+    print(f"  [{title}]")
+    for r in chain["rows"]:
+        thin = " ?" if r["n"] < 30 else "  "
+        how = (f"{chain['flag']} {r['key']}" if r["key"]
+               else "  (hand ended)")
+        print(f"  {r['label']:22} {r['pct']:6.1f}% "
+              f"{'+/-%.0f' % r['band']:>7}{thin} n={r['k']:<6d}  {how}")
+    print()
+
+
+def show_stats(con, where, label, parts=(), related=None, argv=None):
     """Every stat that has anything to say under this filter."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
@@ -1554,6 +1857,23 @@ def show_stats(con, where, label, parts=(), related=None):
             print()
             _print_related(related)
         return
+    if argv is not None:
+        summ = spot_summary(con, where, argv)
+        thin = " ?" if summ["opps"] < 30 else "  "
+        print(f"  hits {summ['hits']:,}  of  {summ['opps']:,} opportunities"
+              f"  ({summ['label']} {summ['pct']:.1f}%"
+              f" +/-{summ['band']:.0f}{thin})")
+        print(f"  {summ['per_1k']:.1f} hits / 1000 hands"
+              f"  (of {summ['hands']:,} player-hands)")
+        prof = action_profit_of(con, where)
+        if prof["priced"]:
+            print(f"  action profit  {prof['bb_per_hand']:+.2f} bb/hand"
+                  f"  n={prof['priced']:,} priced of {prof['n']:,}")
+            print(f"  {prof['note']}")
+        elif prof["n"]:
+            print(f"  action profit  unpriced on {prof['n']:,} "
+                  f"({prof['note']})")
+        print()
     # What they did HERE, before the named stats. A cbet frequency is "of
     # the times they could"; this is "of the decisions you already asked
     # about", which is the number a popup report leads with.
@@ -1569,6 +1889,8 @@ def show_stats(con, where, label, parts=(), related=None):
             print(f"  {r['label']:22} {r['pct']:6.1f}% "
                   f"{'+/-%.0f' % r['band']:>7}{thin} n={r['n']:<6d}")
         print()
+    _print_chain("faced next  (the other seat)", chain_of(con, where, False))
+    _print_chain("next actions  (this player)", chain_of(con, where, True))
     last = None
     for r in rows:
         if r["group"] != last:
@@ -2181,6 +2503,10 @@ def usage():
           f"one stat per combo with --show")
     print(f"    {'--related':14} neighbouring spots from this filter "
           f"(also printed under --stats)")
+    print(f"    {'--after':14} first later action by another seat: "
+          f"{', '.join(AFTER)}")
+    print(f"    {'--then':14} first later action by this player: "
+          f"{', '.join(AFTER)}")
     print("\n  saving the filter as a stat of its own:")
     print(f"    {'--define':14} a key to save this filter under, so it can "
           f"be a column")
@@ -2211,6 +2537,15 @@ SCAN_OK = {
     "--node with sizes":
         "the same, for `node_sz`. The per-street sized columns ARE indexed, "
         "because `--flop XBmC` has no wildcard in it at all",
+    "--after fold":
+        "Faced Next is an EXISTS over the next row of the same hand. "
+        "The seek is on (hand_id, n), which is the primary key, but the "
+        "outer query has no prefix of its own -- it is 'any decision "
+        "whose next opponent folded', and that is most of the table",
+    "--then bet":
+        "Next Actions is the same shape for the same seat: a correlated "
+        "look at n+1, not a column we can index without writing a second "
+        "copy of every decision",
 }
 
 
@@ -2269,6 +2604,8 @@ def check(db_path=DB):
               ("--pre with sizes", ["--pre", "*Rl*"])]
     cases += [("--quick " + f["key"], ["--quick", f["key"]])
               for f in quick_filters()]
+    cases += [("--after fold", ["--after", "fold"]),
+              ("--then bet", ["--then", "bet"])]
     cases += [(f"--preset {name}", list(flags))
               for name, flags in SMART_REPORTS.items()]
     cases.append(("--player", ["--player", con.execute(
@@ -2470,6 +2807,45 @@ def check(db_path=DB):
     empty_mix = actions_of(con, "1=0")
     if empty_mix["mix"] or empty_mix["n"]:
         fails.append("action mix on an empty filter was not empty")
+
+    # Hits / opportunities must be a rate: hits <= opps, and Hits/1000
+    # uses player-hands not opportunities. Action profit on an empty
+    # filter is empty; on everything, priced + unpriced = n, and a fold
+    # is 0 so the priced count is at least the number of folds.
+    summ = spot_summary(con, "1=1", [])
+    if summ["hits"] > summ["opps"]:
+        fails.append(f"hits {summ['hits']} exceed opportunities {summ['opps']}")
+    if summ["hands"] and summ["per_1k"] > 1000:
+        fails.append("hits/1000 is over 1000 -- the denominator is not hands")
+    q_where, _, _ = build(["--quick", "cbet_flop"])
+    qsum = spot_summary(con, q_where, ["--quick", "cbet_flop"])
+    if qsum["label"] != "cbet flop":
+        fails.append(f"--quick cbet_flop labelled {qsum['label']!r}")
+    if qsum["hits"] > qsum["opps"]:
+        fails.append("quick-filter hits exceed its chance")
+    prof = action_profit_of(con, "1=0")
+    if prof["priced"] or prof["n"]:
+        fails.append("action profit on an empty filter was not empty")
+    prof = action_profit_of(con, "1=1")
+    if prof["priced"] + prof["unpriced"] != prof["n"]:
+        fails.append("action profit priced+unpriced != n")
+    folds = con.execute(
+        "SELECT COUNT(*) FROM decisions WHERE action='F'").fetchone()[0]
+    if prof["n"] and prof["priced"] < folds:
+        fails.append("action profit did not price every fold as 0")
+    faced = chain_of(con, "1=1", False)
+    nxt = chain_of(con, "1=1", True)
+    if faced["n"] and not faced["rows"]:
+        fails.append("faced next on the whole table was empty")
+    # Opening a Faced Next row must be a filter that builds and narrows.
+    after_w, _, _ = build(["--after", "fold"])
+    after_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {after_w}").fetchone()[0]
+    total = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    if after_n == 0 or after_n == total:
+        fails.append("--after fold did not narrow")
+    print(f"hits/opps and action profit     "
+          f"{'yes' if not [f for f in fails if 'hits' in f or 'profit' in f or 'after fold' in f or 'faced next' in f] else 'NO'}")
 
     rel_fails = []
     for name, flags in SMART_REPORTS.items():
@@ -2716,7 +3092,7 @@ def main(argv):
     elif dim:
         show_report(con, where, label, dim, columns, min_n)
     else:
-        show_stats(con, where, label, _parts, related=neighbours)
+        show_stats(con, where, label, _parts, related=neighbours, argv=argv)
     con.close()
     return 0
 

@@ -74,6 +74,38 @@ that report. `app.py --check` asserts applying a spot rebuilds its
 flags and that opening a report drops the previous street.
 `gui.py --check` opens a preset the same way the command line does.
 
+### Added — Hits / opportunities / Hits per 1000
+
+Hand2Note prints these on every filtered report. If the filter already
+names an action (`--quick cbet_flop`), hits are the matching rows and
+opportunities are the chance with the action taken off. If it is only
+a situation, opportunities are the matching rows and hits are the
+aggressive ones among them. Hits/1000 is per thousand player-hands of
+the person being measured -- mixing that with the frequency is how a
+70% cbet on 12 flops looks like a leak you see every orbit.
+
+### Added — Action profit (v1)
+
+Profit attributed to the filtered action, not the hand, as bb/hand.
+
+  * fold = 0
+  * uncontested bet (nobody else acts after, they win without showdown)
+    = +pot_before (their bet is returned, so it is not subtracted)
+  * bet that is raised, and they fold = −amount on THIS action
+
+MTT is out. Called-and-played-on, later streets assigned back to this
+bet, rake on an uncontested pot, and multiway showdowns are **unpriced**
+and counted, not guessed. The note is printed next to the figure.
+
+### Added — Faced Next / Next Actions, and click-to-filter
+
+`--after fold` is the first later action by another seat; `--then bet`
+is the first later action by this player. `--stats` prints both
+breakdowns as filters you can open. The window double-clicks a stat
+row into `--quick` and a Faced Next row into `--after`; the page does
+the same with a click. That is Hand2Note's drill-down without a second
+filter language.
+
 ### Not this, on purpose
 
 No HUD. No solver. No second filter language -- every new report is
