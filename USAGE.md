@@ -200,6 +200,37 @@ really is 0.1% of the range.
 
 ---
 
+### Reports study-flow (the window and the page)
+
+`python app.py` opens on the **study** tab. That is Hand2Note's
+Reports cockpit: who you are measuring, the filter as chips, a
+Smart strip, four panes, and a compact hand list. The command line
+is not required.
+
+Default panes: Results, Stack Sizes, Positions, Next Action. Click
+a row to AND it onto the filter (`parent ∧ row`). The breadcrumb
+is the path; three deep, then the last crumb is replaced. Detach
+is not built.
+
+The demo that has to work without typing flags:
+
+Unfiltered → Stack **80-120** → Next Action **Call vs OR** → **Axs**
+→ compact list → double-click a row to replay → right-click another
+stack row and **Pin this**.
+
+`--action` is this decision (fold / check / call / bet / raise).
+`--then` is still the next street. Call vs OR is `--street preflop
+--facing open --action call`, offered as a composed row when the
+filter has not already named a street. `--combo Axs` expands to
+every suited ace; `22+`, `pairs`, `broadways` are the same idea.
+`--result won` is the whole-hand result via `spots` (cash only).
+
+The page (`python gui.py`) has the same study view as its default
+tab. Pin, Mark, and Add to Note hit the same backends.
+
+Not in this cockpit: Sessions, a Statistics grid, graphs (use the
+graph tab), Detach, a Reg-Fish stats-exclusion toggle.
+
 ### Smart Reports, and walking to a neighbouring spot
 
 The report box is a Hand2Note-style tree of **named situations** -- steal

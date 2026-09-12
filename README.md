@@ -63,6 +63,8 @@ players.py      who each player is: reg, fish, unknown  --check
         v
 stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
+app.py          desktop Reports study cockpit        --check
+gui.py          the same cockpit as a local page     --check
 expr.py         Value/Cases/Opps over plain stats    --check
 aliases.py      named (username, room) groups        --check
 notes.py        player notes, marks, tags            --check

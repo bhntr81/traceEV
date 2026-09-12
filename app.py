@@ -32,6 +32,7 @@ or whatever it can find on this computer. Nothing there asks which site the
 hands are from; every file is identified by reading it.
 """
 
+import json
 import os
 import queue
 import subprocess
@@ -567,9 +568,19 @@ class App(ImportMixin, ttk.Frame):
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
                       "players", "live", "stack", "tag",
-                      "alias", "vs_alias", "villain_type")}
+                      "alias", "vs_alias", "villain_type",
+                      "combo", "action", "result")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
+        # Study cockpit: each crumb is a row click (parent ∧ row).
+        # Kept off the widgets so popping the breadcrumb does not have
+        # to reverse-engineer which box a composed row wrote into.
+        self.crumbs = []
+        self.extra_panes = []
+        self.pane_hidden = {}
+        self.pane_sort = {}
+        self._pin_alias = {}
+        self._study_out = None
 
         self.results = queue.Queue()
         self.pending = 0
@@ -719,6 +730,7 @@ class App(ImportMixin, ttk.Frame):
         self.cohort_btn.configure(text="Players")
         self.preset.set("")
         self.pin.set("")
+        self.crumbs = []
         self.refresh()
 
     # Who is being measured, as opposed to the situation they are in. A
@@ -743,6 +755,7 @@ class App(ImportMixin, ttk.Frame):
                 var.set("")
         if not keep_preset:
             self.preset.set("")
+        self.crumbs = []
 
     def _on_preset(self):
         """Opening a named report replaces the situation, the way H2N does."""
@@ -807,7 +820,9 @@ class App(ImportMixin, ttk.Frame):
                             "--stack": "stack", "--tag": "tag",
                             "--alias": "alias", "--vs-alias": "vs_alias",
                             "--villain-type": "villain_type",
-                            "--vs-class": "villain_type"}.get(a)
+                            "--vs-class": "villain_type",
+                            "--combo": "combo", "--action": "action",
+                            "--result": "result"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -832,8 +847,10 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box.configure(values=[""] + known)
         self.preset.set(keep if keep in known else "")
         pinned = self.pin.get()
-        self.pin_box.configure(values=[""] + known)
-        self.pin.set(pinned if pinned in known else "")
+        extras = [k for k in self._pin_alias if k not in known]
+        self.pin_box.configure(values=[""] + known + extras)
+        self.pin.set(pinned if pinned in known or pinned in self._pin_alias
+                     else "")
 
 
     def _views(self, right):
@@ -869,11 +886,12 @@ class App(ImportMixin, ttk.Frame):
         self.related_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("stats", "range", "chart", "report", "results", "graph",
-                     "hands"):
+        for name in ("study", "stats", "range", "chart", "report", "results",
+                     "graph", "hands"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
+        self._build_study(self.tabs["study"])
         self.tree = {}
         for name in ("stats", "range", "report", "results", "hands"):
             self.tree[name] = self._table(self.tabs[name])
@@ -891,6 +909,7 @@ class App(ImportMixin, ttk.Frame):
         self.chart = None
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        self.tree["hands"].bind("<Button-3>", self._hand_menu)
         wrap = self.tree["hands"].master
         study = ttk.Frame(self.tabs["hands"])
         study.pack(fill="x", padx=8, pady=(6, 0), before=wrap)
@@ -913,6 +932,88 @@ class App(ImportMixin, ttk.Frame):
         # without going back through the dialog.
         self.tree["stats"].bind("<Double-1>", self._drill_stat)
         self.tree["report"].bind("<Double-1>", self._drill_stat)
+
+    def _pin_name(self):
+        """The pin box value, or the JSON argv a pane row stored under it."""
+        raw = self.pin.get().strip()
+        return self._pin_alias.get(raw, raw)
+
+    def _build_study(self, parent):
+        """
+        Hand2Note's Reports cockpit: subject is the bar above; this is
+        chips, breadcrumb, Smart strip, clickable panes, compact hands.
+        """
+        self.crumb_bar = ttk.Frame(parent)
+        self.crumb_bar.pack(fill="x", padx=8, pady=(8, 2))
+        self.chip_bar = ttk.Frame(parent)
+        self.chip_bar.pack(fill="x", padx=8, pady=(0, 2))
+        self.smart = ttk.Frame(parent)
+        self.smart.pack(fill="x", padx=8, pady=(4, 4))
+        tools = ttk.Frame(parent)
+        tools.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(tools, text="+ pane", style="Dim.TLabel").pack(side="left")
+        self.plus_box = ttk.Combobox(
+            tools, values=[query.STUDY_PANE_LABELS[k]
+                           for k in query.PLUS_STUDY_PANES],
+            state="readonly", width=14)
+        self.plus_box.pack(side="left", padx=(6, 0))
+        self.plus_box.bind("<<ComboboxSelected>>", lambda _e: self._add_pane())
+        ttk.Label(tools, text="click a row to drill  ·  right-click a hand",
+                  style="Dim.TLabel").pack(side="left", padx=12)
+
+        grid = ttk.Frame(parent)
+        grid.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        for i in (0, 1):
+            grid.columnconfigure(i, weight=1)
+            grid.rowconfigure(i, weight=1)
+        self.study_grid = grid
+        self.study_trees = {}
+        self.study_meta = {}
+        self.study_heads = {}
+        for i, name in enumerate(query.DEFAULT_STUDY_PANES):
+            r, c = divmod(i, 2)
+            self._make_pane(grid, name, r, c)
+        self.plus_frames = {}
+
+        hands = ttk.LabelFrame(parent, text="Hands")
+        hands.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.study_hands = self._table(hands)
+        self.study_hands.bind("<Double-1>", self._open_hand)
+        self.study_hands.bind("<Return>", self._open_hand)
+        self.study_hands.bind("<Button-3>", self._hand_menu)
+
+    def _make_pane(self, grid, name, row, col):
+        box = ttk.LabelFrame(grid, text=query.STUDY_PANE_LABELS.get(name, name))
+        box.grid(row=row, column=col, sticky="nsew", padx=3, pady=3)
+        bar = ttk.Frame(box)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="⚙", width=3,
+                   command=lambda n=name: self._pane_gear(n)).pack(
+                       side="right")
+        tv = self._table(box)
+        tv.bind("<Button-1>", lambda e, n=name: self._drill_pane(n, e))
+        tv.bind("<Button-3>", lambda e, n=name: self._pane_pin_menu(n, e))
+        self.study_trees[name] = tv
+        self.study_meta[name] = box
+        return box
+
+    def _add_pane(self):
+        label = self.plus_box.get()
+        key = None
+        for k, lab in query.STUDY_PANE_LABELS.items():
+            if lab == label:
+                key = k
+                break
+        if not key or key in self.study_trees:
+            return
+        self.extra_panes.append(key)
+        n = len(self.study_trees)
+        # Default four occupy 2x2; extras start a new row under that.
+        r, c = divmod(n, 2)
+        self.study_grid.rowconfigure(r, weight=1)
+        self._make_pane(self.study_grid, key, r, c)
+        self.plus_box.set("")
+        self.refresh()
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -981,7 +1082,10 @@ class App(ImportMixin, ttk.Frame):
                            ("stack", "--stack"), ("tag", "--tag"),
                            ("alias", "--alias"),
                            ("vs_alias", "--vs-alias"),
-                           ("villain_type", "--villain-type")):
+                           ("villain_type", "--villain-type"),
+                           ("combo", "--combo"),
+                           ("action", "--action"),
+                           ("result", "--result")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -992,6 +1096,8 @@ class App(ImportMixin, ttk.Frame):
                     argv.append("--hero")
                 continue
             argv += [flag, v]
+        if self.crumbs:
+            argv = query.drill_stack(argv, self.crumbs)
         return argv
 
 
@@ -1030,7 +1136,7 @@ class App(ImportMixin, ttk.Frame):
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
                                self.by.get(), cohort_spec, self.chart_stat(),
-                               query_argv, self.pin.get())
+                               query_argv, self._pin_name())
                          ).start()
 
     def _paint_related(self, related):
@@ -1125,6 +1231,11 @@ class App(ImportMixin, ttk.Frame):
                 else:
                     got = query.report_of(con, where, dim, cols, argv)
                     out.update(got)
+            elif view == "study":
+                panes = list(query.DEFAULT_STUDY_PANES) + list(
+                    getattr(self, "extra_panes", []) or [])
+                out.update(query.study_of(con, where, argv, panes=panes,
+                                          pin=pin))
             elif view == "results":
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
@@ -1155,6 +1266,7 @@ class App(ImportMixin, ttk.Frame):
                     or out.get("keys") or out.get("series")
                     or out.get("cells")
                     or out.get("compare")
+                    or out.get("hands") or out.get("panes")
                     or (out.get("sizes") or {}).get("rows"))
 
     def _series(self, con, where):
@@ -1206,6 +1318,9 @@ class App(ImportMixin, ttk.Frame):
             self.chart = out if out.get("cells") else None
             self._draw_chart(out.get("why") or out.get("error"))
             return
+        if view == "study":
+            self._render_study(out)
+            return
         tv = self.tree[view]
         tv.delete(*tv.get_children())
         if out.get("error") or (out.get("why") and view != "report"):
@@ -1240,6 +1355,251 @@ class App(ImportMixin, ttk.Frame):
                       anchor=side, stretch=False)
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
+
+    def _render_study(self, out):
+        """Chips, breadcrumb, Smart strip, panes, compact hands."""
+        self._study_out = out
+        if out.get("error"):
+            self._paint_crumbs()
+            self._paint_chips()
+            self._paint_smart({"error": out["error"]})
+            return
+        self._paint_crumbs()
+        self._paint_chips()
+        self._paint_smart(out)
+        for name, tv in self.study_trees.items():
+            pane = (out.get("panes") or {}).get(name)
+            if name == "combo" and not pane:
+                pane = out.get("families")
+            self._fill_pane(name, tv, pane, out)
+        self._render_hands(self.study_hands, {"rows": out.get("hands") or []})
+        self._paint_related(out.get("related") or [])
+
+    def _paint_crumbs(self):
+        for kid in self.crumb_bar.winfo_children():
+            kid.destroy()
+        ttk.Label(self.crumb_bar, text="path",
+                  style="Dim.TLabel").pack(side="left", padx=(0, 6))
+        self._crumb_link("All", -1)
+        for i, step in enumerate(self.crumbs):
+            ttk.Label(self.crumb_bar, text="›",
+                      style="Dim.TLabel").pack(side="left", padx=4)
+            self._crumb_link(step.get("label") or step.get("value") or "?", i)
+
+    def _crumb_link(self, text, index):
+        lab = tk.Label(self.crumb_bar, text=text, bg=BG, fg=ACCENT,
+                       cursor="hand2", font=(UI, 9))
+        lab.pack(side="left")
+        lab.bind("<Button-1>", lambda _e, i=index: self._pop_crumb(i))
+        lab.bind("<Enter>", lambda _e, w=lab: w.configure(fg=INK))
+        lab.bind("<Leave>", lambda _e, w=lab: w.configure(fg=ACCENT))
+
+    def _pop_crumb(self, index):
+        # -1 is All: drop the drill path, keep who and the dialog.
+        self.crumbs = [] if index < 0 else self.crumbs[:index + 1]
+        self.refresh()
+
+    def _paint_chips(self):
+        for kid in self.chip_bar.winfo_children():
+            kid.destroy()
+        ttk.Label(self.chip_bar, text="filter",
+                  style="Dim.TLabel").pack(side="left", padx=(0, 6))
+        if not self.crumbs and not self.preset.get():
+            ttk.Label(self.chip_bar, text="unfiltered",
+                      style="Dim.TLabel").pack(side="left")
+        if self.preset.get():
+            self._chip_label("report " + self.preset.get(), None)
+        for i, step in enumerate(self.crumbs):
+            self._chip_label(step.get("label") or step.get("how") or "?", i)
+
+    def _chip_label(self, text, index):
+        lab = tk.Label(self.chip_bar, text=text + " ×", bg=PANEL, fg=INK,
+                       cursor="hand2", font=(UI, 9), padx=7, pady=1)
+        lab.pack(side="left", padx=3)
+        lab.bind("<Button-1>", lambda _e, i=index: self._dismiss_chip(i))
+
+    def _dismiss_chip(self, index):
+        if index is None:
+            self.preset.set("")
+            self.crumbs = []
+        else:
+            self.crumbs = [c for i, c in enumerate(self.crumbs) if i != index]
+        self.refresh()
+
+    def _paint_smart(self, out):
+        for kid in self.smart.winfo_children():
+            kid.destroy()
+        if out.get("error"):
+            ttk.Label(self.smart, text=out["error"],
+                      style="Dim.TLabel").pack(side="left")
+            return
+        summ = out.get("summary") or {}
+        prof = out.get("profit") or {}
+        bits = []
+        if summ.get("opps"):
+            bits.append(f"{summ['hits']:,}/{summ['opps']:,}  {summ['pct']:.1f}%")
+            bits.append(f"{summ['per_1k']:.1f}/1k")
+        if prof.get("bb_per_hand") is not None:
+            bits.append(f"AP {prof['bb_per_hand']:+.2f} bb")
+        ttk.Label(self.smart, text="  ·  ".join(bits) or "Smart",
+                  style="Dim.TLabel").pack(side="left")
+        cmp = out.get("compare")
+        if cmp:
+            a, b = cmp.get("a") or {}, cmp.get("b") or {}
+            ttk.Label(self.smart,
+                      text=f"   pin {(b.get('name') or 'pinned')[:22]}",
+                      style="Dim.TLabel").pack(side="left", padx=(10, 0))
+        fams = (out.get("families") or {}).get("rows") or []
+        if fams:
+            ttk.Label(self.smart, text="  combos",
+                      style="Dim.TLabel").pack(side="left", padx=(14, 4))
+        for r in fams[:8]:
+            lab = tk.Label(self.smart, text=r["label"], bg=BG, fg=ACCENT,
+                           cursor="hand2", font=(UI, 9), padx=5)
+            lab.pack(side="left")
+            lab.bind("<Button-1>",
+                     lambda _e, row=r: self._apply_step(_step_from_row(row)))
+            lab.bind("<Enter>", lambda _e, w=lab: w.configure(fg=INK))
+            lab.bind("<Leave>", lambda _e, w=lab: w.configure(fg=ACCENT))
+
+    def _fill_pane(self, name, tv, pane, out):
+        tv.delete(*tv.get_children())
+        if not pane or not pane.get("rows"):
+            self._cols(tv, ("msg",), (360,), {"msg": "w"})
+            tv.insert("", "end", values=("nothing in this pane",),
+                      tags=("note",))
+            return
+        hidden = set(self.pane_hidden.get(name, set()))
+        if name == "position" and name not in self.pane_hidden:
+            pack = set(pane.get("cols") or [])
+            hidden |= {c for c in ("vpip", "pfr") if c not in pack}
+        cols, widths, anchors, render = _pane_columns(name, pane, hidden)
+        self._cols(tv, cols, widths, anchors)
+        for c in cols:
+            tv.heading(c, text=c, anchor=anchors.get(c, "e"),
+                       command=lambda col=c, n=name: self._sort_pane(n, col))
+        rows = list(pane["rows"])
+        sort = self.pane_sort.get(name)
+        if sort:
+            col, rev = sort
+            rows.sort(key=lambda r: _pane_sort_key(r, col), reverse=rev)
+        tv._study_rows = {}
+        for r in rows:
+            vals = [render[c](r) for c in cols]
+            iid = tv.insert("", "end",
+                            tags=("thin",) if r.get("n", 0) < 30 else (),
+                            values=vals)
+            tv._study_rows[iid] = r
+        if name == "position" and hidden & {"vpip", "pfr"}:
+            tv.insert("", "end",
+                      values=["VPIP/PFR off on postflop packs — ⚙ to show"]
+                      + [""] * (len(cols) - 1),
+                      tags=("note",))
+
+    def _sort_pane(self, name, col):
+        cur = self.pane_sort.get(name)
+        rev = bool(cur and cur[0] == col and not cur[1])
+        self.pane_sort[name] = (col, rev)
+        if self._study_out:
+            self._render_study(self._study_out)
+
+    def _pane_gear(self, name):
+        pane = ((self._study_out or {}).get("panes") or {}).get(name) or {}
+        available = _pane_available(name, pane)
+        if not available:
+            return
+        hidden = set(self.pane_hidden.get(name, set()))
+        menu = tk.Menu(self, tearoff=0, background=PANEL, foreground=INK,
+                       activebackground=EDGE)
+        for col in available:
+            on = col not in hidden
+
+            def toggle(c=col, n=name, currently=on):
+                gone = set(self.pane_hidden.get(n, set()))
+                if currently:
+                    gone.add(c)
+                else:
+                    gone.discard(c)
+                self.pane_hidden[n] = gone
+                if self._study_out:
+                    self._render_study(self._study_out)
+
+            menu.add_checkbutton(label=col, command=toggle)
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _drill_pane(self, name, event):
+        tv = self.study_trees.get(name)
+        if not tv:
+            return
+        iid = tv.identify_row(event.y)
+        if not iid:
+            return
+        row = getattr(tv, "_study_rows", {}).get(iid)
+        if not row:
+            return
+        self._apply_step(_step_from_row(row))
+
+    def _apply_step(self, step):
+        if not step:
+            return
+        if len(self.crumbs) >= query.DRILL_MAX:
+            # Replace the last rather than grow past three -- a fourth
+            # AND is almost always empty and looks like a broken pane.
+            self.crumbs = self.crumbs[:-1] + [step]
+        else:
+            self.crumbs.append(step)
+        self.refresh()
+
+    def _pane_pin_menu(self, name, event):
+        tv = self.study_trees.get(name)
+        if not tv:
+            return
+        iid = tv.identify_row(event.y)
+        row = getattr(tv, "_study_rows", {}).get(iid) if iid else None
+        if not row:
+            return
+        step = _step_from_row(row)
+        menu = tk.Menu(self, tearoff=0, background=PANEL, foreground=INK,
+                       activebackground=EDGE)
+        menu.add_command(label="Drill", command=lambda: self._apply_step(step))
+        menu.add_command(label="Pin this", command=lambda: self._pin_step(step))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _pin_step(self, step):
+        """Pin the other row of this pane, same parent filter."""
+        b = query.without_who(query.drill_child(self.argv(), step))
+        label = step.get("label") or step.get("value") or "pinned"
+        key = f"pin {label}"
+        self._pin_alias[key] = json.dumps(b)
+        known = list(query.reports())
+        extras = [k for k in self._pin_alias if k not in known]
+        self.pin_box.configure(values=[""] + known + extras)
+        self.pin.set(key)
+        self.refresh()
+
+    def _hand_menu(self, event):
+        tv = event.widget
+        iid = tv.identify_row(event.y)
+        if iid:
+            tv.selection_set(iid)
+            tv.focus(iid)
+        menu = tk.Menu(self, tearoff=0, background=PANEL, foreground=INK,
+                       activebackground=EDGE)
+        menu.add_command(label="Replay", command=lambda: self._open_hand(event))
+        menu.add_command(label="Mark", command=lambda: self._mark_selected(True))
+        menu.add_command(label="Unmark",
+                         command=lambda: self._mark_selected(False))
+        menu.add_command(label="Add to Note", command=self._note_selected)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _drill_stat(self, _event):
         """Open the clicked stat or next-action as a filter on this spot."""
@@ -1702,6 +2062,7 @@ class App(ImportMixin, ttk.Frame):
                    {"*": "w", "when": "w", "site": "w", "pos": "w", "hand": "w",
                     "compact": "w"})
         self._hand_ids = {}
+        tv._hand_ids = {}
         for r in out["rows"]:
             net, act, call = r.get("net"), r.get("act"), r.get("call")
             star = "*" if r.get("marked") else ""
@@ -1721,6 +2082,7 @@ class App(ImportMixin, ttk.Frame):
                 tags=("pos",) if (act or 0) > 0 else
                      ("neg",) if (act or 0) < 0 else ())
             self._hand_ids[iid] = (r["id"], r["seat"])
+            tv._hand_ids[iid] = (r["id"], r["seat"])
         if out["rows"]:
             tv.insert("", "end", values=(
                 "", "", "", "", "", "", "", "", "", ""))
@@ -1733,15 +2095,21 @@ class App(ImportMixin, ttk.Frame):
                               "Double-click to replay.",
                               "", "", "", "", "", "", "", ""))
 
-    def _selected_hand(self):
-        tv = self.tree["hands"]
-        sel = tv.selection()
-        if not sel or sel[0] not in getattr(self, "_hand_ids", {}):
-            return None
-        return self._hand_ids[sel[0]]
+    def _selected_hand(self, tv=None):
+        trees = [tv, getattr(self, "study_hands", None),
+                 (self.tree or {}).get("hands")]
+        for t in trees:
+            if t is None:
+                continue
+            ids = getattr(t, "_hand_ids", None) or getattr(self, "_hand_ids", {})
+            sel = t.selection()
+            if sel and sel[0] in ids:
+                return ids[sel[0]]
+        return None
 
-    def _open_hand(self, _event):
-        got = self._selected_hand()
+    def _open_hand(self, event=None):
+        tv = event.widget if event is not None else None
+        got = self._selected_hand(tv)
         if not got:
             return
         hid, seat = got
@@ -1955,6 +2323,99 @@ class App(ImportMixin, ttk.Frame):
         if cohort_spec is not None:
             label += ", cohort: " + players.describe_cohort(cohort_spec)
         return "all hands" if label == "everything" else label
+
+
+def _step_from_row(row):
+    """A pane row as the crumb `drill_child` understands."""
+    if row.get("composed") or (row.get("argv") and not row.get("flag")):
+        return {"label": row.get("label") or row.get("key"),
+                "argv": list(row.get("argv") or []),
+                "how": row.get("how")}
+    if not row.get("flag"):
+        return None
+    return {"label": row.get("label") or str(row.get("value") or row.get("key")),
+            "flag": row["flag"], "value": str(row.get("value") or row["key"]),
+            "how": row.get("how")}
+
+
+def _fmt_ap(row):
+    ap = row.get("profit") or {}
+    if ap.get("bb_per_hand") is None:
+        return "–"
+    return f"{ap['bb_per_hand']:+.2f}"
+
+
+def _pane_available(name, pane):
+    base = {
+        "results": ["label", "hands", "net", "bb/100"],
+        "stack": ["label", "n", "freq", "act bb"],
+        "position": ["label", "n", "freq"] + list(pane.get("cols") or []),
+        "next": ["label", "freq", "hits/opps", "act bb"],
+        "size": ["label", "freq", "hits/opps", "act bb"],
+        "made": ["label", "n", "freq"],
+        "board": ["label", "n", "freq"],
+        "combo": ["label", "n", "freq"],
+    }.get(name, ["label", "n", "freq"])
+    # Gear can put VPIP/PFR back on a postflop pack; they stay off
+    # until asked because columns_for already dropped them.
+    if name == "position":
+        for extra in ("vpip", "pfr"):
+            if extra not in base:
+                base.append(extra)
+    return base
+
+
+def _pane_columns(name, pane, hidden):
+    """Visible columns, widths, anchors, and a renderer per column."""
+    hidden = set(hidden or [])
+    available = _pane_available(name, pane)
+    cols = [c for c in available if c not in hidden]
+    if "label" not in cols:
+        cols = ["label"] + cols
+    widths = {"label": 140, "n": 70, "freq": 70, "act bb": 70,
+              "hits/opps": 110, "hands": 70, "net": 80, "bb/100": 80}
+    anchors = {"label": "w"}
+    def n_of(r):
+        return r.get("hands") if name == "results" else r.get("n") or r.get("k") or 0
+    render = {
+        "label": lambda r: r.get("label") or r.get("key") or "",
+        "n": lambda r: f"{n_of(r):,}",
+        "freq": lambda r: f"{r.get('pct', 0):.1f}%",
+        "act bb": _fmt_ap,
+        "hits/opps": lambda r: f"{r.get('hits', r.get('k', 0)):,} / {r.get('opps', r.get('n', 0)):,}",
+        "hands": lambda r: f"{r.get('hands', r.get('n', 0)):,}",
+        "net": lambda r: f"{r.get('net_bb', 0):+.1f}",
+        "bb/100": lambda r: f"{r.get('bb100', 0):+.1f}",
+    }
+    for c in pane.get("cols") or []:
+        if c not in render:
+            render[c] = (lambda key: lambda r: _cell_pct(r, key))(c)
+            widths.setdefault(c, 80)
+    w = [widths.get(c, 80) for c in cols]
+    return cols, w, anchors, render
+
+
+def _cell_pct(row, key):
+    cell = (row.get("cells") or {}).get(key)
+    if not cell:
+        return "–"
+    return f"{cell['pct']:.1f}%"
+
+
+def _pane_sort_key(row, col):
+    if col in ("n", "hands"):
+        return row.get("hands") or row.get("n") or 0
+    if col == "freq":
+        return row.get("pct") or 0
+    if col == "act bb":
+        return ((row.get("profit") or {}).get("bb_per_hand")) or 0
+    if col == "net":
+        return row.get("net_bb") or 0
+    if col == "bb/100":
+        return row.get("bb100") or 0
+    if col == "hits/opps":
+        return row.get("hits") or row.get("k") or 0
+    return str(row.get("label") or row.get("key") or "")
 
 
 def _cohort_range_blob(con, where):
@@ -2707,6 +3168,14 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "situation")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in SITUATIONS])
+        self._heading(page, "this action")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("action", v)))
+            for v in ("fold", "check", "call", "bet", "raise")])
+        self._heading(page, "whole-hand result")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("result", v)))
+            for v in ("won", "lost", "showdown", "no-showdown")])
         self._heading(page, "faced next  (the other seat then)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._val_item("after", v)))
@@ -2766,6 +3235,13 @@ class FilterDialog(tk.Toplevel):
         narrows hard, and the note says so before an empty table does.
         """
         page = self._page(nb, "Cards")
+        self._heading(page, "preflop combo  (AKs, or a family: Axs, 22+)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(0, 6))
+        ttk.Entry(row, textvariable=self.app.vals["combo"], width=26).pack(
+            side="left")
+        ttk.Label(row, text="Axs  Kxo  22+  pairs  broadways",
+                  style="Dim.TLabel").pack(side="left", padx=14)
         self._heading(page, "what the hand became")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("made", v))) for v in MADE])
@@ -3149,7 +3625,7 @@ def check(db_path=DB):
     # that matches nothing -- which is one click away at all times.
     con = sqlite3.connect(db_path)
     broke = []
-    views = ("stats", "range", "chart", "report", "results", "hands",
+    views = ("study", "stats", "range", "chart", "report", "results", "hands",
              "graph")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
@@ -3305,6 +3781,36 @@ def check(db_path=DB):
           f"{'yes' if same and not leftover else 'NO'}")
     if leftover or not same:
         fails.append("opening a Smart Report left the previous situation on")
+
+    app.clear_situation()
+    app.crumbs = []
+    app._apply_argv(["--stack", "80-120", "--action", "call",
+                     "--combo", "Axs", "--result", "won"])
+    a, _, _ = query.build(app.argv())
+    b, _, _ = query.build(["--stack", "80-120", "--action", "call",
+                           "--combo", "Axs", "--result", "won"])
+    print(f"study flags round-trip        "
+          f"{'yes' if a == b else 'NO -- ' + a}")
+    if a != b:
+        fails.append("study flags did not survive apply_argv")
+    app.clear_situation()
+    app.crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
+    child = query.drill_child([], {"flag": "--stack", "value": "80-120"})
+    same = query._canonical(app.argv()) == query._canonical(child)
+    print(f"a crumb is parent ∧ row       "
+          f"{'yes' if same else 'NO -- ' + repr(app.argv())}")
+    if not same:
+        fails.append("study crumb did not AND onto the parent filter")
+    if "study" not in app.tabs:
+        fails.append("the window has no study cockpit tab")
+    print(f"study cockpit tab             "
+          f"{'yes' if 'study' in app.tabs else 'NO'}")
+    if not getattr(app, "study_trees", None) or \
+            set(query.DEFAULT_STUDY_PANES) - set(app.study_trees):
+        fails.append("study default panes are missing")
+    print(f"default study panes           "
+          f"{len(getattr(app, 'study_trees', {}))}/"
+          f"{len(query.DEFAULT_STUDY_PANES)}")
 
     app.clear_situation()
     app._apply_argv(["--first-in", "--first-raise", "--last-action",

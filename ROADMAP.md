@@ -946,3 +946,18 @@ corpus.
 `--by size`; richer `--pin` (`--by`, Bet Sizes, or two packs).
 Remaining: Dispersion / EV diff, Action Profit later-pot-on-called-bet,
 live `check.py` on a real `hands.db`. Window `--check` needs Tk.
+
+## Run — GUI Reports study-flow
+
+**Goal:** H2N's Reports cockpit loop in the window and the page,
+stacked on the Bet Sizes / pin branch. Player → filter → Smart
+strip → default panes → click row = nested report → compact hands
+→ replayer / mark / note. No HUD, no solver, `--check` without
+inventing EV.
+
+**Result:** `query.study_of` / `drill_child` is the payload both
+front ends draw. Default panes Results / Stack Sizes / Positions /
+Next Action; breadcrumb capped at 3; `--action`, `--result`, combo
+families. Documented gaps: Sessions, Statistics grid, graphs in
+the cockpit, Detach, Reg-Fish stats exclusion, live `hands.db`,
+window `--check` (needs Tk).

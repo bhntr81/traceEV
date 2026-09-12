@@ -8,6 +8,55 @@ Newest first.
 
 ---
 
+## GUI Reports study-flow
+
+The H2N Reports cockpit, without a second UI and without a solver.
+CLI was ahead; the window and the page now run the same loop.
+
+### Added — study tab as the Reports cockpit
+
+Subject stays the Players / Filter / report / pin bar. Under it:
+filter chips, a breadcrumb, a Smart strip (hits/opps, freq, Action
+Profit v1), four default panes, and a compact hand list.
+
+Default panes: **Results**, **Stack Sizes**, **Positions**, **Next
+Action**. Hands sit under them. A row click is `parent ∧ row_key`
+(`query.drill_child`), nested three deep, popped from the
+breadcrumb. Detach is deferred.
+
+Stack Sizes includes **80-120**. Next Action is this decision
+(`--action`) plus composed **Call vs OR** / Fold vs OR / 3-bet vs
+OR when the filter has not already named a street or a facing.
+Combo-family chips on the Smart strip (Axs, Kxs, pairs, …) are
+`--combo Axs`, expanded to the real combos -- `combo IN ('Axs')`
+matches nothing.
+
+`--action`, `--result`, and combo families (`Axs`, `Kxo`, `22+`,
+`pairs`, `broadways`) are the same flags on the command line.
+
+### Added — column gear, sort, hand context menu
+
+Each pane has a column picker and a sortable heading. VPIP / PFR
+stay off on postflop packs (they already left `columns_for`); the
+gear can put them back. Double-click a compact row opens the
+replayer; right-click is Mark / Unmark / Add to Note (`notes.py`).
+Right-click a pane row can Pin that row (JSON argv, same person).
+`+` pane adds Bet Sizes / Flop Hand / Flop Board / Combos.
+
+### Not this, on purpose
+
+No HUD. No solver. No Sessions view. No graphs inside the cockpit
+(the graph tab is unchanged). No Statistics grid. No Detach. No
+Reg-Fish stats exclusion toggle -- `--reg` / `--fish` / `--class`
+are still the filter. No invented EV. Window `--check` needs Tk.
+
+### What's next
+
+Sessions. A Statistics grid. Detach. Live `check.py` on a real
+`hands.db`. Window `--check` needs Tk.
+
+---
+
 ## Bet Sizes pane and a richer pin
 
 Two leftovers from the tracking-half arc. No HUD. No solver. No
