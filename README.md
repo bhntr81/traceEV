@@ -63,6 +63,7 @@ players.py      who each player is: reg, fish, unknown  --check
         v
 stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
+parity.py       H2N invariants A–H on committed HH    --check
 app.py          desktop study / Statistics / Sessions  --check
 gui.py          the same three surfaces as a page    --check
 expr.py         Value/Cases/Opps over plain stats    --check
@@ -104,6 +105,7 @@ is one SQLite file. `build.py --check` asserts it stays that way.
 ```bash
 python importer.py "path/to/your/hand/histories"     # any site, any mix
 python check.py
+python parity.py --check                             # A–H on committed fixtures
 ```
 
 The importer identifies each file by its header, loads it with that site's

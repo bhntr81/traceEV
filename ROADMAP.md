@@ -1032,3 +1032,23 @@ Statistics and the Reports study strip. Flipping `is_weak`
 moves Weak %. Coverage names Ignition (every hand) vs ACR
 (23%). Remaining: full group editor, board slices, Detach,
 live `hands.db`.
+
+## Run — Live-corpus correctness (verify-parity)
+
+**Goal:** lock already-shipped H2N tracking-half semantics with
+invariants + fixtures/CI. Hits/Opps/freq, Action Profit ≠ Won$,
+Quick/Custom nest, exclude_reg_vs_fish boundary, Today ×
+start-of-day, graph WOS/WSD, heatmap SD-bias / Weak %, export
+= filtered set. No HUD, no solver, no new UI. `--check`
+without inventing EV.
+
+**Result:** `fixtures/parity/` (12 synthetic hands) through
+`importer.CHAIN`. `parity.py` / `query.py --verify-parity` /
+`check.py`. CI runs the no-corpus suite plus this. Found and
+fixed: `statistics_of` crashed on a spots-sourced stat with
+zero opportunities (Wilson None × 100); `importer.load`
+stored the basename so session export found no file unless
+cwd lucked out. Intentional divergence documented: Quick
+Filters are strict (chance ∧ action); Smart Reports are the
+loose spot. Remaining: the user's live `hands.db` is still
+the user's.

@@ -41,14 +41,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 
-      # The parts that do not need a database. The rest of the checks read
-      # hands, and there are none here: hand histories are the user's data
-      # and are not in the repository.
+      # The parts that do not need the user's hands.db. The committed
+      # fixture corpus is in the repository; the live database is not.
       - name: Check what runs without hands
         run: |
-          python -c "import app, query, stats, lines, decisions, spots, equity, importer, diag"
+          python -c "import app, query, stats, lines, decisions, spots, equity, importer, diag, parity"
           python diag.py --check
           python build.py --check
+          python query.py --check
+          python parity.py --check
 
       - name: Install PyInstaller
         run: python -m pip install pyinstaller

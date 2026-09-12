@@ -46,10 +46,17 @@ only copy.
 
 ```bash
 python check.py
+python parity.py            # A–H on the committed fixture corpus
 ```
 
-**A change to a derivation is not done until its check passes.** If your
-change makes a check fail, one of two things is true and you have to say
+**A change to a derivation is not done until its check passes.**
+In-memory tables in `query.py --check` prove the functions; they
+do not prove the import. `parity.py` loads `fixtures/parity/`
+through `importer.load` and `CHAIN` and is the gate that a
+derivation which only looks right against a typed table fails.
+CI runs both. The live `hands.db` is still the user's.
+
+If your change makes a check fail, one of two things is true and you have to say
 which:
 
 1. The change is wrong. Fix it.
