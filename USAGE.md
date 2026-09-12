@@ -237,9 +237,9 @@ and its Weak % (Air / Draws / Weak pair by default). Click a bar
 to AND `--hist-group` onto the filter; right-click flips whether
 that group counts as weak. Other is always last, for leftovers.
 
-Not in this cockpit: multi-profile Save/Open, a board
-editor, dock-back. Sessions is the neighbouring tab. Statistics is
-the one after study.
+Not in this cockpit: a board editor, dock-back. Sessions is the
+neighbouring tab. Statistics is the one after study. Save/Open
+of a Statistics context is on that tab, not here.
 
 ### Statistics
 
@@ -249,7 +249,11 @@ it. No HUD. No solver.
 
 ```bash
 python query.py --statistics --fmt cash --last-sessions 10
-python query.py --statistics --exclude-reg-vs-fish --hit threebet
+python query.py --statistics --profile preflop --exclude-reg-vs-fish
+python query.py stats save "regs last 10" --hero --fmt cash --last-sessions 10
+python query.py stats open "regs last 10"
+python query.py stats list
+python stats.py save "regs last 10" --hero --fmt cash
 python query.py --call-range threebet --hero --hands
 python players.py --set NAME --as fish --site acr
 python players.py --types
@@ -260,6 +264,19 @@ player / cohort / alias already on the filter bar. Cash | MTT,
 a date range, and last N sessions sit on this tab (last-N is
 cash sit-downs; MTT has none and the box is ignored). Cohort
 counts -- how many regs / fish / unknown -- sit above the grid.
+
+**Profile Menu** switches which columns the grid shows
+(`default` is the curated list; Preflop / Postflop / Showdown
+are subsets). It does not drop the subject or the cohort. Extra
+profiles live in `profiles.json` (gitignored); a missing stat
+id is skipped with a warning. The WYSIWYG editor is deferred.
+
+**Save Report / Open Report** persist the costly context:
+subject, cohort, cash|mtt, date range, last N sessions,
+exclude_reg_vs_fish, and the profile. Open hydrates the tab
+and recomputes -- a saved rate that was not recomputed would
+lie the first time the database grew. Recent names sit on the
+Report menu. This is not `filters.json` (those are situations).
 
 Click **3bet** → the 13×13 of those raises. A postflop stat
 (CBet Flop, …) also draws the **hand-value histogram** and Weak %
@@ -291,7 +308,7 @@ same person.
 `--fmt cash` is everything that is not a tournament (`fmt <>
 'MTT'`). `fmt='RING'` is not a pool; ACR ring is in cash too.
 
-Not this: multi-profile Save/Open, a board editor, dock-back.
+Not this: a WYSIWYG profile editor, a board editor, dock-back.
 
 ### Sessions
 
@@ -1349,8 +1366,9 @@ Quick filter is chance ∧ action and a nest is parent ∧ row;
 `exclude_reg_vs_fish` moves Statistics only; Today uses start-of-day
 and the room timezone; the win-graph red and gray lines add to green;
 heatmap coverage names the showdown bias; export writes the filtered
-set. CI runs this. The corpus is synthetic and tiny -- enough for
-each invariant to move, not a live database.
+set; Save→Open of a Statistics report reconstitutes the same sample
+and the same (key, n, k). CI runs this. The corpus is synthetic and
+tiny -- enough for each invariant to move, not a live database.
 
 ### Quick Filters are strict; Smart Reports are loose
 

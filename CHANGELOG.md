@@ -8,6 +8,44 @@ Newest first.
 
 ---
 
+## Statistics Profile Menu + Save/Open Report
+
+The tracking-half Profile Menu and the costly-context Save/Open.
+No HUD. No solver. No WYSIWYG profile editor. Dock-back is still
+deferred.
+
+`default` is the curated grid, locked. Preflop / Postflop /
+Showdown are shipped subsets so the menu has something to switch
+to without an editor. Extra profiles live in `profiles.json`
+(gitignored). A missing stat id is skipped with a warning -- a
+deleted custom stat must not blank the grid.
+
+Save writes version, subject, cohort_predicate, fmt (cash|mtt),
+date_range, last_n_sessions, exclude_reg_vs_fish, profile_id.
+Open hydrates the Statistics bar and recomputes. Recent names
+sit on the Report menu. This is not `filters.json`: a Smart
+Report is a situation; this is who / when / which columns.
+
+The Profile Menu changes columns only. Subject, cohort, dates,
+and the exclude flag stay where they were.
+
+```bash
+python query.py stats save "regs last 10" --hero --fmt cash --last-sessions 10
+python query.py stats open "regs last 10"
+python stats.py save NAME --hero --profile preflop
+```
+
+`--check` covers the payload fields, missing-stat skip, and a
+golden save→open identity on `fixtures/parity/` (parity I).
+No invented EV.
+
+### Not this, on purpose
+
+No HUD. No solver. No WYSIWYG profile editor. No rakeback.
+Dock-back is deferred.
+
+---
+
 ## Detach report panes
 
 H2N-style Detach: a study pane opens in its own window.

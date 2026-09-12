@@ -4,7 +4,7 @@ Live-corpus lock on the H2N tracking-half invariants.
 The in-memory fixtures in `query.py --check` prove the functions
 against a hand-built table. This module proves the same facts after
 a real import: the committed HH in `fixtures/parity/` go through
-`importer.load` and `CHAIN`, then A–H run on the derived tables. A
+`importer.load` and `CHAIN`, then A–I run on the derived tables. A
 derivation that silently drops a line still looks fine in a table
 somebody typed; it does not survive here.
 
@@ -397,9 +397,67 @@ def check_H(con):
     return fails
 
 
+def check_I(con):
+    """
+    Save → Open identity on the imported corpus.
+
+    Cohort + cash + dates + exclude + profile, written to a scratch
+    file, read back, recomputed. The sample and every (key, n, k)
+    must match. A hydrate that dropped the cohort would still look
+    like a grid and would be the wrong people.
+    """
+    fails = []
+    argv = ["--player", "Alice", "--site", "acr", "--fmt", "cash",
+            "--since", "2026-09-01", "--until", "2026-09-03",
+            "--last-sessions", "10"]
+    spec = ([], "acr", "reg", None)
+    store = Path(tempfile.mkdtemp()) / "stat_reports.json"
+    where, _label, _p = query.build(argv)
+    where, _header, _label = query.apply_cohort(con, spec, where, _label)
+    before = query.statistics_of(
+        con, where, argv, exclude=True, profile_id="preflop")
+    payload, _n, _desc = query.save_stat_report(
+        "parity-alice", argv, cohort_spec=spec, exclude=True,
+        profile_id="preflop", path=store, db=Path("no-such.db"))
+    opened = query.open_stat_report("parity-alice", path=store)
+    if query.report_identity(payload) != query.report_identity(opened):
+        fails.append("I: save→open context drifted")
+    ctx = query.hydrate_stat_report(opened)
+    if ctx["warnings"]:
+        fails.append("I: hydrate warned on a built-in profile: "
+                     + "; ".join(ctx["warnings"]))
+    after_where, _l, _p = query.build(ctx["argv"])
+    if ctx["cohort_spec"] is not None:
+        after_where, _h, _l = query.apply_cohort(
+            con, ctx["cohort_spec"], after_where, _l)
+    after = query.statistics_of(
+        con, after_where, ctx["argv"],
+        exclude=ctx["exclude_reg_vs_fish"],
+        profile_id=ctx["profile_id"])
+    if (before["n"], before["n_all"], before["excluded"]) != (
+            after["n"], after["n_all"], after["excluded"]):
+        fails.append(
+            f"I: sample drifted {before['n']}/{before['n_all']} → "
+            f"{after['n']}/{after['n_all']}")
+    before_rows = [(r["key"], r["n"], r["k"]) for r in before["rows"]]
+    after_rows = [(r["key"], r["n"], r["k"]) for r in after["rows"]]
+    if before_rows != after_rows:
+        fails.append(f"I: grid counts drifted {before_rows} → {after_rows}")
+    if [r["key"] for r in after["rows"]] == list(query.CURATED):
+        fails.append("I: Open ignored the preflop profile")
+    if "vpip" not in {r["key"] for r in after["rows"]}:
+        fails.append("I: preflop profile dropped VPIP")
+    # Columns-only: same sample under Default vs Preflop.
+    full = query.statistics_of(
+        con, where, argv, exclude=True, profile_id="default")
+    if full["n"] != before["n"]:
+        fails.append("I: Profile Menu changed the sample")
+    return fails
+
+
 def check():
     """
-    A–H against the committed corpus. Returns True on a clean pass.
+    A–I against the committed corpus. Returns True on a clean pass.
 
     In-memory stop-ships (empty freq, fold AP, Reports ignore exclude)
     already live in `query.py --check`. This is the live import of the
@@ -419,7 +477,8 @@ def check():
             ("E Today / start-of-day", check_E),
             ("F Graph WOS/WSD", check_F),
             ("G Heatmap / Weak %", check_G),
-            ("H Export = filtered", check_H)):
+            ("H Export = filtered", check_H),
+            ("I Save→Open identity", check_I)):
         bad = fn(con)
         print(f"{name:28}  {'yes' if not bad else 'NO'}")
         for line in bad:

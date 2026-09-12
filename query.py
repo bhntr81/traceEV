@@ -47,7 +47,10 @@ money is summed over the hands those decisions happened in.
     python query.py --hero --pot 3bet --hands
     python query.py --session FIRST_HAND --stats
     python query.py --statistics --fmt cash --last-sessions 10
-    python query.py --statistics --exclude-reg-vs-fish --hit threebet
+    python query.py --statistics --profile preflop --exclude-reg-vs-fish
+    python query.py stats save "regs last 10" --hero --fmt cash --last-sessions 10
+    python query.py stats open "regs last 10"
+    python query.py stats list
     python query.py --today --hero --results
     python query.py --hero --graph
     python query.py --hero --pot 3bet --graph --csv --out win.csv
@@ -255,7 +258,11 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            # they change how those two flags are compiled.
            "--start-of-day", "--tz",
            # Win graph units. Not a filter -- the same hands, in $ or bb.
-           "--unit")
+           "--unit",
+           # Statistics profile and Save/Open. Not filters -- they
+           # change the grid columns or persist the subject. A value
+           # flag so build() skips both tokens and cannot eat --hero.
+           "--profile", "--save-report", "--open-report")
 
 # Not filters, and they take no value. OPTIONS skip two tokens
 # (flag + argument). Putting exclude there ate `--hero` and
@@ -3568,6 +3575,479 @@ CURATED = (
 # see this predicate; it is AND-ed on only in `statistics_of`.
 REG_VS_FISH = "(player_class = 'reg' AND n_fish > 0)"
 
+# Statistics profiles. `default` is the curated grid; the menu
+# switches columns and leaves the subject / cohort / dates alone.
+# User extras live in profiles.json (gitignored). The WYSIWYG
+# editor is deferred -- the file is the editor.
+PROFILE_VERSION = 1
+DEFAULT_PROFILE_ID = "default"
+PROFILES_FILE = Path(__file__).parent / "profiles.json"
+STAT_REPORT_VERSION = 1
+STAT_REPORTS_FILE = Path(__file__).parent / "stat_reports.json"
+RECENT_LIMIT = 8
+
+# Dates / fmt / last-N are their own payload fields. Leaving them
+# inside `subject` would make a saved "hero last 10 cash" lose the
+# person the moment the dates were edited.
+_SUBJECT_DROP_SWITCHES = ("--today",)
+_SUBJECT_DROP_VALUES = ("--since", "--until", "--fmt", "--last-sessions",
+                        "--session", "--hours", "--start-of-day", "--tz")
+
+
+def _curated_by_group(*groups):
+    return [k for k in CURATED if BY_KEY.get(k) and BY_KEY[k].group in groups]
+
+
+def builtin_profiles():
+    """The shipped profiles. `default` is locked to CURATED."""
+    return [
+        {"id": DEFAULT_PROFILE_ID, "name": "Default",
+         "stats": list(CURATED)},
+        {"id": "preflop", "name": "Preflop",
+         "stats": _curated_by_group("preflop")},
+        {"id": "postflop", "name": "Postflop",
+         "stats": _curated_by_group("flop", "turn", "river")},
+        {"id": "showdown", "name": "Showdown",
+         "stats": _curated_by_group("showdown")},
+    ]
+
+
+def _read_json(path, fallback):
+    if path is None or not Path(path).exists() or Path(path).stat().st_size == 0:
+        return fallback
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    return raw if raw else fallback
+
+
+def _write_json(path, obj):
+    dest = Path(path)
+    dest.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+    return dest
+
+
+def load_user_profiles(path=None):
+    """Extra profiles from the user file. `default` cannot be replaced."""
+    raw = _read_json(path or PROFILES_FILE, {})
+    items = raw.get("profiles") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "").strip()
+        if not pid or pid == DEFAULT_PROFILE_ID:
+            continue
+        stats = item.get("stats") or item.get("keys") or []
+        if not isinstance(stats, list):
+            continue
+        keys = [str(k).strip() for k in stats if str(k).strip()]
+        if not keys:
+            continue
+        out.append({
+            "id": pid,
+            "name": str(item.get("name") or pid),
+            "stats": keys,
+        })
+    return out
+
+
+def profiles(path=None):
+    """Built-ins first, then the user file. First id wins."""
+    seen = set()
+    out = []
+    for p in builtin_profiles() + load_user_profiles(path):
+        if p["id"] in seen:
+            continue
+        seen.add(p["id"])
+        out.append(p)
+    return out
+
+
+def profile_of(profile_id, path=None):
+    """One profile, or the default if the id is missing."""
+    want = str(profile_id or DEFAULT_PROFILE_ID).strip() or DEFAULT_PROFILE_ID
+    for p in profiles(path):
+        if p["id"] == want:
+            return p
+    for p in profiles(path):
+        if p["id"] == DEFAULT_PROFILE_ID:
+            return p
+    return builtin_profiles()[0]
+
+
+def resolve_profile(profile_id, path=None):
+    """
+    Keys to draw, plus the ones that are gone.
+
+    A profile that named a deleted custom stat used to blank the
+    whole grid. Missing keys are skipped and named, so the rest of
+    the columns still compute.
+    """
+    prof = profile_of(profile_id, path)
+    keys, missing = [], []
+    seen = set()
+    for key in prof.get("stats") or []:
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in BY_KEY:
+            keys.append(key)
+        else:
+            missing.append(key)
+    if not keys:
+        keys = list(CURATED)
+        if missing:
+            # Nothing left of the named profile -- fall back rather
+            # than draw an empty grid that looks like a broken sample.
+            missing = list(missing)
+    warnings = []
+    if missing:
+        warnings.append(
+            "skipped unknown stats: " + ", ".join(missing))
+    if str(profile_id or DEFAULT_PROFILE_ID).strip() not in {p["id"] for p in profiles(path)} \
+            and str(profile_id or "").strip():
+        warnings.append(
+            f"unknown profile {profile_id!r} -- showing Default")
+    return {
+        "id": prof["id"],
+        "name": prof["name"],
+        "keys": keys,
+        "missing": missing,
+        "warnings": warnings,
+        "stats": list(prof.get("stats") or []),
+    }
+
+
+def take_profile(argv):
+    """Pull `--profile ID` off a command so build() never has to see it."""
+    out, pid = [], None
+    i = 0
+    argv = list(argv or [])
+    while i < len(argv):
+        a = argv[i]
+        if a == "--profile" and i + 1 < len(argv):
+            pid = str(argv[i + 1]).strip() or None
+            i += 2
+            continue
+        out.append(a)
+        i += 1
+    return out, pid
+
+
+def subject_argv(argv):
+    """Who is being measured, without dates / fmt / last-N / clock."""
+    who = who_only(list(argv or []))
+    out = []
+    i = 0
+    while i < len(who):
+        a = who[i]
+        if a in _SUBJECT_DROP_SWITCHES:
+            i += 1
+            continue
+        if a in _SUBJECT_DROP_VALUES:
+            i += 2
+            continue
+        if a in WHO_VALUES or a in VALUE_FLAGS or a in OPTIONS:
+            if i + 1 < len(who):
+                out += who[i:i + 2]
+                i += 2
+                continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def context_fields(argv):
+    """cash|mtt, date range, last-N -- the Statistics clock, not the study."""
+    who = who_only(list(argv or []))
+    fmt = None
+    since = until = None
+    last_n = None
+    i = 0
+    while i < len(who):
+        a = who[i]
+        if a == "--fmt" and i + 1 < len(who):
+            raw = str(who[i + 1]).strip().lower()
+            fmt = "mtt" if raw == "mtt" else "cash" if raw in (
+                "cash", "ring") else raw
+            i += 2
+        elif a == "--since" and i + 1 < len(who):
+            since = str(who[i + 1]).strip() or None
+            i += 2
+        elif a == "--until" and i + 1 < len(who):
+            until = str(who[i + 1]).strip() or None
+            i += 2
+        elif a == "--last-sessions" and i + 1 < len(who):
+            raw = str(who[i + 1]).strip()
+            last_n = raw or None
+            i += 2
+        elif a in WHO_VALUES or a in VALUE_FLAGS or a in OPTIONS:
+            i += 2
+        else:
+            i += 1
+    return {
+        "fmt": fmt or "cash",
+        "date_range": {"since": since, "until": until}
+        if since or until else None,
+        "last_n_sessions": last_n,
+    }
+
+
+def subject_payload(argv):
+    """`subject` on a saved Statistics report: a label and lossless flags."""
+    flags = subject_argv(argv)
+    return {"label": subject_of(flags), "argv": flags}
+
+
+def report_identity(payload):
+    """The fields a golden save→open test compares, in one place."""
+    ctx = hydrate_stat_report(payload)
+    return {
+        "subject": list(ctx["subject_argv"]),
+        "cohort_predicate": ctx["cohort_predicate"],
+        "fmt": ctx["fmt"],
+        "date_range": ctx["date_range"],
+        "last_n_sessions": ctx["last_n_sessions"],
+        "exclude_reg_vs_fish": ctx["exclude_reg_vs_fish"],
+        "profile_id": ctx["profile_id"],
+    }
+
+
+def stat_report_payload(argv, cohort_spec=None, exclude=False,
+                        profile_id=None, name=None):
+    """
+    The Save object. Versioned so a later field cannot be mistaken
+    for an old file that never had it.
+
+    This is not `filters.json`. A Smart Report is a situation; this
+    is the costly Statistics context -- who, which people, when,
+    which columns -- so Open does not have to be rebuilt by hand.
+    """
+    ctx = context_fields(argv)
+    pid = str(profile_id or DEFAULT_PROFILE_ID).strip() or DEFAULT_PROFILE_ID
+    return {
+        "version": STAT_REPORT_VERSION,
+        "name": " ".join(str(name or "").split()),
+        "subject": subject_payload(argv),
+        "cohort_predicate": players.cohort_to_dict(cohort_spec),
+        "fmt": ctx["fmt"],
+        "date_range": ctx["date_range"],
+        "last_n_sessions": ctx["last_n_sessions"],
+        "exclude_reg_vs_fish": bool(exclude),
+        "profile_id": pid,
+    }
+
+
+def hydrate_stat_report(payload, profiles_path=None):
+    """
+    Payload → argv + cohort + exclude + profile, ready to recompute.
+
+    Missing stats are named, not fatal. An unknown profile falls
+    back to Default. The grid is rebuilt from this, not replayed
+    from cached rates -- a saved n that was not recomputed would
+    lie the first time the database grew.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("a saved report is a JSON object")
+    warnings = []
+    version = payload.get("version", STAT_REPORT_VERSION)
+    try:
+        version = int(version)
+    except (TypeError, ValueError):
+        version = STAT_REPORT_VERSION
+        warnings.append("report version was not a number -- treated as 1")
+    if version > STAT_REPORT_VERSION:
+        warnings.append(
+            f"report version {version} is newer than {STAT_REPORT_VERSION}; "
+            "opening what this build understands")
+    subject = payload.get("subject") or {}
+    if isinstance(subject, str):
+        sub_argv = ["--hero"] if subject == "hero" else (
+            ["--pool"] if subject == "pool" else
+            ["--player", subject] if subject not in ("all", "regs", "fish") else
+            (["--reg"] if subject == "regs" else
+             ["--fish"] if subject == "fish" else []))
+        if not sub_argv and subject not in ("all", ""):
+            warnings.append(f"subject {subject!r} was a label with no flags")
+    elif isinstance(subject, dict):
+        raw = subject.get("argv") or []
+        sub_argv = [str(x) for x in raw] if isinstance(raw, list) else []
+        if not sub_argv:
+            label = str(subject.get("label") or "").strip()
+            if label == "hero":
+                sub_argv = ["--hero"]
+            elif label == "pool":
+                sub_argv = ["--pool"]
+            elif label == "regs":
+                sub_argv = ["--reg"]
+            elif label == "fish":
+                sub_argv = ["--fish"]
+            elif label and label not in ("all",):
+                sub_argv = ["--player", label]
+    elif isinstance(subject, list):
+        sub_argv = [str(x) for x in subject]
+    else:
+        sub_argv = []
+        if subject not in (None, ""):
+            warnings.append("subject was not an object -- ignored")
+    try:
+        spec = players.cohort_from_dict(payload.get("cohort_predicate"))
+    except (ValueError, SystemExit) as e:
+        spec = None
+        warnings.append(f"cohort_predicate skipped: {e}")
+    fmt = str(payload.get("fmt") or payload.get("game") or "cash").strip().lower()
+    if fmt in ("ring",):
+        fmt = "cash"
+    if fmt not in ("cash", "mtt"):
+        warnings.append(f"unknown fmt {fmt!r} -- using cash")
+        fmt = "cash"
+    dates = payload.get("date_range")
+    since = until = None
+    if isinstance(dates, dict):
+        since = str(dates.get("since") or "").strip() or None
+        until = str(dates.get("until") or "").strip() or None
+    elif dates not in (None, ""):
+        warnings.append("date_range was not an object -- ignored")
+    last_n = payload.get("last_n_sessions")
+    if last_n in ("", None):
+        last_n = None
+    else:
+        last_n = str(last_n).strip() or None
+    exclude = bool(payload.get("exclude_reg_vs_fish"))
+    pid = str(payload.get("profile_id") or DEFAULT_PROFILE_ID).strip() \
+        or DEFAULT_PROFILE_ID
+    resolved = resolve_profile(pid, profiles_path)
+    warnings.extend(resolved["warnings"])
+    argv = list(sub_argv)
+    argv += ["--fmt", fmt]
+    if since:
+        argv += ["--since", since]
+    if until:
+        argv += ["--until", until]
+    if last_n and fmt != "mtt":
+        argv += ["--last-sessions", last_n]
+    return {
+        "name": " ".join(str(payload.get("name") or "").split()),
+        "version": version,
+        "argv": argv,
+        "subject_argv": list(sub_argv),
+        "cohort_spec": spec,
+        "cohort_predicate": players.cohort_to_dict(spec),
+        "fmt": fmt,
+        "date_range": {"since": since, "until": until} if since or until else None,
+        "last_n_sessions": last_n,
+        "exclude_reg_vs_fish": exclude,
+        "profile_id": resolved["id"],
+        "profile": resolved,
+        "warnings": warnings,
+        "missing": list(resolved["missing"]),
+    }
+
+
+def _reports_store(path=None):
+    raw = _read_json(path or STAT_REPORTS_FILE, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    reports = raw.get("reports")
+    if not isinstance(reports, dict):
+        reports = {}
+    recent = [str(n) for n in (raw.get("recent") or []) if str(n)]
+    return reports, recent
+
+
+def _write_reports_store(reports, recent, path=None):
+    dest = path or STAT_REPORTS_FILE
+    kept = [n for n in recent if n in reports][:RECENT_LIMIT]
+    _write_json(dest, {
+        "version": STAT_REPORT_VERSION,
+        "reports": reports,
+        "recent": kept,
+    })
+    return dest
+
+
+def save_stat_report(name, argv, cohort_spec=None, exclude=False,
+                     profile_id=None, path=None, db=None):
+    """
+    Persist the Statistics context. Returns (payload, n, described).
+
+    `n` is today's decision count under this context, for the same
+    reason `--save` counts a situation -- a report that matches
+    nothing saves, and the moment to find out is now.
+    """
+    name = " ".join(str(name).split())
+    if not name:
+        raise ValueError("a report needs a name")
+    payload = stat_report_payload(
+        argv, cohort_spec=cohort_spec, exclude=exclude,
+        profile_id=profile_id, name=name)
+    reports, recent = _reports_store(path)
+    reports[name] = payload
+    recent = [name] + [n for n in recent if n != name]
+    dest = _write_reports_store(reports, recent, path)
+    payload["path"] = str(dest)
+    n, described = 0, ""
+    con = None
+    try:
+        ctx = hydrate_stat_report(payload)
+        where, described, _parts = build(ctx["argv"])
+        src = db or DB
+        if Path(src).exists() and Path(src).stat().st_size > 0:
+            con = sqlite3.connect(str(src))
+            if ctx["cohort_spec"] is not None:
+                where, _header, described = apply_cohort(
+                    con, ctx["cohort_spec"], where, described)
+            sample = with_exclude(where, ctx["exclude_reg_vs_fish"])
+            n = con.execute(
+                f"SELECT COUNT(*) FROM decisions WHERE {sample}").fetchone()[0]
+    except (SystemExit, sqlite3.Error, ValueError):
+        n = 0
+    finally:
+        if con is not None:
+            con.close()
+    return payload, n, described
+
+
+def open_stat_report(name, path=None):
+    """Load a saved Statistics report and mark it recent."""
+    name = " ".join(str(name).split())
+    reports, recent = _reports_store(path)
+    if name not in reports:
+        raise ValueError(f"no saved statistics report called {name!r}")
+    payload = dict(reports[name])
+    payload["name"] = name
+    recent = [name] + [n for n in recent if n != name]
+    _write_reports_store(reports, recent, path)
+    return payload
+
+
+def forget_stat_report(name, path=None):
+    """Remove a saved Statistics report. Built-in profiles are not this file."""
+    name = " ".join(str(name).split())
+    reports, recent = _reports_store(path)
+    if name not in reports:
+        raise ValueError(f"no saved statistics report called {name!r}")
+    del reports[name]
+    _write_reports_store(reports, [n for n in recent if n != name], path)
+
+
+def list_stat_reports(path=None):
+    """Saved reports, most recently touched first."""
+    reports, recent = _reports_store(path)
+    names = list(recent)
+    for name in reports:
+        if name not in names:
+            names.append(name)
+    return [{"name": n, **dict(reports[n])} for n in names if n in reports]
+
+
+def recent_stat_reports(path=None, limit=RECENT_LIMIT):
+    return list_stat_reports(path)[:int(limit or RECENT_LIMIT)]
+
 
 def fmt_sql(mode):
     """Cash (not MTT) or a tournament, or a literal `fmt` value."""
@@ -3690,16 +4170,23 @@ def class_counts(con, where):
     return out
 
 
-def statistics_of(con, where, argv=None, exclude=False):
+def statistics_of(con, where, argv=None, exclude=False, profile_id=None,
+                  profiles_path=None):
     """
-    The Statistics grid: curated rates for this subject, one sample.
+    The Statistics grid: this profile's rates for this subject, one sample.
 
     `exclude` is the H2N rebuild flag. It is not a `build()` switch.
     Passing `--exclude-reg-vs-fish` on a Reports command is a no-op
     because `build` skips it; this function is the only place that
     AND-s the predicate.
+
+    `profile_id` switches columns. It does not change the sample --
+    that is the Profile Menu rule, and the failure it prevents is a
+    dropdown that silently dropped the cohort.
     """
     argv = list(argv or [])
+    resolved = resolve_profile(profile_id, profiles_path)
+    keys = resolved["keys"]
     sample = with_exclude(where, exclude)
     n_dec = con.execute(
         f"SELECT COUNT(*) FROM decisions WHERE {sample}").fetchone()[0]
@@ -3712,7 +4199,7 @@ def statistics_of(con, where, argv=None, exclude=False):
         # stat names. One missing column must not blank the whole grid
         # -- that is how a 3bet rate vanished while VPIP still worked.
         counted = {}
-        for key in CURATED:
+        for key in keys:
             st = BY_KEY.get(key)
             if st is None or st.source != "d":
                 continue
@@ -3723,7 +4210,7 @@ def statistics_of(con, where, argv=None, exclude=False):
                 counted[key] = (0, 0)
     spots_where = spots_sample_sql(sample)
     rows = []
-    for key in CURATED:
+    for key in keys:
         st = BY_KEY.get(key)
         if st is None:
             continue
@@ -3749,11 +4236,19 @@ def statistics_of(con, where, argv=None, exclude=False):
         "n": n_dec, "n_all": n_all, "excluded": max(0, n_all - n_dec),
         "exclude": bool(exclude),
         "rows": rows, "counts": counts,
+        "profile_id": resolved["id"],
+        "profile": {"id": resolved["id"], "name": resolved["name"],
+                    "keys": list(keys)},
+        "profiles": [{"id": p["id"], "name": p["name"]}
+                     for p in profiles(profiles_path)],
+        "missing": list(resolved["missing"]),
+        "warnings": list(resolved["warnings"]),
         "label": None,
         "note": (
             "exclude_reg_vs_fish drops a regular's decision when a fish "
             "is still in (n_fish > 0). Fish-vs-reg and unknown stay. "
-            "Reports and Sessions do not use this flag."
+            "Reports and Sessions do not use this flag. "
+            "The Profile Menu changes columns only."
         ),
     }
 
@@ -3801,11 +4296,17 @@ def stat_range_of(con, where, key, kind="action", exclude=False,
 
 
 def show_statistics(con, where, label, argv=None, exclude=False,
-                    hit=None, kind="action", parts=(), combo=None):
+                    hit=None, kind="action", parts=(), combo=None,
+                    profile_id=None, profiles_path=None):
     """The Statistics grid, printed. `--hit` drills one stat."""
-    got = statistics_of(con, where, argv, exclude=exclude)
+    got = statistics_of(con, where, argv, exclude=exclude,
+                        profile_id=profile_id, profiles_path=profiles_path)
     print(f"\nStatistics  {label}")
     print("=" * (len(label) + 13))
+    if got.get("profile"):
+        print(f"profile  {got['profile']['name']} ({got['profile_id']})")
+    for warn in got.get("warnings") or []:
+        print(f"  warning: {warn}")
     c = got["counts"]
     print(f"{got['n']:,} decisions"
           + (f"  (excluded {got['excluded']:,} reg-vs-fish of "
@@ -5283,9 +5784,17 @@ def select_cohort(con, spec):
             expr_text = item[1]
         else:
             rest.append(item)
-    rows = players.cohort(con, rest, site, klass, durable)
-    if expr_text:
-        rows = expr.filter_players(con, rows, expr_text)
+    # cohort() / cohort_summary read named columns. A connection
+    # that never set row_factory (CLI, Save/Open, parity) would
+    # raise on row["hands"] and look like the cohort was empty.
+    old_rf = con.row_factory
+    con.row_factory = sqlite3.Row
+    try:
+        rows = players.cohort(con, rest, site, klass, durable)
+        if expr_text:
+            rows = expr.filter_players(con, rows, expr_text)
+    finally:
+        con.row_factory = old_rf
     con.execute("CREATE TEMP TABLE IF NOT EXISTS _cohort "
                 "(site TEXT, player TEXT)")
     con.execute("DELETE FROM _cohort")
@@ -5745,6 +6254,13 @@ def usage():
     print(f"    {'--call-range':14} same chance as a stat, a call "
           f"(3bet → Call Open Raise)")
     print(f"    {'--statistics':14} curated Statistics grid (H2N tab)")
+    print(f"    {'--profile':14} Statistics columns: default, preflop, "
+          f"postflop, showdown (or a name from profiles.json)")
+    print(f"    {'stats save NAME':14} persist subject + cohort + dates "
+          f"+ profile (not a Smart Report)")
+    print(f"    {'stats open NAME':14} hydrate that context and recompute")
+    print(f"    {'--save-report':14} same as stats save, from --statistics")
+    print(f"    {'--open-report':14} same as stats open")
     print(f"    {'--graph':14} four-line win graph (Amount Won, All-in EV, "
           f"W/O SD, at SD)")
     print(f"    {'--hist-postflop':14} postflop hand-value histogram + Weak %")
@@ -5755,7 +6271,7 @@ def usage():
     print(f"    {'--unit':14} bb (default) or currency / $")
     print(f"    {'--exclude-reg-vs-fish':14} Statistics sample only -- "
           f"Reports / Sessions ignore it")
-    print(f"    {'--verify-parity':14} A–H on the committed fixture "
+    print(f"    {'--verify-parity':14} A–I on the committed fixture "
           f"corpus (also: python parity.py)")
     print(f"    {'--session':14} one sit-down (id = first hand); "
           f"see sessions.py")
@@ -6704,10 +7220,138 @@ def check_statistics():
     mem.close()
     if [r["key"] for r in empty["rows"]] != list(CURATED):
         fails.append("statistics_of did not return the curated grid")
+    if empty.get("profile_id") != DEFAULT_PROFILE_ID:
+        fails.append("statistics_of dropped the default profile id")
     if "threebet" not in CURATED:
         fails.append("3bet is not on the Statistics grid")
 
     print(f"Statistics / Call Range / exclude  "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
+def check_stat_reports():
+    """
+    Profile Menu + Save/Open. No corpus.
+
+    A profile that changed the sample, or a save that dropped the
+    cohort, is the H2N failure this exists to catch: Open looks like
+    it worked and the numbers are somebody else's.
+    """
+    fails = []
+    ids = [p["id"] for p in builtin_profiles()]
+    if DEFAULT_PROFILE_ID not in ids:
+        fails.append("default profile is missing")
+    default = profile_of(DEFAULT_PROFILE_ID)
+    if default["stats"] != list(CURATED):
+        fails.append("default profile is not the curated list")
+    if "--profile" not in OPTIONS:
+        fails.append("--profile is not in OPTIONS -- build() would apply it")
+    if "--profile" in SKIP:
+        fails.append("--profile is in SKIP -- it would not consume its id")
+    try:
+        w, _l, _p = build(["--profile", "preflop", "--hero"])
+    except SystemExit:
+        fails.append("build() rejected --profile instead of skipping it")
+        w = ""
+    if "is_hero = 1" not in w:
+        fails.append("build(--profile --hero) dropped --hero")
+
+    scratch = Path(tempfile.mkdtemp()) / "profiles.json"
+    _write_json(scratch, {"version": 1, "profiles": [
+        {"id": "ghost", "name": "Ghost",
+         "stats": ["vpip", "no_such_stat", "pfr"]},
+        {"id": "default", "name": "Hijack",
+         "stats": ["threebet"]},
+    ]})
+    ghost = resolve_profile("ghost", scratch)
+    if ghost["keys"] != ["vpip", "pfr"] or "no_such_stat" not in ghost["missing"]:
+        fails.append(f"missing stat was not skipped: {ghost}")
+    if not ghost["warnings"]:
+        fails.append("missing stat produced no warning")
+    locked = profile_of(DEFAULT_PROFILE_ID, scratch)
+    if locked["stats"] != list(CURATED):
+        fails.append("user file replaced the default profile")
+    unknown = resolve_profile("nope", scratch)
+    if unknown["id"] != DEFAULT_PROFILE_ID:
+        fails.append("unknown profile did not fall back to default")
+
+    mem = sqlite3.connect(":memory:")
+    mem.execute(
+        "CREATE TABLE decisions (hand_id TEXT, seat INT, player TEXT, "
+        "site TEXT, player_class TEXT, n_fish INT, street TEXT, "
+        "facing TEXT, action TEXT, agg INT, combo TEXT)")
+    mem.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [("h1", 1, "A", "acr", "reg", 0, "preflop", "unopened", "R", 1, "AKs"),
+         ("h2", 1, "A", "acr", "reg", 0, "flop", "check", "B", 1, "AKs")])
+    all_keys = [r["key"] for r in statistics_of(mem, "1=1")["rows"]]
+    pre_keys = [r["key"] for r in statistics_of(
+        mem, "1=1", profile_id="preflop")["rows"]]
+    if all_keys != list(CURATED):
+        fails.append("default grid dropped a curated key")
+    if "vpip" not in pre_keys or "cbet_flop" in pre_keys:
+        fails.append(f"preflop profile columns were {pre_keys}")
+    n_def = statistics_of(mem, "1=1")["n"]
+    n_pre = statistics_of(mem, "1=1", profile_id="preflop")["n"]
+    if n_def != n_pre:
+        fails.append("Profile Menu changed the sample, not just columns")
+    mem.close()
+
+    store = Path(tempfile.mkdtemp()) / "stat_reports.json"
+    argv = ["--hero", "--site", "acr", "--fmt", "cash",
+            "--since", "2026-09-01", "--until", "2026-09-03",
+            "--last-sessions", "10"]
+    spec = ([("hands", ">=1"), ("vpip", ">=0")], "acr", "reg", None)
+    payload, _n, _desc = save_stat_report(
+        "regs last 10", argv, cohort_spec=spec, exclude=True,
+        profile_id="preflop", path=store, db=Path("no-such.db"))
+    need = ("version", "subject", "cohort_predicate", "fmt",
+            "date_range", "last_n_sessions", "exclude_reg_vs_fish",
+            "profile_id")
+    missing_fields = [k for k in need if k not in payload]
+    if missing_fields:
+        fails.append(f"save payload missing {missing_fields}")
+    if payload.get("fmt") != "cash":
+        fails.append(f"save fmt was {payload.get('fmt')!r}, not cash")
+    if payload.get("profile_id") != "preflop":
+        fails.append("save dropped profile_id")
+    if not payload.get("exclude_reg_vs_fish"):
+        fails.append("save dropped exclude_reg_vs_fish")
+    if payload.get("last_n_sessions") != "10":
+        fails.append(f"save last_n was {payload.get('last_n_sessions')!r}")
+    opened = open_stat_report("regs last 10", path=store)
+    if report_identity(payload) != report_identity(opened):
+        fails.append("save→open identity drifted")
+    ctx = hydrate_stat_report(opened)
+    if "--hero" not in ctx["argv"] or "--site" not in ctx["argv"]:
+        fails.append(f"hydrate dropped the subject: {ctx['argv']}")
+    if ctx["cohort_spec"] != spec:
+        fails.append(f"hydrate dropped the cohort: {ctx['cohort_spec']}")
+    if ctx["exclude_reg_vs_fish"] is not True:
+        fails.append("hydrate dropped exclude")
+    if ctx["profile_id"] != "preflop":
+        fails.append("hydrate dropped the profile")
+    if ctx["fmt"] != "cash" or not ctx["date_range"]:
+        fails.append("hydrate dropped cash / dates")
+    # Profile Menu must not be a filter. A saved report that wrote
+    # --profile into the situation would reopen as a different sample
+    # the moment build learned the word.
+    if "--profile" in ctx["argv"]:
+        fails.append("hydrate wrote --profile into argv")
+    names = [r["name"] for r in recent_stat_reports(store)]
+    if names[:1] != ["regs last 10"]:
+        fails.append(f"recent list was {names}")
+    forget_stat_report("regs last 10", path=store)
+    try:
+        open_stat_report("regs last 10", path=store)
+        fails.append("forget left the report openable")
+    except ValueError:
+        pass
+
+    print(f"Profile Menu / Save/Open       "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:
         print(f"    {f}")
@@ -7390,6 +8034,7 @@ def check(db_path=DB):
     fails.extend(check_study())
     fails.extend(check_sessions())
     fails.extend(check_statistics())
+    fails.extend(check_stat_reports())
     fails.extend(check_graph())
     fails.extend(check_hist())
     fails.extend(check_detach())
@@ -7849,7 +8494,140 @@ def check(db_path=DB):
     return not fails
 
 
+def _stats_name(argv, verb):
+    """The report name, then the remaining flags."""
+    if not argv:
+        raise SystemExit(f"stats {verb} needs a name")
+    if argv[0] in ("--name", "--as"):
+        if len(argv) < 2:
+            raise SystemExit(f"stats {verb} --name needs a name")
+        return argv[1], argv[2:]
+    if argv[0].startswith("-"):
+        raise SystemExit(f"stats {verb} needs a name before the filter flags")
+    return argv[0], argv[1:]
+
+
+def stats_cli(argv):
+    """
+    `stats save|open|list` -- Statistics reports, not custom stats.
+
+    `--save` already names a situation. These verbs persist the
+    costly context (who, cohort, dates, profile) so Open does not
+    have to be rebuilt by hand. Same payload the window writes.
+    """
+    if not argv or argv[0] in ("-h", "--help"):
+        print("stats save NAME [filter]   persist this Statistics context")
+        print("stats open NAME            hydrate and recompute the grid")
+        print("stats list                 saved reports, recent first")
+        print("stats recent               the last few names")
+        print("stats forget NAME          delete one")
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "list":
+        rows = list_stat_reports()
+        if not rows:
+            print("no saved statistics reports -- "
+                  "`python query.py stats save NAME --hero` writes one")
+            return 0
+        for r in rows:
+            sub = (r.get("subject") or {}).get("label") or "all"
+            print(f"  {r['name']}: {sub}  {r.get('fmt', 'cash')}  "
+                  f"profile {r.get('profile_id', DEFAULT_PROFILE_ID)}")
+        return 0
+    if cmd == "recent":
+        rows = recent_stat_reports()
+        if not rows:
+            print("no recent statistics reports")
+            return 0
+        for r in rows:
+            print(r["name"])
+        return 0
+    if cmd == "forget":
+        name, _rest = _stats_name(rest, "forget")
+        try:
+            forget_stat_report(name)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"forgot the statistics report {name!r}")
+        return 0
+    if cmd == "open":
+        name, _rest = _stats_name(rest, "open")
+        try:
+            payload = open_stat_report(name)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        return show_opened_report(payload)
+    if cmd != "save":
+        raise SystemExit(
+            f"unknown stats command {cmd!r} -- save, open, list, recent, forget")
+    name, flags = _stats_name(rest, "save")
+    spec, flags = players.parse_cohort(flags)
+    flags, profile_id = take_profile(flags)
+    exclude = "--exclude-reg-vs-fish" in flags
+    flags = [a for a in flags if a != "--exclude-reg-vs-fish"]
+    # Click-stat flags are not the subject. Leaving them in saved
+    # the 3bet hands as the sample and every rate read 100%.
+    flags, _hit, _kind, _combo = take_stat_drill(flags)
+    try:
+        payload, n, described = save_stat_report(
+            name, flags, cohort_spec=spec, exclude=exclude,
+            profile_id=profile_id)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print(f"saved the statistics report {name!r}")
+    print(f"  subject: {payload['subject']['label']}")
+    if payload.get("cohort_predicate"):
+        print(f"  cohort:  {players.describe_cohort(spec)}")
+    print(f"  fmt:     {payload['fmt']}")
+    if payload.get("date_range"):
+        dr = payload["date_range"]
+        print(f"  dates:   {dr.get('since') or '…'} → {dr.get('until') or '…'}")
+    if payload.get("last_n_sessions"):
+        print(f"  last:    {payload['last_n_sessions']} sessions")
+    print(f"  profile: {payload['profile_id']}")
+    if payload.get("exclude_reg_vs_fish"):
+        print("  exclude: reg-vs-fish")
+    if described:
+        print(f"  filter:  {described}")
+    if n:
+        print(f"  {n:,} decisions match it today")
+    else:
+        print("  NOTHING MATCHES -- it is saved, and Open will recompute empty")
+    print(f"  open it with `python query.py stats open {name!r}`")
+    return 0
+
+
+def show_opened_report(payload, db=None):
+    """Hydrate a saved report and print the grid. Missing stats warn."""
+    ctx = hydrate_stat_report(payload)
+    print(f"opened {ctx['name'] or 'report'}")
+    for warn in ctx["warnings"]:
+        print(f"  warning: {warn}")
+    if not Path(db or DB).exists():
+        print("  no database -- context restored, nothing to recompute")
+        print(f"  argv: {' '.join(ctx['argv'])}")
+        return 0
+    con = sqlite3.connect(str(db or DB))
+    notes.attach(con)
+    sessions.ensure(con)
+    try:
+        where, label, parts = build(ctx["argv"])
+        if ctx["cohort_spec"] is not None:
+            where, header, label = apply_cohort(
+                con, ctx["cohort_spec"], where, label)
+            show_cohort_banner(header)
+        show_statistics(
+            con, where, label, ctx["argv"],
+            exclude=ctx["exclude_reg_vs_fish"],
+            parts=parts, profile_id=ctx["profile_id"])
+    finally:
+        con.close()
+    return 0
+
+
 def main(argv):
+    if argv[:1] == ["stats"]:
+        return stats_cli(argv[1:])
     if not argv or "--help" in argv or "-h" in argv:
         usage()
         return 0
@@ -7913,6 +8691,7 @@ def main(argv):
             argv = [a for a in argv if a != m]
     exclude_reg_vs_fish = "--exclude-reg-vs-fish" in argv
     argv = [a for a in argv if a != "--exclude-reg-vs-fish"]
+    argv, profile_id = take_profile(argv)
 
     def opt(name, default=None):
         if name not in argv:
@@ -7977,6 +8756,29 @@ def main(argv):
                   "under it will be empty")
         print(f"  open it with --preset {name!r}, or from the report box in "
               f"the window")
+        return 0
+    if "--open-report" in argv:
+        try:
+            payload = open_stat_report(opt("--open-report"))
+        except ValueError as e:
+            raise SystemExit(str(e))
+        return show_opened_report(payload)
+    if "--save-report" in argv:
+        try:
+            payload, n, described = save_stat_report(
+                opt("--save-report"), argv, cohort_spec=cohort_spec,
+                exclude=exclude_reg_vs_fish, profile_id=profile_id)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"saved the statistics report {payload['name']!r}")
+        print(f"  subject: {payload['subject']['label']}")
+        print(f"  profile: {payload['profile_id']}")
+        if described:
+            print(f"  filter:  {described}")
+        if n:
+            print(f"  {n:,} decisions match it today")
+        else:
+            print("  NOTHING MATCHES -- it is saved, and Open will recompute empty")
         return 0
     if "--define" in argv:
         key = opt("--define")
@@ -8152,7 +8954,8 @@ def main(argv):
     elif mode == "--statistics":
         show_statistics(con, where, label, argv, exclude=exclude_reg_vs_fish,
                         hit=stat_hit, kind=stat_kind or "action",
-                        parts=_parts, combo=stat_combo)
+                        parts=_parts, combo=stat_combo,
+                        profile_id=profile_id)
     elif dim:
         show_report(con, where, label, dim, columns, min_n, argv=argv)
     else:
