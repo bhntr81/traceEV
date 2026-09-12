@@ -349,15 +349,20 @@ SMART_REPORTS = {
                         "--oop"),
     "Flop vs c-bet": ("--street", "flop", "--not-pfa", "--facing", "bet",
                       "--vs-pfa"),
+    "Raise C-bet": ("--quick", "raise_cbet"),
     "Donk flop": ("--street", "flop", "--not-pfa", "--facing", "check",
                   "--pot", "raised,3bet,4bet,5bet+"),
     "Check-raise flop": ("--street", "flop", "--oop", "--facing", "bet"),
     "Flop in 3-bet pots": ("--pot", "3bet", "--street", "flop"),
     "Turn c-bets": ("--street", "turn", "--pfa", "--facing", "check"),
+    "2nd Barrel": ("--quick", "cbet_turn"),
+    "Missed 2nd Barrel": ("--quick", "cbet_turn_not"),
     "Turn vs bet": ("--street", "turn", "--facing", "bet"),
     "Probe turn": ("--street", "turn", "--not-pfa", "--facing", "check"),
     "River bets": ("--street", "river", "--facing", "bet"),
     "River c-bets": ("--street", "river", "--pfa", "--facing", "check"),
+    "3rd Barrel": ("--quick", "cbet_river"),
+    "Missed 3rd Barrel": ("--quick", "cbet_river_not"),
     "River in 3-bet pots": ("--pot", "3bet", "--street", "river"),
     "All-in decisions": ("--allin",),
 }
@@ -377,14 +382,19 @@ REPORT_FAMILY = {
     "Flop c-bets IP": "flop",
     "Flop c-bets OOP": "flop",
     "Flop vs c-bet": "flop",
+    "Raise C-bet": "flop",
     "Donk flop": "flop",
     "Check-raise flop": "flop",
     "Flop in 3-bet pots": "flop",
     "Turn c-bets": "turn",
+    "2nd Barrel": "turn",
+    "Missed 2nd Barrel": "turn",
     "Turn vs bet": "turn",
     "Probe turn": "turn",
     "River bets": "river",
     "River c-bets": "river",
+    "3rd Barrel": "river",
+    "Missed 3rd Barrel": "river",
     "River in 3-bet pots": "river",
     "All-in decisions": "other",
 }
@@ -399,18 +409,28 @@ REPORT_RELATED = {
     "4-bet pots": ("3-bet pots", "Facing a 4-bet"),
     "Limped pots": ("Single-raised pots", "Donk flop"),
     "Flop c-bets": ("Flop vs c-bet", "Flop c-bets IP", "Flop c-bets OOP",
-                    "Turn c-bets", "Flop in 3-bet pots"),
+                    "Turn c-bets", "2nd Barrel", "Flop in 3-bet pots"),
     "Flop c-bets IP": ("Flop c-bets OOP", "Flop c-bets", "Flop vs c-bet"),
     "Flop c-bets OOP": ("Flop c-bets IP", "Flop c-bets", "Check-raise flop"),
-    "Flop vs c-bet": ("Flop c-bets", "Check-raise flop", "Turn vs bet"),
+    "Flop vs c-bet": ("Flop c-bets", "Raise C-bet", "Check-raise flop",
+                      "Turn vs bet"),
+    "Raise C-bet": ("Flop vs c-bet", "Check-raise flop", "2nd Barrel",
+                    "3rd Barrel"),
     "Donk flop": ("Flop c-bets", "Check-raise flop", "Limped pots"),
     "Check-raise flop": ("Flop vs c-bet", "Flop c-bets OOP", "Turn vs bet"),
     "Flop in 3-bet pots": ("3-bet pots", "Flop c-bets", "River in 3-bet pots"),
-    "Turn c-bets": ("Flop c-bets", "Turn vs bet", "Probe turn", "River c-bets"),
+    "Turn c-bets": ("Flop c-bets", "2nd Barrel", "Missed 2nd Barrel",
+                    "Turn vs bet", "Probe turn", "River c-bets"),
+    "2nd Barrel": ("Missed 2nd Barrel", "Turn c-bets", "3rd Barrel",
+                   "Flop c-bets"),
+    "Missed 2nd Barrel": ("2nd Barrel", "Turn c-bets", "3rd Barrel"),
     "Turn vs bet": ("Turn c-bets", "Flop vs c-bet", "River bets"),
     "Probe turn": ("Turn c-bets", "Turn vs bet", "Flop c-bets"),
     "River bets": ("River c-bets", "Turn vs bet", "River in 3-bet pots"),
-    "River c-bets": ("Turn c-bets", "River bets", "River in 3-bet pots"),
+    "River c-bets": ("Turn c-bets", "3rd Barrel", "Missed 3rd Barrel",
+                     "River bets", "River in 3-bet pots"),
+    "3rd Barrel": ("Missed 3rd Barrel", "River c-bets", "2nd Barrel"),
+    "Missed 3rd Barrel": ("3rd Barrel", "River c-bets", "2nd Barrel"),
     "River in 3-bet pots": ("Flop in 3-bet pots", "3-bet pots", "River bets"),
     "All-in decisions": ("River bets", "Facing a 4-bet"),
 }
@@ -929,11 +949,12 @@ _STREET_COLUMNS = {
 # VPIP blanks a river filter.
 QUICK_PACKS = {
     "cbet_flop": ["cbet_flop", "fold_to_cbet", "raise_cbet", "cbet_turn",
-                  "donk_flop", "flop_agg"],
-    "cbet_flop_not": ["cbet_flop", "delayed_cbet", "cbet_turn", "flop_agg",
-                      "donk_flop"],
+                  "cbet_river", "donk_flop", "flop_agg"],
+    "cbet_flop_not": ["cbet_flop", "delayed_cbet", "cbet_turn", "cbet_river",
+                      "flop_agg", "donk_flop"],
     "raise_cbet": ["raise_cbet", "fold_to_cbet", "cbet_flop",
-                   "checkraise_flop", "flop_agg", "fold_to_turn_bet"],
+                   "cbet_turn", "cbet_river", "checkraise_flop", "flop_agg",
+                   "fold_to_turn_bet"],
     "fold_to_cbet": ["fold_to_cbet", "raise_cbet", "cbet_flop",
                      "checkraise_flop", "float_turn", "fold_to_turn_bet"],
     "donk_flop": ["donk_flop", "fold_to_donk", "cbet_flop", "flop_agg",
@@ -1233,9 +1254,12 @@ def spot_summary(con, where, argv):
 #   bet 5, face a raise, fold          →  −5   (amount on THIS action)
 #
 # Not Won$ of the hand, not all-in EV, not Call Profit Rate.
+# Call Profit Rate is the sibling below: actual calls, when raise
+# was also an option. It is not this CASE with later pot stuffed in.
 ACTION_PROFIT_EDGES = (
     "called-and-played-on is unpriced -- later pot is not assigned "
-    "back to this bet (that is Call Profit Rate, deferred)",
+    "back to this bet. That number, when they called instead, is "
+    "Call Profit Rate",
     "multiway: priced only when every other seat folds; a call from "
     "any one of them, or a showdown, is unpriced",
     "later streets after a call are not this action's money",
@@ -1243,6 +1267,36 @@ ACTION_PROFIT_EDGES = (
     "uncalled chips come back and are not subtracted",
     "rake is not subtracted from +pot; if rake ate the pot (won=0) "
     "the line is unpriced rather than guessed as a loss",
+    "MTT chips are not dollars -- tournament rows stay unpriced",
+)
+
+# Call Profit Rate. Sibling to Action Profit in the same spot, used
+# to compare the two things they could do when both were legal.
+#
+# This is accounting of ACTUAL calls, not the EV of calling when they
+# raised. Inventing the other action's result is a solver; a tracker
+# reports what happened. The two means sit next to each other so a
+# "Flop vs c-bet" report can say: when I raised, Action Profit was X
+# (priced raises); when I called, Call Profit Rate was Y (priced calls).
+#
+# A priced call is: to_call > 0 (facing a bet or raise, including a
+# limp), not all-in (so a raise was still possible), cash game.
+# Profit is (won − chips this seat put in from THIS action on) / bb.
+# Later streets are assigned back on purpose -- that is the point of
+# the number, and why Action Profit leaves the same pot unpriced.
+# won already has rake out where the site writes it; we do not guess
+# a rake that was not written.
+CALL_PROFIT_EDGES = (
+    "only actual calls are priced -- a raise is not scored as if they "
+    "had called (that would be EV, and we do not have it)",
+    "raise had to be an option: to_call > 0 and not all-in. An all-in "
+    "call is a call with no raise behind it",
+    "profit is (won − chips this seat put in from this action on) / bb. "
+    "Later streets are assigned back; that is accounting, not equity",
+    "a limp is a call with raise available and is priced",
+    "mean over priced calls, not over opportunities, not Action Profit, "
+    "not Won$ of the whole hand (blinds and earlier streets stay out "
+    "of the cost, and in won if they win)",
     "MTT chips are not dollars -- tournament rows stay unpriced",
 )
 
@@ -1309,6 +1363,83 @@ def action_profit_of(con, where):
     }
 
 
+def _chips_from_here_sql(d="d"):
+    """Chips this seat put in from this decision through the end of the hand."""
+    return (
+        f"(SELECT SUM(IFNULL(x.amount, 0)) FROM decisions x "
+        f"WHERE x.hand_id = {d}.hand_id AND x.seat = {d}.seat "
+        f"AND x.n >= {d}.n)"
+    )
+
+
+def call_profit_sql(d="d", s="s"):
+    """
+    bb attributed to an actual call when raise was also legal, or NULL.
+
+    Not the EV of calling. A raise in the same spot stays NULL so the
+    mean cannot be dragged by a counterfactual we do not have.
+    """
+    later = _chips_from_here_sql(d)
+    cash = (f"{s}.fmt IS NOT NULL AND {s}.fmt <> 'MTT' "
+            f"AND {d}.bb")
+    # action='C' is the call (and the limp). All-in calls are written
+    # 'A' with agg=0; those have no raise behind them. allin=0 is the
+    # same fact from the other column, so a missing allin cannot sneak
+    # a shove into the mean.
+    priced = (
+        f"{d}.action = 'C' AND {d}.to_call > 0 "
+        f"AND IFNULL({d}.allin, 0) = 0 "
+        f"AND IFNULL({d}.amount, 0) > 0 "
+        f"AND {cash} AND {s}.won IS NOT NULL"
+    )
+    return (
+        f"CASE WHEN {priced} THEN ({s}.won - {later}) / {d}.bb "
+        f"ELSE NULL END"
+    )
+
+
+def call_profit_of(con, where):
+    """
+    Realized profit of calls in this spot, when raise was also an option.
+
+    The mean is over priced calls -- not over opportunities, not over
+    the raises in the same filter, not over Won$ of those hands. A
+    filter that is only raises comes back unpriced, which is the
+    answer: there is no call here to account.
+    """
+    expr = call_profit_sql()
+    row = con.execute(
+        f"""
+        SELECT
+          COUNT(*) AS n,
+          SUM({expr} IS NOT NULL) AS priced,
+          SUM({expr}) AS profit
+        FROM (SELECT * FROM decisions WHERE {where}) d
+        LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
+        """
+    ).fetchone()
+    n, priced, profit = row[0] or 0, row[1] or 0, row[2]
+    return {
+        "n": n, "priced": priced, "unpriced": n - priced,
+        "total_bb": profit if profit is not None else 0.0,
+        "bb_per_hand": ((profit or 0.0) / priced) if priced else None,
+        "per": "priced calls",
+        "note": ("call 5, win the pot, no more chips in = +pot_before; "
+                 "call 5 and lose = −5. Mean over priced calls, not "
+                 "opportunities, not Action Profit, not EV."),
+        "edges": list(CALL_PROFIT_EDGES),
+    }
+
+
+def _profit_cells(p):
+    """One pair of display cells: the mean, and how many were priced."""
+    if p.get("bb_per_hand") is not None:
+        return f"{p['bb_per_hand']:+.2f} bb", f"{p['priced']:,} priced"
+    if p.get("n"):
+        return "–", f"{p['n']:,} unpriced"
+    return "–", "–"
+
+
 def pin_sides(argv, name):
     """
     This filter vs a named report, same person.
@@ -1332,11 +1463,13 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
     """
     Two spots, the numbers Hand2Note pins next to each other.
 
-    Hits/opps, the primary frequency, hits per 1k, and Action Profit
-    v1 when priced. The frequency gap is an interval on the
-    DIFFERENCE (Newcombe), not whether the two bands overlap. Profit
-    is two means sitting next to each other -- v1 has no interval on
-    a mean of priced hits, and inventing one would look like EV.
+    Hits/opps, the primary frequency, hits per 1k, Action Profit
+    v1 when priced, and Call Profit Rate when a call with raise
+    available is in the filter. The frequency gap is an interval on
+    the DIFFERENCE (Newcombe), not whether the two bands overlap.
+    Profit is two means sitting next to each other -- v1 has no
+    interval on a mean of priced hits, and inventing one would look
+    like EV.
     """
     where_a, label_a, _ = build(situation_only(argv_a))
     where_b, label_b, _ = build(situation_only(argv_b))
@@ -1345,6 +1478,8 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
     sb = spot_summary(con, where_b, argv_b)
     pa = action_profit_of(con, where_a)
     pb = action_profit_of(con, where_b)
+    ca = call_profit_of(con, where_a)
+    cb = call_profit_of(con, where_b)
     freq_diff = None
     if sa.get("opps") and sb.get("opps"):
         d, lo, hi, pv = difference(sa["hits"], sa["opps"],
@@ -1352,9 +1487,9 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
         freq_diff = {"d": d, "lo": lo, "hi": hi, "p": pv}
     return {
         "a": {"name": name_a, "label": label_a, "argv": list(argv_a),
-              "summary": sa, "profit": pa},
+              "summary": sa, "profit": pa, "call_profit": ca},
         "b": {"name": name_b, "label": label_b, "argv": list(argv_b),
-              "summary": sb, "profit": pb},
+              "summary": sb, "profit": pb, "call_profit": cb},
         "freq_diff": freq_diff,
     }
 
@@ -1375,21 +1510,18 @@ def show_compare(got):
         hits = (f"{s['hits']:,} / {s['opps']:,}" if s.get("opps") else "–")
         freq = f"{s['pct']:.1f}%" if s.get("opps") else "–"
         per = f"{s['per_1k']:.1f}" if s.get("hands") else "–"
-        if p.get("bb_per_hand") is not None:
-            ap = f"{p['bb_per_hand']:+.2f} bb"
-            priced = f"{p['priced']:,} priced"
-        elif p.get("n"):
-            ap, priced = "–", f"{p['n']:,} unpriced"
-        else:
-            ap, priced = "–", "–"
-        return hits, freq, per, ap, priced
+        ap, priced = _profit_cells(p)
+        cp, cpriced = _profit_cells(side.get("call_profit") or {})
+        return hits, freq, per, ap, priced, cp, cpriced
 
     ca, cb = cells(a), cells(b)
     rows = (("hits / opps", ca[0], cb[0]),
             (f"freq  ({a['summary'].get('label') or 'hits'})", ca[1], cb[1]),
             ("hits / 1000", ca[2], cb[2]),
             ("action profit", ca[3], cb[3]),
-            ("", ca[4], cb[4]))
+            ("", ca[4], cb[4]),
+            ("call profit", ca[5], cb[5]),
+            ("", ca[6], cb[6]))
     print(f"{'':20} {'THIS':>18} {'PINNED':>18}")
     for label, x, y in rows:
         print(f"{label:20} {x:>18} {y:>18}")
@@ -1401,7 +1533,8 @@ def show_compare(got):
         print("  interval on the difference, not whether the two "
               "bands overlap")
     print()
-    print("  Action Profit is v1 (priced hits). A dash is unpriced. "
+    print("  Action Profit is v1 (priced hits). Call Profit is actual "
+          "calls when raise was also legal. A dash is unpriced. "
           "--versus is the Holm table of every stat.")
 
 
@@ -1409,17 +1542,20 @@ def matching_hands(con, where, limit=None):
     """
     Each (hand, seat) the filter selected, with hand net and action profit.
 
-    `net_bb` is what the hand did. `act_bb` is what THIS action did, and
-    the two sitting next to each other is the point: a won hand whose
-    cbet was called is +net and unpriced act, which is a different
-    sentence from mixing them into one number.
+    `net_bb` is what the hand did. `act_bb` is what THIS action did.
+    `call_bb` is Call Profit Rate on the same row -- only a call with
+    raise available is priced. The three sitting next to each other
+    is the point: a won hand whose cbet was called is +net, unpriced
+    act, and (if they were the caller) a priced call, which is a
+    different sentence from mixing them into one number.
     """
     expr = action_profit_sql()
+    call = call_profit_sql()
     sql = (
         f"SELECT d.hand_id, d.seat, MAX(d.played_at), MAX(d.site), "
         f"       MAX(d.bb), MAX(d.position), MAX(d.combo), MAX(d.board), "
         f"       MAX(s.net_bb), SUM({expr}), "
-        f"       SUM({expr} IS NOT NULL), COUNT(*) "
+        f"       SUM({expr} IS NOT NULL), COUNT(*), SUM({call}) "
         f"FROM (SELECT * FROM decisions WHERE {where}) d "
         f"LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
         f"GROUP BY d.hand_id, d.seat "
@@ -1428,12 +1564,13 @@ def matching_hands(con, where, limit=None):
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = []
-    for hid, seat, when, site, bb, pos, combo, board, net, act, priced, hits \
-            in con.execute(sql):
+    for (hid, seat, when, site, bb, pos, combo, board, net, act, priced,
+         hits, call_bb) in con.execute(sql):
         rows.append({
             "id": hid, "seat": seat, "when": when, "site": site, "bb": bb,
             "pos": pos, "combo": combo, "board": board, "net": net,
             "act": act, "priced": priced or 0, "hits": hits or 0,
+            "call": call_bb,
         })
     return rows
 
@@ -1493,6 +1630,21 @@ def chain_of(con, where, same_seat=False):
         out.append({"key": "", "label": "nothing further",
                     "n": total, "k": none,
                     "pct": 100 * p, "band": 100 * (hi - lo) / 2})
+    # Squeeze is any later squeeze, not the first later action, so it
+    # can sit on an open (first later action = the call) without
+    # stealing the raise row. It is an overlay: the first-action rows
+    # still partition.
+    squeeze_n = con.execute(
+        f"""
+        SELECT COUNT(*) FROM (SELECT * FROM decisions WHERE {where}) d
+        WHERE {_later_any_sql(same_seat, AFTER["squeeze"], "d")}
+        """
+    ).fetchone()[0]
+    if squeeze_n and total:
+        p, lo, hi = wilson(squeeze_n, total)
+        out.append({"key": "squeeze", "label": "squeeze",
+                    "n": total, "k": squeeze_n,
+                    "pct": 100 * p, "band": 100 * (hi - lo) / 2})
     return {"n": total, "rows": out,
             "flag": "--then" if same_seat else "--after"}
 
@@ -1513,8 +1665,12 @@ def chain_report(con, where, argv=None, same_seat=False):
     argv = situation_only(list(argv or []))
     for r in blob["rows"]:
         key = r["key"] or "none"
-        extra = (_ended_sql(same_seat) if key == "none"
-                 else _next_sql(same_seat, AFTER[key]))
+        if key == "none":
+            extra = _ended_sql(same_seat)
+        elif key == "squeeze":
+            extra = _later_any_sql(same_seat, AFTER["squeeze"])
+        else:
+            extra = _next_sql(same_seat, AFTER[key])
         child_where = f"({where}) AND ({extra})"
         r["hits"] = r["k"]
         r["opps"] = opps
@@ -1743,15 +1899,26 @@ AFTER = {
     "bet": "agg = 1 AND to_call = 0",
     "raise": "agg = 1 AND to_call > 0",
     "continue": "action <> 'F'",
+    # Squeeze is not the first later action. After an open the first
+    # later action is usually the call; the squeeze is the raise that
+    # comes after that call. The predicate is the squeeze stat's
+    # chance-and-action on a LATER row -- n_live>=4 and pot_bb>4 is
+    # the caller-already-in proxy that stat already uses -- so
+    # `--after squeeze` and `--quick squeeze` agree on what a squeeze
+    # is. `--live` plus `--after raise` still works; this is that,
+    # named.
+    "squeeze": ("agg = 1 AND street = 'preflop' AND facing = 'open' "
+                "AND n_live >= 4 AND pot_bb > 4"),
 }
 # Names a person types after an open. They are the same first-later
 # action -- a 3-bet is a raise -- so they share SQL and stay one
-# filter language. Squeeze is not here: it needs callers already in,
-# which is `--live` plus `--after raise`, not a third verb.
+# filter language. Squeeze is its own verb: any later squeeze, not
+# the first later action, because that is where the data supports it.
 AFTER_ALIAS = {
     "fold-out": "fold", "fold_out": "fold", "foldout": "fold",
     "3bet": "raise", "3-bet": "raise",
     "none": "none", "end": "none",
+    "squeeze": "squeeze", "sqz": "squeeze", "squeezed": "squeeze",
 }
 
 
@@ -1761,6 +1928,16 @@ def _later_other(pred):
         "EXISTS (SELECT 1 FROM decisions x "
         "WHERE x.hand_id = decisions.hand_id AND x.n > decisions.n "
         f"AND x.seat <> decisions.seat AND ({pred}))"
+    )
+
+
+def _later_any_sql(same_seat, pred, alias="decisions"):
+    """A later action exists matching pred -- not necessarily the first."""
+    cmp = "=" if same_seat else "<>"
+    return (
+        "EXISTS (SELECT 1 FROM decisions x "
+        f"WHERE x.hand_id = {alias}.hand_id AND x.n > {alias}.n "
+        f"AND x.seat {cmp} {alias}.seat AND ({pred}))"
     )
 
 
@@ -1925,6 +2102,7 @@ def _next_sql(same_seat, pred):
 NEGATIVES = {
     "cbet_flop": "Missed Continuation Bet Flop",
     "cbet_turn": "Missed 2nd Barrel Turn",
+    "cbet_river": "Missed 3rd Barrel River",
     "threebet": "Did Not 3-Bet",
     "steal": "Did Not Steal",
     "fold_to_cbet": "Continued vs Continuation Bet",
@@ -2109,7 +2287,14 @@ def build(argv):
                         raise SystemExit(
                             f"unknown next action {name!r} -- one of: "
                             f"{', '.join(list(AFTER) + ['none'])}")
-                    parts.append(_next_sql(same, AFTER[key]))
+                    if key == "squeeze":
+                        # Any later squeeze, not the first later action.
+                        # After an open the first later action is the
+                        # call; `--after raise` would miss the squeeze.
+                        parts.append(
+                            _later_any_sql(same, AFTER["squeeze"]))
+                    else:
+                        parts.append(_next_sql(same, AFTER[key]))
                     words.append(key)
                 described.append(
                     ("then " if same else "after ") + ", ".join(words))
@@ -2702,6 +2887,8 @@ def show_chain_report(con, where, label, argv, same_seat=False):
     print("  apply a row with --after / --then / --branch, or click it.")
     print("  act bb is Action Profit v1 on the parent action given this")
     print("  continuation -- not Won$, not EV. A dash is unpriced.")
+    print("  squeeze is any later squeeze (callers already in), not the")
+    print("  first later action. After an open that is usually the call.")
 
 
 def show_stats(con, where, label, parts=(), related=None, argv=None):
@@ -2736,6 +2923,19 @@ def show_stats(con, where, label, parts=(), related=None, argv=None):
             print(f"  action profit  unpriced on {prof['n']:,} hits"
                   f"  ({prof['note']})")
             for edge in prof["edges"]:
+                print(f"    unpriced: {edge}")
+        callp = call_profit_of(con, where)
+        if callp["priced"]:
+            print(f"  call profit    {callp['bb_per_hand']:+.2f} bb/hand"
+                  f"  n={callp['priced']:,} priced calls of {callp['n']:,} hits"
+                  f"  (actual calls, not EV of calling)")
+            print(f"  {callp['note']}")
+            for edge in callp["edges"]:
+                print(f"    unpriced: {edge}")
+        elif callp["n"]:
+            print(f"  call profit    unpriced on {callp['n']:,} hits"
+                  f"  ({callp['note']})")
+            for edge in callp["edges"]:
                 print(f"    unpriced: {edge}")
         print()
     # What they did HERE, before the named stats. A cbet frequency is "of
@@ -3401,8 +3601,8 @@ def show_hands(con, where, label, limit=40, parts=()):
         print("  " + why_empty(con, parts))
         return
     print(f"    {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
-          f"{'net bb':>7} {'act bb':>7}  board")
-    print("    " + "-" * 82)
+          f"{'net bb':>7} {'act bb':>7} {'call bb':>8}  board")
+    print("    " + "-" * 92)
     shown = rows[:limit]
     notes.attach(con)
     notes.decorate(con, shown)
@@ -3411,6 +3611,7 @@ def show_hands(con, where, label, limit=40, parts=()):
     for r in shown:
         when = (r["when"] or "")[:16]
         act = (f"{r['act']:+.1f}" if r["act"] is not None else "   –")
+        call = (f"{r['call']:+.1f}" if r.get("call") is not None else "    –")
         net = r["net"] if r["net"] is not None else 0
         star = "*" if r.get("marked") else " "
         extra = ",".join(r.get("tags") or [])
@@ -3418,13 +3619,14 @@ def show_hands(con, where, label, limit=40, parts=()):
             extra = (extra + " " if extra else "") + f"n{r['n_notes']}"
         print(f"  {star} {when:17} {r['site'] or '':10} {r['bb'] or 0:5.2f} "
               f"{r['pos'] or '?':4} {r['combo'] or '--':5} "
-              f"{net:7.1f} {act:>7}  {r['board'] or ''}"
+              f"{net:7.1f} {act:>7} {call:>8}  {r['board'] or ''}"
               + (f"  {extra}" if extra else ""))
         if r.get("compact"):
             print(f"    {r['compact']}")
     print()
-    print("  act bb is this action (v1); net bb is the whole hand. "
-          "A dash is unpriced -- see action profit on --stats.")
+    print("  act bb is Action Profit v1; call bb is Call Profit Rate "
+          "(actual calls, raise also legal); net bb is the whole hand. "
+          "A dash is unpriced -- see --stats.")
     print("  The second line is the compact hand: X check, B/C/R + bb, "
           "' all-in. Marked actions are this row's seat.")
 
@@ -3486,9 +3688,12 @@ def usage():
     print(f"    {'--related':14} neighbouring spots from this filter "
           f"(also printed under --stats)")
     print(f"    {'--after':14} first later action by another seat: "
-          f"{', '.join(list(AFTER) + ['none'])} (fold-out/3bet alias fold/raise)")
+          f"{', '.join(list(AFTER) + ['none'])} "
+          f"(fold-out/3bet alias fold/raise; squeeze is any later "
+          f"squeeze, not the first later action)")
     print(f"    {'--then':14} first later action by this player: "
-          f"{', '.join(list(AFTER) + ['none'])}")
+          f"{', '.join(list(AFTER) + ['none'])} "
+          f"(squeeze is any later squeeze by this seat)")
     print(f"    {'--faced-next':14} Faced Next report (freq, hits/opps, "
           f"action profit) from this filter")
     print(f"    {'--next-actions':14} Next Actions report, same columns")
@@ -3523,7 +3728,7 @@ def usage():
     print(f"    {'--filter':14} the same, a --quick key, JSON argv, "
           f"or a FilterDef object")
     print(f"    {'--pin':14} freeze a named report, same person: "
-          f"two-column Hits/Opps / freq / Action Profit")
+          f"two-column Hits/Opps / freq / Action Profit / Call Profit")
     print(f"    {'--compare':14} two named reports, same columns "
           f"(--compare \"Flop c-bets\" \"Flop vs c-bet\")")
     print(f"    {'--versus':14} Holm table of every stat between "
@@ -3558,6 +3763,9 @@ SCAN_OK = {
     "--after none":
         "the hand ended after this decision: NOT EXISTS on n+1, same "
         "shape as --after fold",
+    "--after squeeze":
+        "a later squeeze is EXISTS over a later row of the same hand, "
+        "the same shape as --after fold, and not the first later action",
     "--outcome fold-out":
         "the pot's answer after this bet is an EXISTS over later rows "
         "of the same hand, the same shape as --after and for the same "
@@ -3599,6 +3807,8 @@ def check_shape():
             (["--after", "none"], "NOT EXISTS"),
             (["--after", "fold-out"], "action = 'F'"),
             (["--after", "3bet"], "agg = 1"),
+            (["--after", "squeeze"], "n_live >= 4"),
+            (["--after", "raise"], "MIN(y.n)"),
             (["--players", "6"], "n_players = 6"),
             (["--live", "2"], "n_live = 2"),
             (["--marked"], "study.hand_marks"),
@@ -3610,6 +3820,9 @@ def check_shape():
         where, _label, _p = build(argv)
         if needle not in where.replace("0.40", "0.4"):
             fails.append(f"{argv} built {where!r}, expected {needle!r}")
+    sq_where, _, _ = build(["--after", "squeeze"])
+    if "MIN(y.n)" in sq_where:
+        fails.append("--after squeeze used first-later MIN -- it is any later")
     if resolve_filter("Flop c-bets") != list(SMART_REPORTS["Flop c-bets"]):
         fails.append("--filter did not open a Smart Report")
     if resolve_filter("cbet_flop") != ["--quick", "cbet_flop"]:
@@ -3618,6 +3831,19 @@ def check_shape():
         fails.append("--filter JSON argv did not expand")
     if columns_for(["--quick", "raise_cbet"])[0] != "raise_cbet":
         fails.append("raise-cbet pack does not lead with raise_cbet")
+    raise_pack = columns_for(["--quick", "raise_cbet"])
+    if "cbet_turn" not in raise_pack:
+        fails.append("raise-cbet pack dropped 2nd barrel")
+    if "cbet_river" not in raise_pack:
+        fails.append("raise-cbet pack dropped 3rd barrel")
+    if "cbet_river" not in columns_for(["--quick", "cbet_flop"]):
+        fails.append("cbet pack dropped 3rd barrel")
+    if "cbet_river_not" not in quick_by_key():
+        fails.append("Missed 3rd Barrel is not a quick filter")
+    if resolve_filter("Missed 2nd Barrel") != ["--quick", "cbet_turn_not"]:
+        fails.append("--filter did not open Missed 2nd Barrel")
+    if resolve_filter("3rd Barrel") != ["--quick", "cbet_river"]:
+        fails.append("--filter did not open 3rd Barrel")
     if "vpip" in columns_for(["--quick", "cbet_flop"]):
         fails.append("cbet pack still leads with VPIP")
     if size_sql("s") != "pot_frac IS NOT NULL AND pot_frac <= 0.4" and \
@@ -3768,17 +3994,18 @@ def check_compare():
         "CREATE TABLE decisions ("
         "hand_id TEXT, n INT, seat INT, action TEXT, agg INT, "
         "to_call REAL, amount REAL, pot_before REAL, bb REAL, "
-        "first_in INT, was_agg INT, pot_frac REAL, street TEXT)")
+        "first_in INT, was_agg INT, pot_frac REAL, street TEXT, "
+        "allin INT)")
     con.execute(
         "CREATE TABLE spots ("
         "hand_id TEXT, seat INT, fmt TEXT, wtsd INT, won REAL, net_bb REAL)")
     con.executemany(
-        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
-         ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop"),
-         ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
-         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop"),
-         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop")])
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop", 0),
+         ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop", 0),
+         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", 0)])
     con.executemany(
         "INSERT INTO spots VALUES (?,?,?,?,?,?)",
         [("h1", 1, "RING", 0, 15, 10),
@@ -3837,21 +4064,21 @@ def check_cohort():
         "hand_id TEXT, n INT, seat INT, action TEXT, agg INT, "
         "to_call REAL, amount REAL, pot_before REAL, bb REAL, "
         "first_in INT, was_agg INT, pot_frac REAL, street TEXT, "
-        "site TEXT, player TEXT)")
+        "site TEXT, player TEXT, allin INT)")
     con.execute(
         "CREATE TABLE spots ("
         "hand_id TEXT, seat INT, fmt TEXT, wtsd INT, won REAL, net_bb REAL)")
     # loose: two first-in bets (the compare fixture). tight/short: one each,
     # so a cohort that forgot to join would still have "some" hits.
     con.executemany(
-        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "loose"),
-         ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop", "acr", "tight"),
-         ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "loose"),
-         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop", "acr", "tight"),
-         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", "acr", "loose"),
-         ("h9", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "tight"),
-         ("h8", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "short")])
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "loose", 0),
+         ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop", "acr", "tight", 0),
+         ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "loose", 0),
+         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop", "acr", "tight", 0),
+         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", "acr", "loose", 0),
+         ("h9", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "tight", 0),
+         ("h8", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "short", 0)])
     con.executemany(
         "INSERT INTO spots VALUES (?,?,?,?,?,?)",
         [("h1", 1, "RING", 0, 15, 10),
@@ -4029,6 +4256,15 @@ def check_fixture():
     ]
     con.executemany(
         "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    # Call Profit Rate reads allin (an all-in call could not raise).
+    # Faced Next squeeze reads facing / n_live / pot_bb on a later
+    # row. Added here so matching_hands and chain_report, which now
+    # always touch those, cannot fail on the original three-hand table.
+    con.execute("ALTER TABLE decisions ADD COLUMN allin INT")
+    con.execute("ALTER TABLE decisions ADD COLUMN facing TEXT")
+    con.execute("ALTER TABLE decisions ADD COLUMN n_live INT")
+    con.execute("ALTER TABLE decisions ADD COLUMN pot_bb REAL")
+    con.execute("UPDATE decisions SET allin = 0")
     fails = []
     bets = "seat = 1 AND agg = 1"
     outs = outcomes_of(con, bets)
@@ -4080,10 +4316,13 @@ def check_fixture():
          ("h3", 1, "RING", 1, 20, 5),
          ("h5", 1, "RING", 0, 0, -5)])
     con.executemany(
-        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
-         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop"),
-         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop")])
+        "INSERT INTO decisions "
+        "(hand_id,n,seat,action,agg,to_call,amount,pot_before,bb,"
+        "first_in,was_agg,pot_frac,street,allin) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop", 0),
+         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", 0)])
     for where, want, priced in (
             ("hand_id='h1' AND seat=1 AND agg=1", 10.0, 1),
             ("hand_id='h5' AND seat=1 AND agg=1", -5.0, 1),
@@ -4137,6 +4376,122 @@ def check_fixture():
     total = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
     if none_n == 0 or none_n == total:
         fails.append(f"--after none selected {none_n} of {total}")
+
+    # Call Profit Rate: actual calls when raise was also legal.
+    # allin is already on the table (see above).
+    # h6: call 5 into pot 15, no more chips, win 20 → +15 (= pot_before)
+    # h7: call 5, lose → −5
+    # h8: all-in call -- raise was not an option, unpriced
+    # h9: MTT call -- chips are not dollars, unpriced
+    # h10: call 5 then bet 10, win 40 → (40-15)/1 = +25 (later assigned back)
+    con.executemany(
+        "INSERT INTO decisions "
+        "(hand_id,n,seat,action,agg,to_call,amount,pot_before,bb,"
+        "first_in,was_agg,pot_frac,street,allin) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h6", 1, 2, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h6", 2, 1, "C", 0, 5, 5, 15, 1, 0, 0, 0.33, "flop", 0),
+         ("h7", 1, 2, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h7", 2, 1, "C", 0, 5, 5, 15, 1, 0, 0, 0.33, "flop", 0),
+         ("h8", 1, 2, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h8", 2, 1, "C", 0, 5, 5, 15, 1, 0, 0, 0.33, "flop", 1),
+         ("h9", 1, 2, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h9", 2, 1, "C", 0, 5, 5, 15, 1, 0, 0, 0.33, "flop", 0),
+         ("h10", 1, 2, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
+         ("h10", 2, 1, "C", 0, 5, 5, 15, 1, 0, 0, 0.33, "flop", 0),
+         ("h10", 3, 1, "B", 1, 0, 10, 20, 1, 1, 1, 0.50, "turn", 0)])
+    con.executemany(
+        "INSERT INTO spots VALUES (?,?,?,?,?,?)",
+        [("h6", 1, "RING", 1, 20, 10),
+         ("h7", 1, "RING", 1, 0, -5),
+         ("h8", 1, "RING", 1, 20, 10),
+         ("h9", 1, "MTT", 1, 20, 10),
+         ("h10", 1, "RING", 1, 40, 20)])
+    for where, want, priced in (
+            ("hand_id='h6' AND seat=1 AND action='C'", 15.0, 1),
+            ("hand_id='h7' AND seat=1 AND action='C'", -5.0, 1),
+            ("hand_id='h10' AND seat=1 AND action='C'", 25.0, 1)):
+        got = call_profit_of(con, where)
+        if got["priced"] != priced or got["bb_per_hand"] != want:
+            fails.append(
+                f"call profit {where} was {got['bb_per_hand']} "
+                f"on {got['priced']} priced, expected {want} on {priced}")
+    shove = call_profit_of(con, "hand_id='h8' AND seat=1 AND action='C'")
+    if shove["priced"] or shove["bb_per_hand"] is not None:
+        fails.append("an all-in call was priced -- raise was not an option")
+    mtt = call_profit_of(con, "hand_id='h9' AND seat=1 AND action='C'")
+    if mtt["priced"] or mtt["bb_per_hand"] is not None:
+        fails.append("an MTT call was priced -- chips are not dollars")
+    bettor = call_profit_of(con, "hand_id='h1' AND seat=1 AND agg=1")
+    if bettor["priced"] or bettor["bb_per_hand"] is not None:
+        fails.append("a bet was priced as Call Profit -- only actual calls")
+    two = call_profit_of(
+        con, "seat=1 AND action='C' AND hand_id IN ('h6','h7')")
+    if two["priced"] != 2 or abs((two["bb_per_hand"] or 0) - 5.0) > 1e-9:
+        fails.append(
+            f"the two call examples averaged {two['bb_per_hand']}, "
+            f"not (15-5)/2")
+    per = matching_hands(con, "hand_id='h6' AND seat=1 AND action='C'")
+    if len(per) != 1 or per[0]["call"] != 15:
+        fails.append(
+            f"per-hand call profit was {per}, not +15 on the winning call")
+
+    # Squeeze: any later squeeze, not the first later action.
+    # h11: open, call, squeeze -- the open's first later action is the
+    # call; --after squeeze must still select the open.
+    # h12: open, 3-bet, no caller -- first later is raise, not a squeeze.
+    con.executemany(
+        "INSERT INTO decisions "
+        "(hand_id,n,seat,action,agg,to_call,amount,pot_before,bb,"
+        "first_in,was_agg,pot_frac,street,allin,facing,n_live,pot_bb) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h11", 1, 1, "R", 1, 0, 2.5, 1.5, 1, 1, 1, None, "preflop",
+          0, "unopened", 6, 1.5),
+         ("h11", 2, 2, "C", 0, 2.5, 2.5, 4.0, 1, 0, 0, None, "preflop",
+          0, "open", 5, 4.0),
+         ("h11", 3, 3, "R", 1, 2.5, 10, 6.5, 1, 0, 1, None, "preflop",
+          0, "open", 4, 6.5),
+         ("h12", 1, 1, "R", 1, 0, 2.5, 1.5, 1, 1, 1, None, "preflop",
+          0, "unopened", 6, 1.5),
+         ("h12", 2, 2, "R", 1, 2.5, 8, 4.0, 1, 0, 1, None, "preflop",
+          0, "open", 5, 4.0)])
+    sq_w, _, _ = build(["--after", "squeeze"])
+    sq_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE ({sq_w}) AND hand_id='h11'"
+    ).fetchone()[0]
+    # Open and the call both have a later squeeze; the squeeze itself
+    # does not.
+    if sq_n != 2:
+        fails.append(
+            f"--after squeeze on the squeezed hand selected {sq_n}, "
+            f"not the open and the call")
+    sq_open = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE ({sq_w}) "
+        f"AND hand_id='h11' AND n=1"
+    ).fetchone()[0]
+    if sq_open != 1:
+        fails.append("--after squeeze missed the open (first later is the call)")
+    sq_3bet = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE ({sq_w}) AND hand_id='h12'"
+    ).fetchone()[0]
+    if sq_3bet:
+        fails.append("--after squeeze selected the no-caller 3-bet hand")
+    raise_w, _, _ = build(["--after", "raise"])
+    raise_open = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE ({raise_w}) "
+        f"AND hand_id='h11' AND n=1"
+    ).fetchone()[0]
+    if raise_open:
+        fails.append("--after raise selected the open that was called, "
+                     "not 3-bet -- that is first-later, and squeeze is not")
+    faced = chain_of(con, "hand_id='h11' AND n=1", False)
+    by = {r["key"]: r for r in faced["rows"]}
+    if "squeeze" not in by:
+        fails.append(f"faced next on the open missed squeeze: {sorted(by)}")
+    if (by.get("squeeze") or {}).get("k") != 1:
+        fails.append("faced next squeeze on the open was not 1")
+    if "call" not in by:
+        fails.append("faced next on the open dropped the first-later call")
     con.close()
     print(f"outcome/size/action-profit fixture  "
           f"{'yes' if not fails else 'NO'}")
@@ -4463,6 +4818,43 @@ def check(db_path=DB):
         "SELECT COUNT(*) FROM decisions WHERE action='F'").fetchone()[0]
     if prof["n"] and prof["priced"] < folds:
         fails.append("action profit did not price every fold as 0")
+    cp = call_profit_of(con, "1=0")
+    if cp["priced"] or cp["n"]:
+        fails.append("call profit on an empty filter was not empty")
+    cp = call_profit_of(con, "1=1")
+    if cp["priced"] + cp["unpriced"] != cp["n"]:
+        fails.append("call profit priced+unpriced != n")
+    # A raise is never a priced call -- that would be inventing EV.
+    agg_w, _, _ = build(["--aggressive"])
+    agg_cp = call_profit_of(con, agg_w)
+    if agg_cp["priced"]:
+        fails.append("call profit priced an aggressive action -- only "
+                     "actual calls")
+    calls = con.execute(
+        "SELECT COUNT(*) FROM decisions d "
+        "LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
+        "WHERE d.action = 'C' AND d.to_call > 0 "
+        "AND IFNULL(d.allin, 0) = 0 AND IFNULL(d.amount, 0) > 0 "
+        "AND s.fmt IS NOT NULL AND s.fmt <> 'MTT' AND d.bb "
+        "AND s.won IS NOT NULL"
+    ).fetchone()[0]
+    if cp["n"] and cp["priced"] != calls:
+        fails.append(
+            f"call profit priced {cp['priced']} of {calls} legal calls")
+    sq_w, _, _ = build(["--after", "squeeze"])
+    sq_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {sq_w}").fetchone()[0]
+    # squeeze may be empty on a tiny corpus; if it has rows it must
+    # narrow, and it must not be the same filter as --after raise.
+    raise_after, _, _ = build(["--after", "raise"])
+    raise_after_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {raise_after}"
+    ).fetchone()[0]
+    if sq_n == total:
+        fails.append("--after squeeze selected every decision")
+    if sq_n and sq_n == raise_after_n:
+        fails.append("--after squeeze and --after raise selected the "
+                     "same rows -- squeeze is any later, raise is first")
     faced = chain_of(con, "1=1", False)
     nxt = chain_of(con, "1=1", True)
     if faced["n"] and not faced["rows"]:
