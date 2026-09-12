@@ -288,16 +288,41 @@ key, or a JSON argv list. `--pin` is `--versus` pointed at another
 report, same person -- hero's flop c-bets against hero's vs-c-bet, not
 against the pool.
 
-The custom action builder is flags, not a second language:
+The custom action builder is flags, not a second language.
+`FilterDef` is those flags as a value -- line patterns plus the
+modifiers -- so a saved JSON object and a typed command compile to
+the same argv `build` already runs.
 
 ```bash
 python query.py --street flop --first-in --size m --outcome fold-out
 python query.py --players 6 --live 2 --last-raise --aggressive
+python query.py --street flop --first-raise --last-action --size 0.4-0.75
+python query.py --flop XBmC --stack 100+ --stats
+python query.py --filter '{"street":"flop","first_raise":true,"size":"m"}'
+python query.py --save "flop first-raise half-pot"
+python query.py --filters                  # also --presets
 ```
 
-`--first-in` / `--last-raise` are columns `decisions` already had.
-`--size` is `pot_frac` in the same buckets `lines.bucket` writes
-(`s m l p o`). `--players` / `--live` were already there.
+Modifiers:
+
+| flag | means |
+|---|---|
+| `--first-in` | first to put chips in on this street |
+| `--first-raise` | first raise on this street (an open, or the first raise of a bet -- a cbet is not) |
+| `--last-raise` | this player already raised on the street (`was_agg`) |
+| `--last-action` | this decision ended the street |
+| `--players` / `--live` | who sat / who is still in |
+| `--size m` | pot-frac bucket (`s m l p o`, same as `lines.bucket`) |
+| `--size 0.4-0.75` | a numeric pot-frac range (`50%+`, `<=0.33`, `40-75`) |
+| `--stack 100+` | effective stack in bb (`<40`, `80-200`). `--deep` / `--short` still work |
+| `--flop XBmC` | the street's action line, already the graph |
+
+`--save` / `--filter` / `--filters` / `--forget` are list, load and
+delete. There is no `filter list\|save\|load` subcommand -- those
+would be a second door on the same file.
+
+v1 does not let a line token name a seat (BTN bets). The line is the
+sequence; `--pos` / `--vs` name who this decision is. No graph widget.
 
 Then the named stats that can still occur inside the filter. Asking for
 a preflop stat inside `--street flop` gives nothing, which is correct

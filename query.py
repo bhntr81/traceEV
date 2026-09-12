@@ -44,6 +44,7 @@ import sys
 from pathlib import Path
 
 import json
+import re
 import shlex
 import tempfile
 
@@ -127,6 +128,9 @@ VALUE_FLAGS = {
     # is a checkbox and a letter, which is what the builder is for.
     "--size": None,
     "--outcome": None,
+    # Stack in bb as one range -- `--deep` / `--short` still work; this
+    # is the custom-builder spelling (`100+`, `<40`, `80-200`).
+    "--stack": None,
 }
 
 # Which columns each line flag can read: the actions alone, or the actions
@@ -145,6 +149,25 @@ LINE_FLAGS = {
     "--pre": ("pre", "pre_sz"), "--flop": ("flop", "flop_sz"),
     "--turn": ("turn", "turn_sz"), "--river": ("river", "river_sz"),
 }
+
+# First raise on this street: the open preflop, or the first raise of a
+# bet after the flop. A flop cbet is first-in, not first-raise; a raise
+# of that cbet is. `street_agg` is the count of earlier aggression, so
+# this is a column predicate and not a second walk of the hand.
+FIRST_RAISE_SQL = (
+    "agg = 1 AND ("
+    "(street = 'preflop' AND street_agg = 0) OR "
+    "(street <> 'preflop' AND street_agg = 1 AND to_call > 0))"
+)
+
+# Last action on this street. There is no column for it -- n is unique
+# per hand, not per street -- so this is the one correlated EXISTS the
+# custom builder needs.
+LAST_ACTION_SQL = (
+    "NOT EXISTS (SELECT 1 FROM decisions y "
+    "WHERE y.hand_id = decisions.hand_id "
+    "AND y.street = decisions.street AND y.n > decisions.n)"
+)
 
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
@@ -180,6 +203,11 @@ SWITCHES = {
     # way to say them was `--where first_in=1`.
     "--first-in": "first_in = 1",
     "--last-raise": "was_agg = 1",
+    # First raise on this street, and the last action on it. `--last-raise`
+    # is "this player already raised" (was_agg); these are about THIS
+    # action -- H2N's custom-builder modifiers, not a second graph.
+    "--first-raise": FIRST_RAISE_SQL,
+    "--last-action": LAST_ACTION_SQL,
     # Who is playing, which is the distortion this whole tracker averaged
     # over until now: people isolate wider and value-bet thinner against a
     # recreational player, so a pool number that mixes the two describes
@@ -547,9 +575,9 @@ def resolve_filter(name, path=None):
 
     The research brief wrote `report --filter <name|json>`. That is a
     Smart Report or a saved one, then a --quick key, then a JSON argv
-    list -- the three namespaces this file already has, not a fourth
-    language. `--preset` still works; this is the same door with a
-    wider lock.
+    list or a FilterDef object -- the namespaces this file already has,
+    not a fourth language. `--preset` still works; this is the same
+    door with a wider lock.
     """
     name = str(name).strip()
     known = reports(path)
@@ -557,17 +585,187 @@ def resolve_filter(name, path=None):
         return list(known[name])
     if name in quick_by_key():
         return ["--quick", name]
-    if name.startswith("["):
+    if name.startswith("[") or name.startswith("{"):
         try:
-            argv = json.loads(name)
+            obj = json.loads(name)
         except ValueError as e:
             raise SystemExit(f"--filter {name!r} is not JSON: {e}")
-        if not isinstance(argv, list):
-            raise SystemExit("--filter JSON must be a list of flags")
-        return [str(x) for x in argv]
+        if isinstance(obj, list):
+            return [str(x) for x in obj]
+        if isinstance(obj, dict):
+            return FilterDef.from_dict(obj).to_argv()
+        raise SystemExit("--filter JSON must be a list of flags or an object")
     raise SystemExit(
         f"unknown filter {name!r} -- a name from --presets, a key from "
-        f"--quick-list, or a JSON argv list")
+        f"--quick-list, a JSON argv list, or a FilterDef object")
+
+
+# The custom-builder modifiers, as flags. Everything else a filter can
+# say is `rest` so a full situation still round-trips through argv.
+_LINE_KEYS = ("--pre", "--flop", "--turn", "--river", "--line", "--node")
+_CUSTOM_SWITCHES = ("--first-in", "--first-raise", "--last-raise",
+                    "--last-action")
+_CUSTOM_VALUES = ("--players", "--live", "--size", "--stack")
+
+
+class FilterDef:
+    """
+    A custom filter as a value, not a string of flags.
+
+    Hand2Note's builder is a street-by-street action graph with modifiers
+    on the node. Here the graph is already a line string (`--flop XBmC`)
+    and the modifiers are columns `decisions` already has. This object
+    is that pair, so `--check` can name a modifier and a dialog can
+    round-trip without each front end parsing flags its own way.
+
+    Compiles to the same argv `build` already understands. Hits/Opps,
+    stats, the hand list, Faced Next, `--save` and `--filter` stay one
+    pipeline. There is no second language.
+    """
+
+    def __init__(self, lines=None, first_in=False, first_raise=False,
+                 last_raise=False, last_action=False, players=None,
+                 live=None, size=None, stack=None, rest=None):
+        self.lines = dict(lines or {})
+        self.first_in = bool(first_in)
+        self.first_raise = bool(first_raise)
+        self.last_raise = bool(last_raise)
+        self.last_action = bool(last_action)
+        self.players = players
+        self.live = live
+        self.size = size
+        self.stack = stack
+        self.rest = list(rest or [])
+
+    def to_argv(self):
+        argv = list(self.rest)
+        for flag in _LINE_KEYS:
+            if self.lines.get(flag):
+                argv += [flag, self.lines[flag]]
+        if self.players is not None:
+            argv += ["--players", str(self.players)]
+        if self.live is not None:
+            argv += ["--live", str(self.live)]
+        if self.size:
+            argv += ["--size", str(self.size)]
+        if self.stack:
+            argv += ["--stack", str(self.stack)]
+        if self.first_in:
+            argv.append("--first-in")
+        if self.first_raise:
+            argv.append("--first-raise")
+        if self.last_raise:
+            argv.append("--last-raise")
+        if self.last_action:
+            argv.append("--last-action")
+        return argv
+
+    def to_dict(self):
+        out = {}
+        if self.lines:
+            out["lines"] = dict(self.lines)
+        if self.first_in:
+            out["first_in"] = True
+        if self.first_raise:
+            out["first_raise"] = True
+        if self.last_raise:
+            out["last_raise"] = True
+        if self.last_action:
+            out["last_action"] = True
+        if self.players is not None:
+            out["players"] = self.players
+        if self.live is not None:
+            out["live"] = self.live
+        if self.size:
+            out["size"] = self.size
+        if self.stack:
+            out["stack"] = self.stack
+        if self.rest:
+            out["rest"] = list(self.rest)
+        return out
+
+    @classmethod
+    def from_argv(cls, argv):
+        """situation flags → the custom-builder fields plus leftover rest."""
+        argv = situation_only(list(argv))
+        d = cls()
+        rest, i = [], 0
+        while i < len(argv):
+            a = argv[i]
+            if a in _CUSTOM_SWITCHES:
+                setattr(d, a.lstrip("-").replace("-", "_"), True)
+                i += 1
+                continue
+            if a in _LINE_KEYS and i + 1 < len(argv):
+                d.lines[a] = str(argv[i + 1])
+                i += 2
+                continue
+            if a in _CUSTOM_VALUES and i + 1 < len(argv):
+                v = argv[i + 1]
+                if a == "--players":
+                    d.players = int(float(v))
+                elif a == "--live":
+                    d.live = int(float(v))
+                elif a == "--size":
+                    d.size = str(v)
+                else:
+                    d.stack = str(v)
+                i += 2
+                continue
+            if a in VALUE_FLAGS or a in OPTIONS:
+                rest += argv[i:i + 2]
+                i += 2
+                continue
+            rest.append(a)
+            i += 1
+        d.rest = rest
+        return d
+
+    @classmethod
+    def from_dict(cls, obj):
+        """JSON object → the same argv a typed filter would have produced.
+
+        Two shapes, because people will write both: a compact AST
+        (`first_raise`, `flop`, `size`) and a leftover `argv` / `rest`
+        list for flags this object does not name.
+        """
+        if not isinstance(obj, dict):
+            raise SystemExit("FilterDef JSON must be an object")
+        if "argv" in obj and isinstance(obj["argv"], list):
+            return cls.from_argv([str(x) for x in obj["argv"]])
+        d = cls()
+        lines = obj.get("lines") or {}
+        for flag in _LINE_KEYS:
+            key = flag.lstrip("-")
+            if obj.get(key):
+                d.lines[flag] = str(obj[key])
+            elif lines.get(flag) or lines.get(key):
+                d.lines[flag] = str(lines.get(flag) or lines.get(key))
+        d.first_in = bool(obj.get("first_in"))
+        d.first_raise = bool(obj.get("first_raise"))
+        d.last_raise = bool(obj.get("last_raise"))
+        d.last_action = bool(obj.get("last_action"))
+        if obj.get("players") not in (None, ""):
+            d.players = int(float(obj["players"]))
+        if obj.get("live") not in (None, ""):
+            d.live = int(float(obj["live"]))
+        if obj.get("size"):
+            d.size = str(obj["size"])
+        if obj.get("stack"):
+            d.stack = str(obj["stack"])
+        rest = []
+        for key, flag in (("street", "--street"), ("pot", "--pot"),
+                          ("pos", "--pos"), ("facing", "--facing"),
+                          ("vs", "--vs")):
+            if obj.get(key):
+                rest += [flag, str(obj[key])]
+        for item in obj.get("flags") or []:
+            flag = item if str(item).startswith("--") else "--" + str(item)
+            rest.append(flag)
+        if obj.get("rest"):
+            rest += [str(x) for x in obj["rest"]]
+        d.rest = rest
+        return d
 
 
 def who_only(argv):
@@ -939,13 +1137,22 @@ def spot_summary(con, where, argv):
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
         label = "this outcome"
-    elif "--size" in argv:
+    elif "--size" in argv or "--first-raise" in argv or "--last-action" in argv \
+            or "--stack" in argv:
         hits = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
-        parent, _, _ = build(drop_flag(argv, "--size"))
+        parent_argv = argv
+        label = "this size"
+        for flag, word in (("--size", "this size"),
+                           ("--first-raise", "first raise"),
+                           ("--last-action", "last action"),
+                           ("--stack", "this stack")):
+            if flag in parent_argv:
+                parent_argv = drop_flag(parent_argv, flag)
+                label = word
+        parent, _, _ = build(parent_argv)
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
-        label = "this size"
     elif "--aggressive" in argv or "--allin" in argv:
         hits = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
@@ -1470,6 +1677,89 @@ SIZE_ALIAS = {
 }
 
 
+def parse_size(token):
+    """
+    A size letter, or a pot-frac range the letters cannot say.
+
+    `m` is still half-pot. `0.4-0.75` is the custom-builder slider.
+    A trailing % is percent of pot; a number bigger than 3 is too
+    (nobody means a 40-pot bet when they type 40-75).
+    """
+    raw = (token or "").strip().lower().replace(" ", "")
+    if not raw:
+        raise ValueError("empty size")
+    if raw in SIZE_ALIAS:
+        return ("letter", SIZE_ALIAS[raw])
+    force_pct = "%" in raw
+    body = raw.replace("%", "")
+
+    def frac(s):
+        x = float(s)
+        if force_pct or x > 3:
+            return x / 100.0
+        return x
+
+    try:
+        if body.endswith("+") or body.startswith(">="):
+            return ("range", frac(body.replace(">=", "").rstrip("+")), None)
+        if body.startswith(">"):
+            return ("range", frac(body[1:]), None)
+        if body.startswith("<="):
+            return ("range", None, frac(body[2:]))
+        if body.startswith("<"):
+            return ("range", None, frac(body[1:]))
+        m = re.match(r"^([0-9]*\.?[0-9]+)-([0-9]*\.?[0-9]+)$", body)
+        if m:
+            return ("range", frac(m.group(1)), frac(m.group(2)))
+        return ("range", frac(body), frac(body))
+    except ValueError:
+        raise ValueError(raw)
+
+
+def size_range_sql(lo, hi):
+    parts = ["pot_frac IS NOT NULL"]
+    if lo is not None:
+        parts.append(f"pot_frac >= {lo}")
+    if hi is not None:
+        parts.append(f"pot_frac <= {hi}")
+    return " AND ".join(parts)
+
+
+def parse_stack(token):
+    """Stack in bb: `100+`, `<40`, `80-200`."""
+    raw = (token or "").strip().lower().replace(" ", "").replace("bb", "")
+    if not raw:
+        raise ValueError("empty stack")
+
+    def num(s):
+        return float(s)
+
+    try:
+        if raw.endswith("+") or raw.startswith(">="):
+            return (num(raw.replace(">=", "").rstrip("+")), None)
+        if raw.startswith(">"):
+            return (num(raw[1:]), None)
+        if raw.startswith("<="):
+            return (None, num(raw[2:]))
+        if raw.startswith("<"):
+            return (None, num(raw[1:]))
+        m = re.match(r"^([0-9]*\.?[0-9]+)-([0-9]*\.?[0-9]+)$", raw)
+        if m:
+            return (num(m.group(1)), num(m.group(2)))
+        return (num(raw), None)
+    except ValueError:
+        raise ValueError(raw)
+
+
+def stack_sql(lo, hi):
+    parts = ["eff_bb IS NOT NULL"]
+    if lo is not None:
+        parts.append(f"eff_bb >= {lo}")
+    if hi is not None:
+        parts.append(f"eff_bb < {hi}")
+    return " AND ".join(parts)
+
+
 def _next_sql(same_seat, pred):
     """The first later decision on this hand, by this seat or another."""
     cmp = "=" if same_seat else "<>"
@@ -1643,17 +1933,32 @@ def build(argv):
                     ("then " if same else "after ") + ", ".join(words))
                 continue
             if a == "--size":
-                letters = []
+                labels = []
                 for name in v.split(","):
-                    letter = SIZE_ALIAS.get(name.strip().lower())
-                    if letter is None:
+                    try:
+                        kind, *rest = parse_size(name)
+                    except ValueError:
                         raise SystemExit(
-                            f"unknown size {name!r} -- one of: "
-                            f"{', '.join(lines.BUCKETS)} "
-                            f"(small/medium/large/pot/overbet)")
-                    parts.append("(" + size_sql(letter) + ")")
-                    letters.append(letter)
-                described.append("size " + ",".join(letters))
+                            f"unknown size {name!r} -- a letter "
+                            f"({', '.join(lines.BUCKETS)}) or a pot-frac "
+                            f"range (0.4-0.75, 50%+, <=0.33)")
+                    if kind == "letter":
+                        parts.append("(" + size_sql(rest[0]) + ")")
+                        labels.append(rest[0])
+                    else:
+                        lo, hi = rest
+                        parts.append("(" + size_range_sql(lo, hi) + ")")
+                        labels.append(name.strip())
+                described.append("size " + ",".join(labels))
+                continue
+            if a == "--stack":
+                try:
+                    lo, hi = parse_stack(v)
+                except ValueError:
+                    raise SystemExit(
+                        f"unknown stack {v!r} -- 100+, <40, or 80-200")
+                parts.append("(" + stack_sql(lo, hi) + ")")
+                described.append("stack " + v)
                 continue
             if a == "--outcome":
                 keys = []
@@ -2918,12 +3223,16 @@ def usage():
           f"(--after or --then)")
     print(f"    {'--hit':14} alias for --quick: narrow to hands that "
           f"hit that stat")
-    print(f"    {'--size':14} this action's pot fraction: "
-          f"{', '.join(lines.BUCKETS)} (small/medium/large/pot/overbet)")
+    print(f"    {'--size':14} pot fraction: "
+          f"{', '.join(lines.BUCKETS)} or a range (0.4-0.75, 50%+)")
+    print(f"    {'--stack':14} effective stack in bb: 100+, <40, 80-200")
     print(f"    {'--outcome':14} what the pot did with this bet: "
           f"fold-out, call, raise-back")
     print(f"    {'--first-in':14} first to put chips in on this street")
-    print(f"    {'--last-raise':14} this player was the last to raise")
+    print(f"    {'--first-raise':14} first raise on this street "
+          f"(an open, or the first raise of a bet)")
+    print(f"    {'--last-raise':14} this player already raised on the street")
+    print(f"    {'--last-action':14} this decision ended the street")
     print("\n  saving the filter as a stat of its own:")
     print(f"    {'--define':14} a key to save this filter under, so it can "
           f"be a column")
@@ -2936,7 +3245,8 @@ def usage():
     print(f"    {'--save':14} a name to keep this filter under")
     print(f"    {'--preset':14} open a saved or built-in report: "
           f"{', '.join(list(reports())[:3])}, ... (see --presets)")
-    print(f"    {'--filter':14} the same, or a --quick key, or JSON argv")
+    print(f"    {'--filter':14} the same, a --quick key, JSON argv, "
+          f"or a FilterDef object")
     print(f"    {'--pin':14} compare this filter to another report "
           f"(--versus with a name)")
     print("\n  positions: " + ", ".join(POSITIONS))
@@ -2979,6 +3289,13 @@ SCAN_OK = {
     "--last-raise":
         "was_agg is the same shape as first_in: half the interesting "
         "rows, and not a prefix of an index we have",
+    "--first-raise":
+        "street_agg plus to_call is not a prefix of an index we have, "
+        "and the first raise on a street is still a large slice",
+    "--last-action":
+        "last on the street is NOT EXISTS on a later n of the same "
+        "hand -- there is no column for it, and adding one was not "
+        "measured",
 }
 
 
@@ -2994,7 +3311,11 @@ def check_shape():
     for argv, needle in (
             (["--first-in"], "first_in = 1"),
             (["--last-raise"], "was_agg = 1"),
+            (["--first-raise"], "street_agg"),
+            (["--last-action"], "NOT EXISTS"),
             (["--size", "m"], "pot_frac > 0.4"),
+            (["--size", "0.4-0.75"], "pot_frac >= 0.4"),
+            (["--stack", "100+"], "eff_bb >= 100"),
             (["--outcome", "fold-out"], "agg = 1"),
             (["--after", "none"], "NOT EXISTS"),
             (["--after", "fold-out"], "action = 'F'"),
@@ -3027,7 +3348,104 @@ def check_shape():
         where, _, _ = build(["--outcome", a, "--outcome", b])
         if "agg = 1" not in where:
             fails.append(f"--outcome {a}+{b} dropped agg")
+    if resolve_filter('{"street":"flop","first_raise":true,"size":"m"}') \
+            != ["--street", "flop", "--size", "m", "--first-raise"]:
+        fails.append("FilterDef JSON did not become argv")
     print(f"filter shape (no database)    "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
+def check_filterdef():
+    """
+    The custom-builder AST round-trips, and the new modifiers select
+    the rows they name. No corpus -- a four-row table is enough to
+    tell a first raise from a cbet and a last action from the one
+    before it.
+    """
+    fails = []
+    argv = ["--street", "flop", "--flop", "XBmC", "--first-raise",
+            "--size", "0.4-0.75", "--players", "6", "--stack", "100+",
+            "--ip"]
+    d = FilterDef.from_argv(argv)
+    back = FilterDef.from_argv(d.to_argv())
+    if d.to_dict() != back.to_dict():
+        fails.append(f"FilterDef round-trip drifted: {d.to_dict()} vs "
+                     f"{back.to_dict()}")
+    where, _, _ = build(d.to_argv())
+    for needle in ("street_agg", "pot_frac >= 0.4", "n_players = 6",
+                   "eff_bb >= 100", "GLOB", "is_ip = 1"):
+        if needle not in where:
+            fails.append(f"compiled filter missed {needle!r}: {where}")
+
+    as_json = json.dumps(d.to_dict())
+    from_json = FilterDef.from_dict(json.loads(as_json))
+    if _canonical(from_json.to_argv()) != _canonical(d.to_argv()):
+        fails.append("FilterDef JSON dict did not rebuild the argv")
+
+    try:
+        parse_size("nope")
+        fails.append("parse_size accepted 'nope'")
+    except ValueError:
+        pass
+    if parse_size("m") != ("letter", "m"):
+        fails.append(f"size m was {parse_size('m')}")
+    if parse_size("0.4-0.75") != ("range", 0.4, 0.75):
+        fails.append(f"size 0.4-0.75 was {parse_size('0.4-0.75')}")
+    if parse_size("50%+")[0] != "range" or abs(parse_size("50%+")[1] - 0.5) > 1e-9:
+        fails.append(f"size 50%+ was {parse_size('50%+')}")
+    if parse_size("40-75") != ("range", 0.4, 0.75):
+        fails.append(f"size 40-75 (percent by magnitude) was {parse_size('40-75')}")
+    if parse_stack("100+") != (100.0, None):
+        fails.append(f"stack 100+ was {parse_stack('100+')}")
+    if parse_stack("<40") != (None, 40.0):
+        fails.append(f"stack <40 was {parse_stack('<40')}")
+    if parse_stack("80-200") != (80.0, 200.0):
+        fails.append(f"stack 80-200 was {parse_stack('80-200')}")
+
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, n INT, street TEXT, seat INT, action TEXT, "
+        "agg INT, to_call REAL, street_agg INT, first_in INT, "
+        "was_agg INT, pot_frac REAL, n_players INT, eff_bb REAL)")
+    # Flop: cbet (first-in, not a raise), raise of the cbet (first raise),
+    # call (last action). Preflop open is a first raise with street_agg 0.
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h1", 1, "flop", 1, "B", 1, 0, 0, 1, 0, 0.50, 6, 120),
+         ("h1", 2, "flop", 2, "R", 1, 5, 1, 0, 0, 1.10, 6, 120),
+         ("h1", 3, "flop", 1, "C", 0, 10, 2, 0, 1, None, 6, 120),
+         ("h2", 1, "preflop", 1, "R", 1, 1, 0, 1, 0, 2.00, 6, 30)])
+    first_w, _, _ = build(["--first-raise"])
+    rows = [r[0] for r in con.execute(
+        f"SELECT n || street FROM decisions WHERE {first_w}")]
+    if sorted(rows) != ["1preflop", "2flop"]:
+        fails.append(f"--first-raise selected {rows}, not the open and the "
+                     f"flop raise")
+    last_w, _, _ = build(["--last-action"])
+    last = [r[0] for r in con.execute(
+        f"SELECT hand_id || n FROM decisions WHERE {last_w}")]
+    if sorted(last) != ["h13", "h21"]:
+        fails.append(f"--last-action selected {last}, not the last n "
+                     f"on each street")
+    both, _, _ = build(["--street", "flop", "--first-raise", "--size",
+                        "0.9-1.2"])
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {both}").fetchone()[0]
+    if n != 1:
+        fails.append(f"flop first-raise of 0.9-1.2 pot selected {n}, "
+                     f"not the one raise")
+    stack_w, _, _ = build(["--stack", "100+"])
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {stack_w}").fetchone()[0]
+    if n != 3:
+        fails.append(f"--stack 100+ selected {n}, expected the three "
+                     f"deep flop rows")
+    con.close()
+    print(f"custom filter AST/modifiers   "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:
         print(f"    {f}")
@@ -3191,13 +3609,23 @@ def check(db_path=DB):
     fails = []
     fails.extend(check_shape())
     fails.extend(check_fixture())
+    fails.extend(check_filterdef())
     fails.extend(compact.check())
-    if not Path(db_path).exists():
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
         print()
         print("FAIL: " + "; ".join(fails) if fails else
               "PASS (no hands.db -- shape and fixture only)")
         return not fails
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db)
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "decisions" not in tables:
+        con.close()
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- shape and fixture only)")
+        return not fails
     total = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
     checked = 0
 
@@ -3244,6 +3672,8 @@ def check(db_path=DB):
               ("--then bet", ["--then", "bet"]),
               ("--after none", ["--after", "none"]),
               ("--size m", ["--size", "m"]),
+              ("--size 0.4-0.75", ["--size", "0.4-0.75"]),
+              ("--stack 100+", ["--stack", "100+"]),
               ("--outcome fold-out", ["--outcome", "fold-out"])]
     cases += [(f"--preset {name}", list(flags))
               for name, flags in SMART_REPORTS.items()]

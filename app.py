@@ -137,7 +137,9 @@ SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
               ("--pfa", "was the raiser"), ("--not-pfa", "was not the raiser"),
               ("--vs-pfa", "facing the raiser"),
               ("--first-in", "first in on this street"),
-              ("--last-raise", "was the last raise"),
+              ("--first-raise", "first raise on this street"),
+              ("--last-raise", "already raised on the street"),
+              ("--last-action", "last action on this street"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
 # Turning one of these on turns its opposite off, or the filter selects
@@ -561,7 +563,7 @@ class App(ImportMixin, ttk.Frame):
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
-                      "players", "live")}
+                      "players", "live", "stack")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -796,7 +798,8 @@ class App(ImportMixin, ttk.Frame):
                             "--turn": "turn", "--river": "river",
                             "--after": "after", "--then": "then",
                             "--size": "size", "--outcome": "outcome",
-                            "--players": "players", "--live": "live"}.get(a)
+                            "--players": "players", "--live": "live",
+                            "--stack": "stack"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -945,7 +948,8 @@ class App(ImportMixin, ttk.Frame):
                            ("turn", "--turn"), ("river", "--river"),
                            ("after", "--after"), ("then", "--then"),
                            ("size", "--size"), ("outcome", "--outcome"),
-                           ("players", "--players"), ("live", "--live")):
+                           ("players", "--players"), ("live", "--live"),
+                           ("stack", "--stack")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -2281,6 +2285,20 @@ class FilterDialog(tk.Toplevel):
             parent, t, *self._val_item("size", v)))
             for v, t in (("s", "small"), ("m", "medium"), ("l", "large"),
                          ("p", "pot+"), ("o", "overbet"))])
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(2, 0))
+        ttk.Label(row, text="or a range", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["size"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="0.4-0.75   50%+   <=0.33",
+                  style="Dim.TLabel").pack(side="left")
+        self._heading(page, "stack  (effective bb)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        ttk.Entry(row, textvariable=self.app.vals["stack"], width=14).pack(
+            side="left")
+        ttk.Label(row, text="100+   <40   80-200   — same column as at least / less than",
+                  style="Dim.TLabel").pack(side="left", padx=14)
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -2781,14 +2799,17 @@ def check(db_path=DB):
         fails.append("opening a Smart Report left the previous situation on")
 
     app.clear_situation()
-    app._apply_argv(["--first-in", "--size", "m", "--outcome", "fold-out"])
+    app._apply_argv(["--first-in", "--first-raise", "--last-action",
+                     "--size", "0.4-0.75", "--stack", "100+",
+                     "--outcome", "fold-out"])
     built, _, _ = query.build(app.argv())
-    want, _, _ = query.build(["--first-in", "--size", "m",
-                              "--outcome", "fold-out"])
+    want, _, _ = query.build(["--first-in", "--first-raise",
+                              "--last-action", "--size", "0.4-0.75",
+                              "--stack", "100+", "--outcome", "fold-out"])
     print(f"custom builder flags round-trip  "
           f"{'yes' if built == want else 'NO -- ' + built}")
     if built != want:
-        fails.append("first-in / size / outcome did not survive apply_argv")
+        fails.append("custom builder flags did not survive apply_argv")
 
     theme = ttk.Style(root).theme_use()
     print(f"theme in use                   {theme}")

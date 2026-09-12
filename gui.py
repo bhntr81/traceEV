@@ -57,6 +57,7 @@ SWITCH_FIELDS = {
     "vs_pfa": "--vs-pfa", "standard": "--standard", "allin": "--allin",
     "vs_hero": "--vs-hero", "vs_pool": "--vs-pool",
     "first_in": "--first-in", "last_raise": "--last-raise",
+    "first_raise": "--first-raise", "last_action": "--last-action",
 }
 VALUE_FIELDS = {
     "site": "--site", "player": "--player", "pos": "--pos",
@@ -69,6 +70,9 @@ VALUE_FIELDS = {
     "quick": "--quick",
     "size": "--size", "outcome": "--outcome",
     "players": "--players", "live": "--live",
+    "stack": "--stack",
+    "pre": "--pre", "flop": "--flop", "turn": "--turn",
+    "river": "--river", "line": "--line", "node": "--node",
 }
 
 
@@ -92,6 +96,14 @@ def argv_from(params):
         v = (params.get(field, [""])[0] or "").strip()
         if v:
             argv += [flag, v]
+    # A typed pot-frac range is `--size`, not a second flag -- the
+    # letter select and this box are one modifier, and two sizes AND-ed
+    # would match nothing and look like a broken builder.
+    pot_frac = (params.get("pot_frac", [""])[0] or "").strip()
+    if pot_frac:
+        argv = [a for i, a in enumerate(argv)
+                if a != "--size" and (i == 0 or argv[i - 1] != "--size")]
+        argv += ["--size", pot_frac]
     return argv
 
 
@@ -346,7 +358,9 @@ td.compact{text-align:left;font-weight:500}
       <span class="chip" data-f="not_pfa">was not the raiser</span>
       <span class="chip" data-f="vs_pfa">facing the raiser</span>
       <span class="chip" data-f="first_in">first in</span>
+      <span class="chip" data-f="first_raise">first raise</span>
       <span class="chip" data-f="last_raise">last raise</span>
+      <span class="chip" data-f="last_action">last action</span>
       <span class="chip" data-f="multiway">multiway</span>
       <span class="chip" data-f="headsup">heads up</span>
     </div>
@@ -382,9 +396,21 @@ td.compact{text-align:left;font-weight:500}
         <option value="l">large</option>
         <option value="p">pot+</option>
         <option value="o">overbet</option>
+        <option value="0.4-0.75">0.4–0.75 pot</option>
+        <option value="50%+">50%+</option>
       </select></label>
+    <label>or pot-frac range <input id="pot_frac" placeholder="0.4-0.75"></label>
+    <label>stack bb <input id="stack" placeholder="100+  or  80-200"></label>
     <label>players at the table <input id="players" type="number" min="2" max="10"></label>
     <label>still in the pot <input id="live" type="number" min="2" max="10"></label>
+  </fieldset>
+  <fieldset><legend>action line</legend>
+    <label>preflop <input id="pre" placeholder="*R*R*"></label>
+    <label>flop <input id="flop" placeholder="XBmC"></label>
+    <label>turn <input id="turn" placeholder="XX"></label>
+    <label>river <input id="river" placeholder="*Bo*"></label>
+    <label>line <input id="line" placeholder="*R*/XBC"></label>
+    <label>node <input id="node" placeholder="*/XB"></label>
   </fieldset>
   <fieldset><legend>raw sql over decisions</legend>
     <label><input id="where" placeholder="eff_bb > 150 AND fl_paired=1"></label>
@@ -455,25 +481,28 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
       state.preset = $('#preset').value;
       state.spot = '';
       // Opening a report replaces leftover situation chips.
-      ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin','first_in','last_raise'].forEach(f => {
+      ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin','first_in','last_raise','first_raise','last_action'].forEach(f => {
         state.flags[f] = false;
       });
       ['pos','vs','street','pot','board'].forEach(g => { state.multi[g] = []; });
-      ['after','then','size','outcome','players','live'].forEach(fid => {
+      ['after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node'].forEach(fid => {
         const el = $('#'+fid); if (el) el.value = '';
       });
       paintChips();
     }
     load();
   }));
-$('#where').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+['where','pot_frac','stack','pre','flop','turn','river','line','node']
+  .forEach(id => $('#'+id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') load();
+  }));
 
 function params(){
   const p = new URLSearchParams();
@@ -484,7 +513,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','pin']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -860,6 +889,10 @@ def check(db_path=DB):
         ({"preset": ["3-bet pots"]}, list(query.SMART_REPORTS["3-bet pots"])),
         ({"first_in": ["1"], "size": ["m"], "outcome": ["fold-out"]},
          ["--first-in", "--size", "m", "--outcome", "fold-out"]),
+        ({"first_raise": ["1"], "last_action": ["1"], "stack": ["100+"],
+          "pot_frac": ["0.4-0.75"], "flop": ["XBmC"]},
+         ["--first-raise", "--last-action", "--size", "0.4-0.75",
+          "--stack", "100+", "--flop", "XBmC"]),
         ({"players": ["6"], "live": ["2"]},
          ["--players", "6", "--live", "2"]),
         ({"after": ["none"]}, ["--after", "none"]),

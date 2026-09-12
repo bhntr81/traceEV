@@ -8,6 +8,43 @@ Newest first.
 
 ---
 
+## Custom filter builder as a FilterDef, not a second language
+
+Hand2Note's custom filter is a street-by-street action graph with
+modifiers on the node. The graph here was already a line string
+(`--flop XBmC`). The modifiers were a pile of flags, some missing.
+`FilterDef` is that pair as a value: it parses argv, emits argv, and
+a JSON object `--filter '{"street":"flop","first_raise":true}'` is
+the same door as a typed command. Hits/Opps, stats, the hand list,
+Faced Next and `--save` stay one pipeline.
+
+New modifiers, over columns `decisions` already has:
+
+- `--first-raise` -- the open, or the first raise of a bet. A flop
+  cbet is `--first-in`, not this.
+- `--last-action` -- this decision ended the street.
+- `--size 0.4-0.75` / `50%+` / `40-75` -- a pot-frac range beside
+  the `s m l p o` letters.
+- `--stack 100+` / `<40` / `80-200` -- `eff_bb`. `--deep` / `--short`
+  still work.
+
+`--players`, `--live`, `--first-in`, `--last-raise` and the line
+flags were already there. The window grew first-raise / last-action
+chips, a size-range box and a stack box; the page grew the same plus
+the action-line fields the window already had.
+
+`--check` holds the AST round-trip, the JSON object, the range
+parsers, and a four-row table that tells a first raise from a cbet
+and a last action from the one before it.
+
+### Not this, on purpose
+
+No HUD. No second filter language (`filter list|save|load` is still
+`--filters` / `--save` / `--filter`). A line token cannot name a
+seat -- `--pos` / `--vs` name who this decision is. No graph widget.
+
+---
+
 ## Compact Hand View in report hand lists
 
 A list of timestamps is a list you have to open. Hand2Note's compact
