@@ -239,11 +239,12 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            "--define", "--forget", "--label", "--do", "--per", "--save",
            # Clock prefs for `--today` / `--hours`. Not predicates:
            # they change how those two flags are compiled.
-           "--start-of-day", "--tz",
-           # Statistics-only compute. `build` skips it so Reports and
-           # Sessions cannot accidentally inherit H2N's rebuild flag.
-           # `--statistics` is a view, like `--stats`.
-           "--exclude-reg-vs-fish", "--statistics")
+           "--start-of-day", "--tz")
+
+# Not filters, and they take no value. OPTIONS skip two tokens
+# (flag + argument). Putting exclude there ate `--hero` and
+# Reports opened without the person -- the check that caught it.
+SKIP = ("--exclude-reg-vs-fish", "--statistics")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -601,7 +602,9 @@ def situation_only(argv):
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
-        if a in OPTIONS:
+        if a in SKIP:
+            i += 1
+        elif a in OPTIONS:
             i += 2
         elif a in VALUE_FLAGS:
             out += argv[i:i + 2]
@@ -3023,6 +3026,9 @@ def build(argv):
             sql, word = STUDY_SWITCHES[a]
             parts.append(sql)
             described.append(word)
+            i += 1
+            continue
+        if a in SKIP:
             i += 1
             continue
         if a in OPTIONS:
@@ -5914,9 +5920,12 @@ def check_statistics():
     that leaked into Reports, or a Call Range that was the raise again.
     """
     fails = []
-    if "--exclude-reg-vs-fish" not in OPTIONS:
-        fails.append("exclude flag is not in OPTIONS -- build() would "
+    if "--exclude-reg-vs-fish" not in SKIP:
+        fails.append("exclude flag is not in SKIP -- build() would "
                      "raise or apply it to Reports")
+    if "--exclude-reg-vs-fish" in OPTIONS:
+        fails.append("exclude flag is in OPTIONS -- build() skips two "
+                     "tokens and would drop the next flag")
     try:
         build(["--exclude-reg-vs-fish"])
     except SystemExit:
@@ -5928,6 +5937,9 @@ def check_statistics():
                      "would change with the Statistics toggle")
     if "is_hero = 1" not in excl_w:
         fails.append("build(--exclude-reg-vs-fish --hero) dropped --hero")
+    kept_hero = who_only(["--exclude-reg-vs-fish", "--hero"])
+    if "--hero" not in kept_hero:
+        fails.append("who_only ate --hero after the exclude flag")
 
     cr_w, cr_l, _ = build(["--call-range", "threebet"])
     if "facing='open'" not in cr_w.replace(" ", "") and \

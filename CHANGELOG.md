@@ -35,6 +35,12 @@ same person.
 `--fmt cash` is `fmt <> 'MTT'`. Last-N is the sessions table
 (cash sit-downs); MTT last-N is ignored.
 
+`--exclude-reg-vs-fish` is a skip-one-token flag, not an
+`OPTIONS` entry. OPTIONS skip two tokens (flag + argument);
+putting a switch there ate `--hero` and Reports opened without
+the person. The check is `build([exclude, --hero])` still
+selects hero.
+
 ### Added -- Statistics path
 
 `query.statistics_of` / `stat_range_of` / `take_stat_drill` /

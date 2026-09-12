@@ -4628,6 +4628,11 @@ def check(db_path=DB):
         fails.append("Open in Reports dropped last-N sessions")
     print(f"Open in Reports is --quick     "
           f"{'yes' if '--quick' in app.argv() else 'NO'}")
+    # Cash / last-N are who-context and survive clear_situation.
+    # Leave them on the widgets and the custom-builder check
+    # below compares unequal for a reason that is not its own.
+    app.vals["fmt"].set("")
+    app.vals["last_sessions"].set("")
     app.vals["session"].set("h1")
     if "--session" not in app.argv() or "h1" not in app.argv():
         fails.append("Open-in-Reports session chip did not reach argv")
