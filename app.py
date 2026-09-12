@@ -5615,7 +5615,18 @@ def check(db_path=DB):
     print(f"dock-back nest / breadcrumb   "
           f"{'yes' if not [f for f in fails if 'Dock-back' in f or 'dock' in f.lower() or 'hydrate' in f] else 'NO'}")
 
+    # Hydrate writes who onto the widgets. The custom-builder
+    # check below apply_argv's a situation and compares it to
+    # flags alone; leftover --hero / --site would AND onto it
+    # and look like the builder had grown a subject.
     app.clear_situation()
+    for fl in app.WHO_SWITCHES:
+        if fl in app.flags:
+            app.flags[fl].set(False)
+    for name in app.WHO_VALS:
+        app.vals[name].set("")
+    app.pin.set("")
+    app._pin_alias.clear()
     app._apply_argv(["--first-in", "--first-raise", "--last-action",
                      "--size", "0.4-0.75", "--stack", "100+",
                      "--outcome", "fold-out"])
