@@ -38,6 +38,9 @@ money is summed over the hands those decisions happened in.
         --pos BTN --stats
     python query.py --hero --board mono --results
     python query.py --hero --pot 3bet --hands
+    python query.py --marked --hands
+    python query.py --tag leak --hands
+    python query.py --hand cp-2459218653 --mark --tag leak
     python query.py --where "eff_bb > 150 AND fl_paired=1" --stats
     python query.py --help
 """
@@ -53,6 +56,7 @@ import tempfile
 
 import compact
 import lines
+import notes
 import players
 import sites
 import stats
@@ -117,6 +121,7 @@ VALUE_FLAGS = {
     "--river-card": None,   # and the river
     "--quick": None,        # one or more named filters from `quick_filters`
     "--where": None,        # raw SQL escape hatch
+    "--tag": None,          # study tag catalog, over notes.db
     # What happened AFTER this decision. Hand2Note's Faced Next / Next
     # Actions: `--after fold` is "the next other seat folded", `--then
     # bet` is "this player bet the next time they acted". A node prefix
@@ -230,6 +235,16 @@ SWITCHES = {
     # with a straight draw beside it is usually a favourite against a pair.
     "--combo-draw": "(fd IS NOT NULL AND sd IS NOT NULL)",
     "--shown": "cards IS NOT NULL",
+}
+
+# Study filters. Not in SWITCHES: the live `--check` loop requires every
+# switch to select some rows in `hands.db`, and a machine with no marks
+# yet would fail "selects nothing" for a filter that is working.
+STUDY_SWITCHES = {
+    "--marked": ("hand_id IN (SELECT hand_id FROM study.hand_marks)",
+                 "marked"),
+    "--noted": ("hand_id IN (SELECT hand_id FROM study.note_hands)",
+                "noted"),
 }
 
 # What a report can be split by. A tracker's value is mostly here: one
@@ -2000,6 +2015,12 @@ def build(argv):
             described.append(a.lstrip("-"))
             i += 1
             continue
+        if a in STUDY_SWITCHES:
+            sql, word = STUDY_SWITCHES[a]
+            parts.append(sql)
+            described.append(word)
+            i += 1
+            continue
         if a in OPTIONS:
             i += 2
             continue
@@ -2011,6 +2032,21 @@ def build(argv):
             if a == "--where":
                 parts.append("(" + v + ")")
                 described.append(v)
+                continue
+            if a == "--tag":
+                names = [x.strip() for x in str(v).split(",") if x.strip()]
+                if not names:
+                    raise SystemExit("--tag needs a name")
+                for name in names:
+                    if not notes.valid_tag(name):
+                        raise SystemExit(
+                            f"invalid tag {name!r} -- letters, digits, "
+                            "and _./+-")
+                items = ", ".join(q(n) for n in names)
+                parts.append(
+                    "hand_id IN (SELECT hand_id FROM study.hand_tags "
+                    f"WHERE tag IN ({items}))")
+                described.append("tag " + ",".join(names))
                 continue
             if a == "--quick":
                 known = quick_by_key()
@@ -3315,19 +3351,26 @@ def show_hands(con, where, label, limit=40, parts=()):
     if not rows:
         print("  " + why_empty(con, parts))
         return
-    print(f"  {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
+    print(f"    {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
           f"{'net bb':>7} {'act bb':>7}  board")
-    print("  " + "-" * 82)
+    print("    " + "-" * 82)
     shown = rows[:limit]
+    notes.attach(con)
+    notes.decorate(con, shown)
     compact.attach(con, shown,
                    fmt="ansi" if sys.stdout.isatty() else "text")
     for r in shown:
         when = (r["when"] or "")[:16]
         act = (f"{r['act']:+.1f}" if r["act"] is not None else "   –")
         net = r["net"] if r["net"] is not None else 0
-        print(f"  {when:17} {r['site'] or '':10} {r['bb'] or 0:5.2f} "
+        star = "*" if r.get("marked") else " "
+        extra = ",".join(r.get("tags") or [])
+        if r.get("n_notes"):
+            extra = (extra + " " if extra else "") + f"n{r['n_notes']}"
+        print(f"  {star} {when:17} {r['site'] or '':10} {r['bb'] or 0:5.2f} "
               f"{r['pos'] or '?':4} {r['combo'] or '--':5} "
-              f"{net:7.1f} {act:>7}  {r['board'] or ''}")
+              f"{net:7.1f} {act:>7}  {r['board'] or ''}"
+              + (f"  {extra}" if extra else ""))
         if r.get("compact"):
             print(f"    {r['compact']}")
     print()
@@ -3376,6 +3419,14 @@ def usage():
           f"(default: the ones this situation is about, else "
           f"{','.join(DEFAULT_COLUMNS)})")
     print(f"    {'--min':14} mark cells below this many chances (default 30)")
+    print("\n  study (notes.db -- survives a rebuild of hands.db):")
+    print("    --marked       only starred hands")
+    print("    --noted        only hands bound to a note")
+    print("    --tag NAME     hands with that tag (comma-separate)")
+    print("    --mark         star --hand ID  (optional --tag)")
+    print("    --unmark       drop the star, or --tag off that hand")
+    print("    --note TEXT    add a note on --hand ID")
+    print("    notes.py is the list / template / catalog CLI")
     print(f"    {'--hand':14} replay one hand by id, ignoring every filter")
     print(f"    {'--chart':14} the 13x13 chart: what the range holds, or "
           f"one stat per combo with --show")
@@ -3496,7 +3547,10 @@ def check_shape():
             (["--after", "fold-out"], "action = 'F'"),
             (["--after", "3bet"], "agg = 1"),
             (["--players", "6"], "n_players = 6"),
-            (["--live", "2"], "n_live = 2")):
+            (["--live", "2"], "n_live = 2"),
+            (["--marked"], "study.hand_marks"),
+            (["--noted"], "study.note_hands"),
+            (["--tag", "leak"], "study.hand_tags")):
         where, _label, _p = build(argv)
         if needle not in where.replace("0.40", "0.4"):
             fails.append(f"{argv} built {where!r}, expected {needle!r}")
@@ -3794,6 +3848,52 @@ def check_cohort():
     return fails
 
 
+def check_study():
+    """
+    --marked / --tag / --noted select the starred hands, and only those.
+
+    No corpus. Two decisions and a notes.db in a temp dir are enough
+    to tell a mark from everybody, which is the failure this filter
+    has if ATTACH is forgotten.
+    """
+    fails = []
+    import tempfile
+    store = Path(tempfile.mkdtemp()) / "notes.db"
+    notes.mark("h1", tags=["leak"], path=store)
+    notes.add("too wide", player="Alice", hand_id="h1", path=store)
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE decisions (hand_id TEXT, seat INT, action TEXT)")
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?)",
+        [("h1", 1, "B"), ("h2", 1, "F")])
+    notes.attach(con, path=store)
+    marked_w, _, _ = build(["--marked"])
+    tag_w, _, _ = build(["--tag", "leak"])
+    noted_w, _, _ = build(["--noted"])
+    n_mark = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {marked_w}").fetchone()[0]
+    n_tag = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {tag_w}").fetchone()[0]
+    n_note = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {noted_w}").fetchone()[0]
+    if n_mark != 1 or n_tag != 1 or n_note != 1:
+        fails.append(
+            f"--marked/--tag/--noted kept {n_mark}/{n_tag}/{n_note}, "
+            "not 1/1/1")
+    both = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {marked_w} "
+        f"AND {tag_w}").fetchone()[0]
+    if both != 1:
+        fails.append("marked AND tag did not stay on the one hand")
+    con.close()
+    print(f"notes / marked-hand filters   "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check_fixture():
     """
     Outcome / size / first-in against a hand-built table.
@@ -3954,6 +4054,7 @@ def check(db_path=DB):
     fails.extend(check_filterdef())
     fails.extend(check_compare())
     fails.extend(check_cohort())
+    fails.extend(check_study())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -4505,7 +4606,45 @@ def main(argv):
             raise SystemExit(f"unknown stat {c!r} -- see `stats.py --list`")
     min_n = int(opt("--min", "30"))
 
+    if "--mark" in argv or "--unmark" in argv or "--note" in argv:
+        hid = opt("--hand")
+        if not hid:
+            raise SystemExit("--mark / --unmark / --note need --hand ID")
+        tag_raw = opt("--tag") if "--tag" in argv else None
+        tags = [x.strip() for x in (tag_raw or "").split(",") if x.strip()]
+        if "--mark" in argv:
+            notes.mark(hid, tags)
+            print(f"marked {hid}" + (f"  {', '.join(tags)}" if tags else ""))
+        elif "--unmark" in argv:
+            notes.unmark(hid, tags or None)
+            print(f"unmarked {hid}" + (f"  {', '.join(tags)}" if tags else ""))
+        if "--note" in argv:
+            hands_con = None
+            if Path(DB).exists() and Path(DB).stat().st_size > 0:
+                hands_con = sqlite3.connect(DB)
+                hands_con.row_factory = sqlite3.Row
+            try:
+                nid = notes.add(
+                    opt("--note"),
+                    player=opt("--player"),
+                    site=opt("--site"),
+                    hand_id=hid,
+                    spot=opt("--spot"),
+                    template=opt("--from-template"),
+                    hands_con=hands_con)
+            finally:
+                if hands_con is not None:
+                    hands_con.close()
+            print(f"note #{nid}")
+        if Path(DB).exists() and Path(DB).stat().st_size > 0:
+            con = sqlite3.connect(DB)
+            show_hand(con, hid)
+            con.close()
+        return 0
+
     if opt("--hand"):
+        if not Path(DB).exists():
+            raise SystemExit(f"no database at {DB} -- load some hands first")
         con = sqlite3.connect(DB)
         show_hand(con, opt("--hand"))
         con.close()
@@ -4521,6 +4660,7 @@ def main(argv):
         if not Path(DB).exists():
             raise SystemExit(f"no database at {DB} -- load some hands first")
         con = sqlite3.connect(DB)
+        notes.attach(con)
         if cohort_spec is not None:
             _, header, _ = apply_cohort(con, cohort_spec, "1=1")
             show_cohort_banner(header)
@@ -4558,6 +4698,7 @@ def main(argv):
     if mode in ("--faced-next", "--next-actions") and not Path(DB).exists():
         raise SystemExit(f"no database at {DB} -- load some hands first")
     con = sqlite3.connect(DB)
+    notes.attach(con)
     if cohort_spec is not None:
         where, header, label = apply_cohort(con, cohort_spec, where, label)
         show_cohort_banner(header)

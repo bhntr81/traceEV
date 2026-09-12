@@ -36,6 +36,7 @@ CHECKS = [
     ("importer", "the site detector, against hands already loaded"),
     ("equity", "the hand evaluator, against published equities"),
     ("compact", "the compact-hand encoding, against fixtures, no corpus"),
+    ("notes", "player notes, marks and tags, against a memory store"),
     ("query", "the filter surface: every filter runs, and every one narrows"),
     ("diag", "a failure in any of the three places reaches the log"),
     ("update", "the updater reports honestly and can only fast-forward"),

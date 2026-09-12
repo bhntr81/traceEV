@@ -8,6 +8,35 @@ Newest first.
 
 ---
 
+## Notes + marked hands
+
+Off-table study. Player notes, a star on a hand, and a tag catalog --
+Hand2Note's note/mark UX without a HUD. The store is `notes.db`, not a
+table inside `hands.db`, because a rebuild of the derived tables is
+exactly the kind of thing that used to delete columns, and a note is
+not a derived column.
+
+    python notes.py --add "calls too wide" --player NAME --hand ID
+    python notes.py --mark ID --tag leak
+    python query.py --marked --hands
+    python query.py --hand ID --mark --tag leak
+
+`--hand` on a note picks the player from the hand when you do not
+name one. Templates are a small CRUD list (seeded once). A note can
+carry a spot/stat string (`--spot "Flop c-bets"`). The window and the
+page mark from the hand list. Compact Hand View is unchanged.
+
+`--check` holds the CRUD, the seat-to-player pick, and that
+`--marked` / `--tag` / `--noted` select the starred hand on an
+in-memory table -- no corpus.
+
+### Not this, on purpose
+
+No HUD overlay. No solver. No HH export of tagged hands. No paste-HH
+into a stat note. No Compact Hand View rewrite.
+
+---
+
 ## Multi-Player cohorts
 
 Hand2Note's Range Research is one report over a set of people.

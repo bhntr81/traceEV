@@ -41,6 +41,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import compact
+import notes
 import players
 import query
 from stats import BY_KEY, STATS
@@ -59,6 +60,7 @@ SWITCH_FIELDS = {
     "vs_hero": "--vs-hero", "vs_pool": "--vs-pool",
     "first_in": "--first-in", "last_raise": "--last-raise",
     "first_raise": "--first-raise", "last_action": "--last-action",
+    "marked": "--marked", "noted": "--noted",
 }
 VALUE_FIELDS = {
     "site": "--site", "player": "--player", "pos": "--pos",
@@ -72,6 +74,7 @@ VALUE_FIELDS = {
     "size": "--size", "outcome": "--outcome",
     "players": "--players", "live": "--live",
     "stack": "--stack",
+    "tag": "--tag",
     "pre": "--pre", "flop": "--flop", "turn": "--turn",
     "river": "--river", "line": "--line", "node": "--node",
 }
@@ -125,6 +128,7 @@ def payload(con, params):
     argv = argv_from(params)
     spec, argv = players.parse_cohort(argv)
     where, label, parts = query.build(argv)
+    notes.attach(con)
     if spec is not None:
         where, _header, label = query.apply_cohort(con, spec, where, label)
 
@@ -198,9 +202,22 @@ def payload(con, params):
 
     if view == "hands":
         rows = query.matching_hands(con, where, limit=300)
+        notes.decorate(con, rows)
         compact.attach(con, rows, fmt="html")
         return {"label": label, "rows": rows,
                 "why": None if rows else nothing()}
+
+    if view == "mark":
+        hid = (params.get("id", [""])[0] or "").strip()
+        if not hid:
+            return {"error": "mark needs a hand id"}
+        raw = (params.get("tag", [""])[0] or "").strip()
+        tags = [x.strip() for x in raw.split(",") if x.strip()]
+        if params.get("unmark", [""])[0] in ("1", "true", "on"):
+            notes.unmark(hid, tags or None)
+            return {"ok": True, "marked": False, "id": hid}
+        notes.mark(hid, tags)
+        return {"ok": True, "marked": True, "id": hid}
 
     if view == "hand":
         hid = params.get("id", [""])[0]
@@ -291,6 +308,8 @@ input:focus,select:focus{outline:1px solid var(--accent);border-color:var(--acce
 .chips{display:flex;flex-wrap:wrap;gap:5px}
 .chip{border:1px solid var(--edge);border-radius:20px;padding:3px 10px;
   cursor:pointer;color:var(--dim);user-select:none;font-size:12px}
+button.mark{background:transparent;border:0;color:var(--accent);cursor:pointer;
+  font-size:16px;padding:0 4px;line-height:1}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#08111f;
   font-weight:600}
 nav{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap}
@@ -338,6 +357,13 @@ td.compact{text-align:left;font-weight:500}
       <span class="chip" data-f="hero">hero</span>
       <span class="chip" data-f="pool">pool</span>
     </div>
+  </fieldset>
+  <fieldset><legend>study</legend>
+    <div class="chips">
+      <span class="chip" data-f="marked">marked</span>
+      <span class="chip" data-f="noted">has a note</span>
+    </div>
+    <label>tag <input id="tag" placeholder="leak,bluff"></label>
   </fieldset>
   <fieldset><legend>multiple players</legend>
     <label>cohort
@@ -502,7 +528,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -534,7 +560,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -740,17 +766,31 @@ function render(d){
 
   } else {
     if (!d.rows.length){ out.innerHTML = nope(); return; }
-    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Underlined actions are this row\'s seat. Click a hand to replay it.</p>'
-      + '<table><thead><tr><th>when</th><th>site</th><th>bb</th><th>pos</th>'
+    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Underlined actions are this row\'s seat. Click a hand to replay it. The star marks it.</p>'
+      + '<table><thead><tr><th></th><th>when</th><th>site</th><th>bb</th><th>pos</th>'
       + '<th>hand</th><th>net bb</th><th>act bb</th><th>compact</th></tr></thead><tbody>';
-    for (const r of d.rows)
+    for (const r of d.rows){
+      const tags = (r.tags||[]).join(',');
       h += `<tr class="click" data-id="${r.id}" data-seat="${r.seat}">`
+        + `<td><button type="button" class="mark" data-id="${r.id}" data-unmark="${r.marked?1:0}">${r.marked?'★':'☆'}</button></td>`
         + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site}</td>`
         + `<td class="n">${r.bb??''}</td><td>${r.pos||''}</td>`
         + `<td>${r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
         + `<td>${r.act==null?'–':money(r.act)}</td>`
-        + `<td class="compact">${r.compact||r.board||''}</td></tr>`;
+        + `<td class="compact">${tags?('['+tags+'] '):''}${r.compact||r.board||''}</td></tr>`;
+    }
     out.innerHTML = h + '</tbody></table>';
+    out.querySelectorAll('button.mark').forEach(b => {
+      b.onclick = async e => {
+        e.stopPropagation();
+        const p = new URLSearchParams({view:'mark', id:b.dataset.id});
+        if (b.dataset.unmark === '1') p.set('unmark','1');
+        const tag = ($('#tag') && $('#tag').value.trim()) || '';
+        if (tag) p.set('tag', tag);
+        await fetch('/api?' + p);
+        load();
+      };
+    });
   }
 }
 
@@ -934,6 +974,8 @@ def check(db_path=DB):
          ["--cohort", "vpip>=40,pfr<=10,hands>=100", "--hero"]),
         ({"cohort": ["hands>=100"], "cohort_class": ["fish"], "pos": ["BTN"]},
          ["--cohort", "hands>=100", "--class", "fish", "--pos", "BTN"]),
+        ({"marked": ["1"], "tag": ["leak"]},
+         ["--marked", "--tag", "leak"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))

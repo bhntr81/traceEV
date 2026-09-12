@@ -39,13 +39,14 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
 
 import compact
 import diag
 import importer
+import notes
 import players
 import sites
 import query
@@ -551,6 +552,8 @@ class App(ImportMixin, ttk.Frame):
         # it has been built yet. These used to appear as a side effect of
         # drawing the rail, so deleting the rail silently emptied the filter.
         self.flags = {f: tk.BooleanVar() for f in query.SWITCHES}
+        self.flags["--marked"] = tk.BooleanVar()
+        self.flags["--noted"] = tk.BooleanVar()
         self.multi = {"pos": set(), "vs": set(), "street": set(),
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
@@ -563,7 +566,7 @@ class App(ImportMixin, ttk.Frame):
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
-                      "players", "live", "stack")}
+                      "players", "live", "stack", "tag")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -799,7 +802,7 @@ class App(ImportMixin, ttk.Frame):
                             "--after": "after", "--then": "then",
                             "--size": "size", "--outcome": "outcome",
                             "--players": "players", "--live": "live",
-                            "--stack": "stack"}.get(a)
+                            "--stack": "stack", "--tag": "tag"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -883,6 +886,23 @@ class App(ImportMixin, ttk.Frame):
         self.chart = None
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        wrap = self.tree["hands"].master
+        study = ttk.Frame(self.tabs["hands"])
+        study.pack(fill="x", padx=8, pady=(6, 0), before=wrap)
+        ttk.Button(study, text="Mark",
+                   command=lambda: self._mark_selected(True)).pack(
+                       side="left")
+        ttk.Button(study, text="Unmark",
+                   command=lambda: self._mark_selected(False)).pack(
+                       side="left", padx=(6, 0))
+        ttk.Label(study, text="tag", style="Dim.TLabel").pack(
+            side="left", padx=(12, 4))
+        self.hand_tag = tk.StringVar()
+        ttk.Entry(study, textvariable=self.hand_tag, width=12).pack(
+            side="left")
+        ttk.Button(study, text="Note",
+                   command=self._note_selected).pack(
+                       side="left", padx=(12, 0))
         # A stat or a Faced Next row is a filter. Double-clicking it is
         # how Hand2Note walks from a frequency to the hands that made it,
         # without going back through the dialog.
@@ -949,7 +969,7 @@ class App(ImportMixin, ttk.Frame):
                            ("after", "--after"), ("then", "--then"),
                            ("size", "--size"), ("outcome", "--outcome"),
                            ("players", "--players"), ("live", "--live"),
-                           ("stack", "--stack")):
+                           ("stack", "--stack"), ("tag", "--tag")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1043,6 +1063,7 @@ class App(ImportMixin, ttk.Frame):
         argv = list(argv or [])
         con = sqlite3.connect(DB)
         try:
+            notes.attach(con)
             if cohort_spec is not None:
                 where, _header, label = query.apply_cohort(
                     con, cohort_spec, where, label)
@@ -1081,6 +1102,7 @@ class App(ImportMixin, ttk.Frame):
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
                 rows = query.matching_hands(con, where, limit=500)
+                notes.decorate(con, rows)
                 compact.attach(con, rows, fmt="text")
                 out["rows"] = rows
             elif view == "graph":
@@ -1441,39 +1463,83 @@ class App(ImportMixin, ttk.Frame):
         # the line, and a Treeview cannot underline a substring so the
         # focus seat's action is marked _R3_. Double-click still opens
         # the full replay -- that path is unchanged.
-        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb",
+        self._cols(tv, ("*", "when", "site", "bb", "pos", "hand", "net bb",
                         "act bb", "compact"),
-                   (140, 90, 60, 60, 70, 80, 80, 520),
-                   {"when": "w", "site": "w", "pos": "w", "hand": "w",
+                   (36, 140, 90, 60, 60, 70, 80, 80, 480),
+                   {"*": "w", "when": "w", "site": "w", "pos": "w", "hand": "w",
                     "compact": "w"})
         self._hand_ids = {}
         for r in out["rows"]:
             net, act = r.get("net"), r.get("act")
+            star = "*" if r.get("marked") else ""
+            extra = ",".join(r.get("tags") or [])
+            compact_line = r.get("compact") or r.get("board") or ""
+            if extra:
+                compact_line = f"[{extra}]  {compact_line}"
             iid = tv.insert("", "end", values=(
+                star,
                 (r.get("when") or "")[:16], r.get("site") or "",
                 f"{r['bb']:g}" if r.get("bb") else "",
                 r.get("pos") or "", r.get("combo") or "–",
                 f"{net:+.1f}" if net is not None else "",
                 f"{act:+.1f}" if act is not None else "–",
-                r.get("compact") or r.get("board") or ""),
+                compact_line),
                 tags=("pos",) if (act or 0) > 0 else
                      ("neg",) if (act or 0) < 0 else ())
             self._hand_ids[iid] = (r["id"], r["seat"])
         if out["rows"]:
-            tv.insert("", "end", values=("", "", "", "", "", "", "", ""))
+            tv.insert("", "end", values=("", "", "", "", "", "", "", "", ""))
             tv.insert("", "end", tags=("note",),
-                      values=("act bb is this action; net bb is the hand. "
+                      values=("", "act bb is this action; net bb is the hand. "
                               "– is unpriced. _marked_ actions are this "
-                              "row's seat. Double-click to replay.",
+                              "row's seat. Mark / Unmark / Note on the row. "
+                              "Double-click to replay.",
                               "", "", "", "", "", "", ""))
 
-    def _open_hand(self, _event):
+    def _selected_hand(self):
         tv = self.tree["hands"]
         sel = tv.selection()
         if not sel or sel[0] not in getattr(self, "_hand_ids", {}):
+            return None
+        return self._hand_ids[sel[0]]
+
+    def _open_hand(self, _event):
+        got = self._selected_hand()
+        if not got:
             return
-        hid, seat = self._hand_ids[sel[0]]
+        hid, seat = got
         HandWindow(self, self.con, hid, seat)
+
+    def _mark_selected(self, star):
+        got = self._selected_hand()
+        if not got:
+            return
+        hid, _seat = got
+        raw = self.hand_tag.get().strip()
+        tags = [x.strip() for x in raw.split(",") if x.strip()]
+        if star:
+            notes.mark(hid, tags)
+        else:
+            notes.unmark(hid, tags or None)
+        self.refresh()
+
+    def _note_selected(self):
+        got = self._selected_hand()
+        if not got:
+            return
+        hid, seat = got
+        text = simpledialog.askstring(
+            "Note", f"Note on {hid}", parent=self.master)
+        if not text or not text.strip():
+            return
+        hands_con = sqlite3.connect(DB)
+        hands_con.row_factory = sqlite3.Row
+        try:
+            notes.add(text.strip(), hand_id=hid, seat=seat,
+                      hands_con=hands_con)
+        finally:
+            hands_con.close()
+        self.refresh()
 
     def _draw_chart(self, message=None):
         """
@@ -2498,6 +2564,19 @@ class FilterDialog(tk.Toplevel):
             ttk.Entry(row, textvariable=self.app.vals[name], width=14).pack(
                 side="left", padx=(6, 18))
 
+        self._heading(page, "study  (marked hands and tags)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(0, 8))
+        ttk.Checkbutton(row, text="marked only",
+                        variable=self.app.flags["--marked"]).pack(side="left")
+        ttk.Checkbutton(row, text="has a note",
+                        variable=self.app.flags["--noted"]).pack(
+                            side="left", padx=(14, 0))
+        ttk.Label(row, text="tag", style="Dim.TLabel").pack(
+            side="left", padx=(18, 6))
+        ttk.Entry(row, textvariable=self.app.vals["tag"], width=16).pack(
+            side="left")
+
         self._heading(page, "anything else, as SQL over `decisions`")
         ttk.Entry(page, textvariable=self.app.vals["where"]).pack(
             fill="x", padx=18, pady=(0, 6))
@@ -2556,7 +2635,24 @@ class HandWindow(tk.Toplevel):
         super().__init__(master)
         self.configure(background=BG)
         self.title(f"hand {hand_id}")
-        self.geometry("760x620")
+        self.geometry("760x680")
+        self.hand_id = hand_id
+        self.seat = seat
+        study = ttk.Frame(self)
+        study.pack(fill="x", padx=12, pady=(8, 0))
+        ttk.Button(study, text="Mark",
+                   command=lambda: notes.mark(hand_id)).pack(side="left")
+        ttk.Button(study, text="Unmark",
+                   command=lambda: notes.unmark(hand_id)).pack(
+                       side="left", padx=(6, 0))
+        self._tag = tk.StringVar()
+        ttk.Entry(study, textvariable=self._tag, width=12).pack(
+            side="left", padx=(12, 4))
+        ttk.Button(study, text="Tag", command=self._tag_hand).pack(side="left")
+        self._note = tk.StringVar()
+        ttk.Entry(study, textvariable=self._note, width=28).pack(
+            side="left", padx=(12, 4))
+        ttk.Button(study, text="Note", command=self._add_note).pack(side="left")
         d = query.hand_detail(con, hand_id, seat)
         mono = tkfont.Font(family=MONO, size=10)
         text = tk.Text(self, background=BG, foreground=INK, borderwidth=0,
@@ -2608,6 +2704,24 @@ class HandWindow(tk.Toplevel):
             rake = f"   rake {d['rake']:.2f}" if d["rake"] else ""
             text.insert("end", f"\nTOTAL POT {d['pot']:.2f}{rake}\n", "dim")
         text.configure(state="disabled")
+
+    def _tag_hand(self):
+        raw = self._tag.get().strip()
+        tags = [x.strip() for x in raw.split(",") if x.strip()]
+        notes.mark(self.hand_id, tags)
+
+    def _add_note(self):
+        text = self._note.get().strip()
+        if not text:
+            return
+        hands_con = sqlite3.connect(DB)
+        hands_con.row_factory = sqlite3.Row
+        try:
+            notes.add(text, hand_id=self.hand_id, seat=self.seat,
+                      hands_con=hands_con)
+        finally:
+            hands_con.close()
+        self._note.set("")
 
 
 def check(db_path=DB):

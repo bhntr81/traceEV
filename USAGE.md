@@ -747,6 +747,49 @@ are there including the folded ones, because the site shows them. On ACR a
 seat reads `--` when the hand was never shown, which is different from
 having been dealt nothing.
 
+---
+
+### Notes, marks, and tags
+
+Off-table study. A report is what the pool did; a note is what you thought
+about it. The store is `notes.db` beside the database -- gitignored, and
+not rebuilt with `hands.db`, so a derivation rebuild does not delete a
+sentence you wrote last Tuesday.
+
+```bash
+python notes.py --add "calls too wide" --player NAME
+python notes.py --add "too wide here" --hand cp-123 --spot "Flop c-bets"
+python notes.py --list --player NAME
+python notes.py --bind cp-123 --note-id 4
+python notes.py --mark cp-123 --tag leak
+python notes.py --marked --tag leak
+python notes.py --templates
+python notes.py --template review --text "Come back to this."
+```
+
+`--hand` without `--player` picks the player from the hand: the report
+row's seat if you passed `--seat`, otherwise hero, otherwise any named
+seat.
+
+The same store as a filter:
+
+```bash
+python query.py --marked --hands
+python query.py --tag leak --hero --stats
+python query.py --noted --filter 3bet
+python query.py --hand cp-123 --mark --tag leak
+python query.py --hand cp-123 --note "calls too wide"
+```
+
+The hand list prints a `*` on starred rows and the tags after the board.
+In the window: Filter → General → marked / tag, and Mark / Unmark / Note
+on the hands tab (and on the replay). On the page: the study chips and
+the star on each row.
+
+Not this, on purpose: live HUD "Add Note"; exporting tagged hands as a
+history file; pasting a raw HH into a stat note. Compact Hand View is
+already the line on the row -- this does not redo it.
+
 ### When nothing matches
 
 Some perfectly reasonable filters cannot match anything, and rather than a

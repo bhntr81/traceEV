@@ -15,6 +15,7 @@ hands.db.bak*
 # not the project's
 stats.json
 filters.json
+notes.db
 
 # runtime log
 poker_analysis.log*
