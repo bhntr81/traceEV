@@ -11,11 +11,17 @@ other lacks.
             which is the thing an opponent report is for. What it will not
             show is a folded hand, so ranges here are inferred, not seen.
 
+Hold'em and Omaha (4-card and 5-card) share this format. The variant is
+`games.of` on the header, not a second skip. A folder of PLO files used
+to be "unrecognised" because HEADER required `" - Holdem"`.
+
 This is the parser and nothing else: the header a hand begins with, how a
 file splits into hands, and one hand as the dict shape every site's parser
 returns. Loading, the schema and the checks are `importer.py` and
 `sites.py`. The site this parser belongs to, and what is true of it, is the
 registry entry in `sites.py`.
+
+    python acr.py --check           the PLO4/PLO5 fixtures, and Hold'em still loads
 
 Two things ACR gives that Ignition does not: the button is stated
 outright, so positions are read rather than reconstructed from labels, and
@@ -27,18 +33,28 @@ found when one hand in five came up short.
 """
 
 import re
+import sys
+
+import games
 
 # The Winning Poker Network writes a bare hand number followed by the game.
 # The header is the only thing a file is identified by -- never the folder
 # it was found in, never which client is installed on the machine. Eight
 # thousand hands were once loaded and reported on under the wrong site
 # because the site was inferred from the computer instead of the text.
-HEADER = lambda line: line.startswith("Hand #") and " - Holdem" in line[:80]
+#
+# The game word used to be part of this test (" - Holdem"), so a folder of
+# Omaha files was "unrecognised" rather than loaded and tagged. The site is
+# the format, not the variant; `games.of` reads the variant off the same
+# line. Stud and anything else this registry does not name still return
+# None from parse_hand.
 
 # "Hand #2459218653 - Holdem (No Limit) - $0.01/$0.02 - 2025/05/18 22:43:28 UTC"
+# "Hand #2459808909 - Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:18:05 UTC"
 HAND_RE = re.compile(
     r"^Hand #(\d+)\s*-\s*(.+?)\s*-\s*\$?([\d.,]+)/\$?([\d.,]+)\s*-\s*"
     r"(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})", re.M)
+HEADER = lambda line: bool(line.startswith("Hand #") and HAND_RE.match(line))
 # "Mount Shasta 6-max Seat #5 is the button" -- the table name may itself
 # contain digits or spaces, so it is whatever precedes the size.
 TABLE_RE = re.compile(r"^(.*?)\s*(\d+)-max\s+Seat #(\d+) is the button", re.M)
@@ -119,8 +135,9 @@ def parse_hand(text, source=""):
     if not m:
         return None
     hand_id, game_desc, sb, bb, played_at = m.groups()
-    if "holdem" not in game_desc.lower():
-        return None                      # Omaha files live in the same folder
+    game = games.of(game_desc)
+    if game is None:
+        return None                      # Stud and the rest live in the same folder
     played_at = played_at.replace("/", "-")          # match Ignition's spelling
 
     tm = TABLE_RE.search(text)
@@ -203,7 +220,9 @@ def parse_hand(text, source=""):
             continue
         if rest.startswith(("shows", "mucks", "does not show")):
             cm = CARDS_RE.search(rest)
-            if cm and len(cm.group(1).split()) == 2:
+            # Two, four or five -- Hold'em, Omaha, 5-card Omaha. A count
+            # this game does not deal is a misread, not a hand.
+            if cm and len(cm.group(1).split()) == games.holes(game):
                 s["cards"] = cm.group(1)
             continue
         if rest.startswith(("collected", "sits out", "joins", "leaves", "waits for",
@@ -301,7 +320,7 @@ def parse_hand(text, source=""):
 
     return {
         "hand": {"hand_id": "cp-" + hand_id, "played_at": played_at,
-                 "table_id": table_name, "game": "HOLDEM", "fmt": fmt,
+                 "table_id": table_name, "game": game, "fmt": fmt,
                  "sb": _money(sb), "bb": _money(bb), "n_players": len(seats),
                  "board": " ".join(board),
                  "pot": _money(pot_m.group(1)) if pot_m else None,
@@ -323,3 +342,289 @@ def split_hands(text):
     starts = [m.start() for m in HAND_RE.finditer(text)]
     for i, a in enumerate(starts):
         yield text[a:starts[i + 1] if i + 1 < len(starts) else len(text)]
+
+
+# Hands whose answer is written down, not invented. The PLO4 block is a
+# real history; the PLO5 block is the header and the dealt cards from one,
+# finished with a fold-to-the-blind so the money identity can be checked
+# without inventing an equity. Hold'em is here so the HEADER change cannot
+# quietly stop loading the game this parser was built for.
+PLO4 = """\
+Hand #2459808909 - Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:18:05 UTC
+Lincolnwood 6-max Seat #5 is the button
+Seat 1: LLjr ($9.84)
+Seat 2: M3dus4 ($10.00)
+Seat 3: poker-1970 ($3.90)
+Seat 4: Maestroea ($3.45)
+Seat 5: LetsGeIt2821 ($44.76)
+Seat 6: PierreRenard will be allowed to play after the button
+LLjr posts the small blind $0.05
+M3dus4 posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to M3dus4 [3c 2h Kd 2d]
+poker-1970 folds
+Maestroea folds
+LetsGeIt2821 raises $0.35 to $0.35
+LLjr calls $0.30
+M3dus4 folds
+*** FLOP *** [8h Ks 8c]
+Main pot $0.76 | Rake $0.04
+LLjr checks
+LetsGeIt2821 checks
+*** TURN *** [8h Ks 8c] [Qc]
+Main pot $0.76 | Rake $0.04
+LLjr checks
+LetsGeIt2821 bets $0.60
+LLjr folds
+Uncalled bet ($0.60) returned to LetsGeIt2821
+LetsGeIt2821 does not show
+*** SUMMARY ***
+Total pot $0.76 | Rake $0.04
+Board [8h Ks 8c Qc]
+Seat 1: LLjr (small blind) folded on the Turn
+Seat 2: M3dus4 (big blind) folded on the Pre-Flop
+Seat 3: poker-1970 folded on the Pre-Flop and did not bet
+Seat 4: Maestroea folded on the Pre-Flop and did not bet
+Seat 5: LetsGeIt2821 did not show and won $0.76
+"""
+
+PLO5 = """\
+Hand #2459651456 - 5Card Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:00:00 UTC
+Lincolnwood 6-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Seat 3: Carol ($10.00)
+Bob posts the small blind $0.05
+Carol posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Bob [Qh Jh Qd Kc 2c]
+Alice folds
+Bob folds
+Uncalled bet ($0.05) returned to Carol
+Carol does not show
+*** SUMMARY ***
+Total pot $0.10 | Rake $0
+Seat 1: Alice folded on the Pre-Flop and did not bet
+Seat 2: Bob (small blind) folded on the Pre-Flop
+Seat 3: Carol (big blind) did not show and won $0.10
+"""
+
+# Showdown so strength can name a 2+3 hand after a real import, not
+# only against a typed tuple. Hero holds the overpair that Hold'em
+# of all four would call two pair (aces and kings).
+PLO4_SHOW = """\
+Hand #2459808999 - Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:30:00 UTC
+Lincolnwood 6-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Bob [As Ad Kh 7d]
+Alice calls $0.05
+*** FLOP *** [Kc 2h 3s]
+Alice checks
+Bob checks
+*** TURN *** [Kc 2h 3s] [9c]
+Alice checks
+Bob checks
+*** RIVER *** [Kc 2h 3s 9c] [4d]
+Alice checks
+Bob checks
+*** SHOW DOWN ***
+Alice shows [Qs Js Tc 8d]
+Bob shows [As Ad Kh 7d]
+*** SUMMARY ***
+Total pot $0.20 | Rake $0
+Board [Kc 2h 3s 9c 4d]
+Seat 1: Alice (small blind) showed [Qs Js Tc 8d] and lost
+Seat 2: Bob (big blind) showed [As Ad Kh 7d] and won $0.20
+"""
+
+HOLDEM = """\
+Hand #2459218653 - Holdem (No Limit) - $0.05/$0.10 - 2025/05/18 22:43:28 UTC
+Mount Shasta 6-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Seat 3: Carol ($10.00)
+Bob posts the small blind $0.05
+Carol posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Bob [As Kd]
+Alice folds
+Bob folds
+Uncalled bet ($0.05) returned to Carol
+Carol does not show
+*** SUMMARY ***
+Total pot $0.10 | Rake $0
+Seat 3: Carol (big blind) did not show and won $0.10
+"""
+
+
+def _money_identity(parsed):
+    """in - house = won, the same test sites.py runs on a loaded database."""
+    inp = sum((s["posted"] or 0) + (s["invested"] or 0) for s in parsed["seats"])
+    won = sum(s["won"] or 0 for s in parsed["seats"])
+    house = (parsed["hand"]["rake"] or 0) + (parsed["hand"]["jp_fee"] or 0)
+    return abs(inp - house - won) <= 0.011
+
+
+def check():
+    """
+    Against hands whose text is written down here.
+
+    A parser fails silently -- it drops a line and every figure downstream
+    comes out slightly wrong. These blocks are the ones that would have
+    been skipped; if the money, the game tag, the hole cards or the
+    waiting seat come out wrong, the skip was safer than the load.
+    """
+    fails = []
+
+    for line, site in (
+            (PLO4.splitlines()[0], True),
+            (PLO5.splitlines()[0], True),
+            (HOLDEM.splitlines()[0], True),
+            ("Hand #1 - Stud (Limit) - $0.05/$0.10 - 2025/05/19 17:00:00 UTC", True),
+            ("PokerStars Hand #1:  Hold'em No Limit ($0.50/$1.00 USD)", False),
+            ("Ignition Hand #1: TBL#1 HOLDEM No Limit - 2025-05-19 17:18:05", False)):
+        got = bool(HEADER(line))
+        if got != site:
+            fails.append(f"HEADER {line[:40]!r} -> {got}")
+    print(f"HEADER takes WPN and refuses the others  "
+          f"{'yes' if not any(f.startswith('HEADER') for f in fails) else 'NO'}")
+
+    p4 = parse_hand(PLO4, source="plo4.txt")
+    if p4 is None:
+        fails.append("PLO4 did not parse")
+        print("PLO4 parsed                      NO")
+    else:
+        h, seats = p4["hand"], p4["seats"]
+        by = {s["label"]: s for s in seats}
+        want = [
+            (h["game"] == "OMAHA", "game is OMAHA"),
+            (h["hand_id"] == "cp-2459808909", "hand id"),
+            (h["sb"] == 0.05 and h["bb"] == 0.10, "blinds"),
+            (h["n_players"] == 5, "waiting seat is out of the hand"),
+            ("PierreRenard" not in by, "PierreRenard was not dealt in"),
+            (by["M3dus4"]["is_hero"] and by["M3dus4"]["cards"] == "3c 2h Kd 2d",
+             "hero's four hole cards"),
+            (h["board"] == "8h Ks 8c Qc", "board to the turn"),
+            (by["LLjr"]["position"] == "SB"
+             and by["M3dus4"]["position"] == "BB"
+             and by["LetsGeIt2821"]["position"] == "BTN",
+             "positions from the button"),
+            (abs((by["LetsGeIt2821"]["won"] or 0) - 0.76) < 0.001, "winner"),
+            (_money_identity(p4), "in - house = won"),
+            (h["standard"] == 1, "standard blinds"),
+        ]
+        bad = [why for ok, why in want if not ok]
+        print(f"PLO4 fixture                    {len(want) - len(bad)}/{len(want)}")
+        for why in bad:
+            print(f"    {why}")
+            fails.append(f"PLO4: {why}")
+
+    p5 = parse_hand(PLO5, source="plo5.txt")
+    if p5 is None:
+        fails.append("PLO5 did not parse")
+        print("PLO5 parsed                      NO")
+    else:
+        h, seats = p5["hand"], p5["seats"]
+        hero = next(s for s in seats if s["is_hero"])
+        want = [
+            (h["game"] == "OMAHA5", "game is OMAHA5"),
+            (hero["cards"] == "Qh Jh Qd Kc 2c", "five hole cards"),
+            (h["n_players"] == 3, "three seats in"),
+            (_money_identity(p5), "in - house = won"),
+        ]
+        bad = [why for ok, why in want if not ok]
+        print(f"PLO5 fixture                    {len(want) - len(bad)}/{len(want)}")
+        for why in bad:
+            print(f"    {why}")
+            fails.append(f"PLO5: {why}")
+
+    nl = parse_hand(HOLDEM, source="nlhe.txt")
+    if nl is None or nl["hand"]["game"] != "HOLDEM":
+        fails.append("Hold'em fixture did not parse as HOLDEM")
+        print("Hold'em still parses             NO")
+    else:
+        hero = next(s for s in nl["seats"] if s["is_hero"])
+        ok = hero["cards"] == "As Kd" and _money_identity(nl)
+        print(f"Hold'em still parses            {'yes' if ok else 'NO'}")
+        if not ok:
+            fails.append("Hold'em fixture money or cards")
+
+    stud = "Hand #1 - Stud (Limit) - $0.05/$0.10 - 2025/05/19 17:00:00 UTC\n"
+    print(f"Stud is still refused            "
+          f"{'yes' if parse_hand(stud) is None else 'NO'}")
+    if parse_hand(stud) is not None:
+        fails.append("Stud was parsed")
+
+    # The path that used to skip the whole file: HEADER required
+    # " - Holdem", so sniff returned None and the loader never asked.
+    import sqlite3
+    import tempfile
+    from pathlib import Path
+
+    import importer
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "plo4.txt"
+        f.write_text(PLO4)
+        sniffed = importer.sniff(f)
+        print(f"PLO4 file sniffed as acr        "
+              f"{'yes' if sniffed == 'acr' else 'NO -> ' + str(sniffed)}")
+        if sniffed != "acr":
+            fails.append(f"PLO4 sniffed as {sniffed}")
+        db = Path(tmp) / "t.db"
+        loaded = importer.load([f], db)
+        con = sqlite3.connect(db)
+        row = con.execute("SELECT game, n_players FROM hands").fetchone()
+        cards = con.execute(
+            "SELECT cards FROM seats WHERE is_hero=1").fetchone()
+        con.close()
+        ok = (loaded.get("added") == 1 and row and row[0] == "OMAHA"
+              and cards and cards[0] == "3c 2h Kd 2d")
+        print(f"PLO4 loads through importer     {'yes' if ok else 'NO'}")
+        if not ok:
+            fails.append("importer.load did not store the PLO4 hand")
+
+        # A shown PLO hand has to come out an Omaha label after the
+        # ordinary derive, or `--game plo --hist-postflop` is still
+        # reading NULL and every bar is empty.
+        show = Path(tmp) / "plo4show.txt"
+        show.write_text(PLO4_SHOW)
+        db2 = Path(tmp) / "show.db"
+        importer.load([show], db2)
+        import decisions
+        import lines
+        import spots
+        import strength
+        spots.build(db2)
+        decisions.build(db2)
+        lines.build(db2)
+        strength.build(db2)
+        named = sqlite3.connect(db2).execute(
+            "SELECT made, fd, sd FROM decisions "
+            "WHERE cards = 'As Ad Kh 7d' AND street = 'flop'"
+        ).fetchone()
+        want = strength.classify("As Ad Kh 7d", "Kc 2h 3s")
+        ok = named and tuple(named) == (want[0], want[2], want[3])
+        print(f"PLO4 showdown classifies        "
+              f"{'yes' if ok else 'NO -> ' + str(named)}")
+        if not ok:
+            fails.append(f"imported PLO4 flop was {named}, want {want}")
+
+    print()
+    print("FAIL: " + "; ".join(fails) if fails else "PASS")
+    return not fails
+
+
+def main(argv):
+    if "--check" in argv:
+        return 0 if check() else 1
+    print(__doc__)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+

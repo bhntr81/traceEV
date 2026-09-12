@@ -80,6 +80,7 @@ import tempfile
 import aliases
 import compact
 import expr
+import games
 import lines
 import notes
 import players
@@ -105,6 +106,11 @@ FACINGS = ("unopened", "open", "3bet", "4bet", "5bet+",
 # A value flag takes an argument; a switch does not.
 VALUE_FLAGS = {
     "--site": "site = {v}",
+    # HOLDEM / OMAHA / OMAHA5. The words `--game` takes live in
+    # `games.ALIASES` (`plo`, `holdem`, `plo5`, ...). Absent, the filter
+    # is Hold'em -- mixing the two VPIPs is the same class of error as
+    # mixing two sites under fmt='RING'. `--game all` opts in to mixing.
+    "--game": None,
     "--player": "player = {v}",
     # The other seat, by name. Only meaningful while one opponent is left --
     # in a three-way pot there is no "the other player" -- so this selects
@@ -373,6 +379,7 @@ DIMENSIONS = {
         if k in ("UTG", "HJ", "CO", "BTN", "SB", "BB") else 99)),
     "stake": ("bb", lambda k: float(k or 0)),
     "site": ("site", str),
+    "game": ("game", str),
     "player": ("player", str),
     "month": ("substr(played_at, 1, 7)", str),
     "day": ("substr(played_at, 1, 10)", str),
@@ -722,7 +729,7 @@ WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
                 "--reg", "--fish", "--vs-reg", "--vs-fish",
                 "--with-fish", "--regs-only",
                 "--today")
-WHO_VALUES = ("--player", "--vs-player", "--site", "--stake",
+WHO_VALUES = ("--player", "--vs-player", "--site", "--stake", "--game",
               "--since", "--until",
               "--alias", "--vs-alias", "--villain-type", "--vs-class",
               "--session", "--hours",
@@ -2275,7 +2282,7 @@ def detach_short_filters(argv):
         _where, label, _parts = build(sit)
     except SystemExit:
         label = " ".join(str(x) for x in sit)
-    if not label or label == "everything":
+    if not label or label in ("everything", "holdem"):
         return "unfiltered"
     return label if len(label) <= 48 else label[:45] + "…"
 
@@ -3231,6 +3238,7 @@ def build(argv):
     be read as though it covered everything.
     """
     parts, described = [], []
+    named_game = False
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -3265,6 +3273,18 @@ def build(argv):
                 raise SystemExit(f"{a} needs a value")
             v = argv[i + 1]
             i += 2
+            if a == "--game":
+                try:
+                    clause = games.sql(v)
+                except KeyError as e:
+                    raise SystemExit(str(e)) from None
+                named_game = True
+                if clause != "1=1":
+                    parts.append(clause)
+                    described.append("game " + v)
+                else:
+                    described.append("all games")
+                continue
             if a == "--where":
                 parts.append("(" + v + ")")
                 described.append(v)
@@ -3508,6 +3528,13 @@ def build(argv):
             described.append(f"{a.lstrip('-')} {v}")
             continue
         raise SystemExit(f"unknown option {a!r} -- try --help")
+    # Default Hold'em. A report that does not name a game is a Hold'em
+    # report, because that is what every number in this project was
+    # until Omaha arrived, and averaging the two is how a 22% VPIP
+    # becomes a number that describes neither.
+    if not named_game:
+        parts.append(games.HOLD)
+        described.append("holdem")
     return (" AND ".join(parts) if parts else "1=1",
             ", ".join(described) if described else "everything",
             list(zip(described, parts)))
@@ -5659,7 +5686,9 @@ def hand_detail(con, hand_id, seat=None):
     con.row_factory = None
     return {
         "hand_id": hand_id, "site": h["site"], "played_at": h["played_at"],
-        "table": h["table_id"], "fmt": h["fmt"], "sb": h["sb"], "bb": h["bb"],
+        "table": h["table_id"], "fmt": h["fmt"],
+        "game": (h["game"] if "game" in h.keys() else None),
+        "sb": h["sb"], "bb": h["bb"],
         "n_players": h["n_players"], "board": h["board"], "pot": h["pot"],
         "rake": (h["rake"] if "rake" in h.keys() else None),
         "focus": seat,
@@ -5678,8 +5707,8 @@ def show_hand(con, hand_id, seat=None):
         print(f"no hand {hand_id!r}")
         return
     stake = f"${d['sb']}/${d['bb']}" if d["bb"] else "-"
-    print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {stake}  "
-          f"{d['played_at']}  ({d['table']})")
+    print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {d.get('game') or ''}  "
+          f"{stake}  {d['played_at']}  ({d['table']})")
     line = compact.CompactHandRenderer(
         d, fmt="ansi" if sys.stdout.isatty() else "text")
     if line:
@@ -5689,7 +5718,7 @@ def show_hand(con, hand_id, seat=None):
         mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
         net = (s["won"] or 0) - s["put_in"]
         print(f" {mark} {s['position'] or '?':4} {(s['name'] or '')[:16]:16} "
-              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>7}  "
+              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>14}  "
               f"{net:+8.2f}")
     for st in d["streets"]:
         head = st["street"].upper()
@@ -6250,6 +6279,7 @@ def usage():
     for k, v in VALUE_FLAGS.items():
         if v:
             print(f"    {k:14} {v}")
+    print(f"    {'--game':14} holdem (default), plo, plo5, all")
     print(f"    {'--board':14} one of: {', '.join(BOARDS)}")
     print(f"    {'--quick':14} named filters: "
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
@@ -6444,6 +6474,17 @@ SCAN_OK = {
         "not a prefix of decisions.played_at -- the sit-down is "
         "clustered, not a date range",
 }
+
+
+def _hold_col(con):
+    """In-memory fixtures predate `game`; default the column to Hold'em."""
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    except sqlite3.Error:
+        return
+    if "game" not in cols:
+        con.execute(
+            "ALTER TABLE decisions ADD COLUMN game TEXT DEFAULT 'HOLDEM'")
 
 
 def check_shape():
@@ -6695,6 +6736,7 @@ def check_filterdef():
          ("h1", 2, "flop", 2, "R", 1, 5, 1, 0, 0, 1.10, 6, 120),
          ("h1", 3, "flop", 1, "C", 0, 10, 2, 0, 1, None, 6, 120),
          ("h2", 1, "preflop", 1, "R", 1, 1, 0, 1, 0, 2.00, 6, 30)])
+    _hold_col(con)
     first_w, _, _ = build(["--first-raise"])
     rows = [r[0] for r in con.execute(
         f"SELECT n || street FROM decisions WHERE {first_w}")]
@@ -6771,6 +6813,7 @@ def check_compare():
          ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", 0),
          ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop", 0),
          ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", 0)])
+    _hold_col(con)
     con.executemany(
         "INSERT INTO spots VALUES (?,?,?,?,?,?)",
         [("h1", 1, "RING", 0, 15, 10),
@@ -6892,6 +6935,7 @@ def check_cohort():
          ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop", "acr", "loose", 0),
          ("h9", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "tight", 0),
          ("h8", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop", "acr", "short", 0)])
+    _hold_col(con)
     con.executemany(
         "INSERT INTO spots VALUES (?,?,?,?,?,?)",
         [("h1", 1, "RING", 0, 15, 10),
@@ -7051,6 +7095,7 @@ def check_study():
     con.executemany(
         "INSERT INTO decisions VALUES (?,?,?)",
         [("h1", 1, "B"), ("h2", 1, "F")])
+    _hold_col(con)
     notes.attach(con, path=store)
     marked_w, _, _ = build(["--marked"])
     tag_w, _, _ = build(["--tag", "leak"])
@@ -7096,16 +7141,21 @@ def check_sessions():
     kept = who_only(["--hero", "--session", "h1", "--street", "flop"])
     if "--session" not in kept or "h1" not in kept:
         fails.append("who_only dropped --session")
+    game_who = who_only(["--hero", "--game", "plo", "--street", "flop"])
+    if "--game" not in game_who or "plo" not in game_who:
+        fails.append("who_only dropped --game")
+    if "--street" in game_who:
+        fails.append("who_only kept --street with --game")
     if "--street" in kept:
         fails.append("who_only kept a situation flag")
     gone = without_who(["--session", "h1", "--pot", "3bet"])
     if "--session" in gone:
         fails.append("without_who kept --session")
     fmt_w, fmt_l, _ = build(["--fmt", "cash"])
-    if "fmt <> 'MTT'" not in fmt_w or fmt_l != "cash":
+    if "fmt <> 'MTT'" not in fmt_w or "cash" not in fmt_l:
         fails.append(f"--fmt cash compiled to {fmt_w!r} / {fmt_l!r}")
     mtt_w, mtt_l, _ = build(["--fmt", "mtt"])
-    if "fmt = 'MTT'" not in mtt_w or mtt_l != "mtt":
+    if "fmt = 'MTT'" not in mtt_w or "mtt" not in mtt_l:
         fails.append(f"--fmt mtt compiled to {mtt_w!r} / {mtt_l!r}")
     last_w, last_l, _ = build(["--last-sessions", "10"])
     if "LIMIT 10" not in last_w or "last 10 sessions" not in last_l:
@@ -7119,7 +7169,7 @@ def check_sessions():
     today, tlabel, _ = build(["--today", "--start-of-day", "6"])
     if "played_at" not in today or "site = 'acr'" not in today:
         fails.append(f"--today was not per-site: {today!r}")
-    if tlabel != "today":
+    if "today" not in tlabel:
         fails.append(f"--today labelled {tlabel!r}")
     hours, hlabel, _ = build(["--hours", "4", "--tz", "acr=-3"])
     if "played_at" not in hours or "last 4 hours" not in hlabel:
@@ -7233,6 +7283,7 @@ def check_statistics():
     con.executemany(
         "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         rows)
+    _hold_col(con)
     where, _, _ = build([])
     all_n = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {where}"
                         ).fetchone()[0]
@@ -7466,6 +7517,7 @@ def check_fixture():
     con.execute("ALTER TABLE decisions ADD COLUMN n_live INT")
     con.execute("ALTER TABLE decisions ADD COLUMN pot_bb REAL")
     con.execute("UPDATE decisions SET allin = 0")
+    _hold_col(con)
     fails = []
     bets = "seat = 1 AND agg = 1"
     outs = outcomes_of(con, bets)
@@ -7800,6 +7852,7 @@ def check_graph():
          ("h3", 1, 1, "preflop", 0, "3bet", 1),
          ("h4", 1, 1, "flop", 0, "3bet", 1),
          ("m1", 1, 1, "flop", 0, "raised", 1)])
+    _hold_col(con)
 
     def trip(name, ok):
         if not ok:
@@ -7932,6 +7985,7 @@ def check_hist():
     ]
     con.executemany(
         "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    _hold_col(con)
     got = hist_postflop_of(con, "1=1")
     by = {r["key"]: r for r in got["rows"]}
     if got["n"] != 11:
@@ -7995,6 +8049,63 @@ def check_hist():
     if empty["n"] or empty["weak_pct"]:
         fails.append("preflop hist invented a Weak %")
     con.close()
+
+    # Omaha histogram. Same bars, Omaha-classified `made` -- not the
+    # Hold'em reading of four cards. Default Hold'em must not see them.
+    plo = sqlite3.connect(":memory:")
+    plo.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, seat INT, site TEXT, street TEXT, game TEXT, "
+        "made TEXT, fd TEXT, sd TEXT, combo TEXT, action TEXT, agg INT)")
+    plo.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("p1", 1, "acr", "flop", "OMAHA",
+             "overpair", None, None, None, "B", 1),
+            ("p2", 1, "acr", "flop", "OMAHA",
+             "high card", "nut", "wrap", None, "B", 1),
+            ("p3", 1, "acr", "flop", "OMAHA",
+             "set", None, None, None, "B", 1),
+            ("p4", 1, "acr", "flop", "OMAHA",
+             "flush", None, None, None, "B", 1),
+            ("p5", 1, "acr", "flop", "OMAHA",
+             None, None, None, None, "B", 1),
+            ("h1", 1, "acr", "flop", "HOLDEM",
+             "top pair", None, None, "AKs", "B", 1),
+        ])
+    hold_w, _, _ = build([])
+    hold_n = plo.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {hold_w}").fetchone()[0]
+    if hold_n != 1:
+        fails.append(f"default holdem kept {hold_n} of a mixed table, "
+                     "not the one Hold'em row")
+    plo_w, plo_l, _ = build(["--game", "plo"])
+    if "game = 'OMAHA'" not in plo_w or "plo" not in plo_l:
+        fails.append(f"--game plo compiled to {plo_w!r} / {plo_l!r}")
+    plo_hist = hist_postflop_of(plo, plo_w)
+    pby = {r["key"]: r for r in plo_hist["rows"]}
+    if plo_hist["n"] != 4:
+        fails.append(f"--game plo hist seen {plo_hist['n']}, not 4 "
+                     "shown Omaha hands")
+    if pby.get("overpair", {}).get("n") != 1:
+        fails.append("Omaha overpair (not Hold'em two pair) missed the bar")
+    if pby.get("draws", {}).get("n") != 1:
+        fails.append("Omaha wrap did not land on Draws")
+    if pby.get("set", {}).get("n") != 1 or pby.get("flush", {}).get("n") != 1:
+        fails.append("Omaha set/flush bars drifted")
+    if pby.get("top_pair", {}).get("n"):
+        fails.append("--game plo hist included the Hold'em top pair")
+    if abs(plo_hist["weak_pct"] - 25.0) > 1e-9:
+        fails.append(f"Omaha Weak % was {plo_hist['weak_pct']}, not 25 "
+                     "(the wrap, not the made hands)")
+    # The royal-looking 2+3 is ace-high + wrap, so Draws -- never
+    # a straight-flush bar.
+    royal_made, _rk, royal_fd, royal_sd = strength.classify(
+        "As Ks Qs 2d", "Js Ts 3c")
+    if strength.group_of(royal_made, royal_fd, royal_sd) != "draws":
+        fails.append(f"Omaha royal-looking hand grouped "
+                     f"{(royal_made, royal_fd, royal_sd)}, not draws")
+    plo.close()
     print(f"postflop histogram / Weak %  "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:
@@ -8223,6 +8334,18 @@ def check(db_path=DB):
         sid = None
     if sid:
         cases.append(("--session", ["--session", sid[0]]))
+    # `--game plo` selects nothing on a Hold'em-only database, which is
+    # a fault in the test rather than the filter. Only asked when that
+    # game is actually present -- the same reason the date is taken
+    # from the corpus.
+    dec_cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if "game" in dec_cols:
+        present = {r[0] for r in con.execute(
+            "SELECT DISTINCT game FROM decisions")}
+        if "OMAHA" in present:
+            cases.append(("--game plo", ["--game", "plo"]))
+        if "OMAHA5" in present:
+            cases.append(("--game plo5", ["--game", "plo5"]))
 
     for name, argv in cases:
         where, _, _p = build(argv)

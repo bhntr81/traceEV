@@ -121,6 +121,15 @@ of reason per row.
 
 Facts that stay true, and that have each been got wrong at least once:
 
+- **A game is a fact in `games.py` and nowhere else.** HOLDEM / OMAHA /
+  OMAHA5, hole counts, and `--game` aliases (`plo`, `plo5`, `all`) live
+  in one registry. The default pool is Hold'em -- mixing the two VPIPs
+  is the same class of error as mixing two sites under `fmt='RING'`.
+- **Omaha strength is two hole cards and three board cards.** Scoring
+  all four as Hold'em is a plausible, complete, wrong label -- a royal
+  on JT with three suited broadway cards is ace-high in PLO. PLO5 uses
+  the same two-plus-three rule; the fifth card is another pair to
+  choose from. Equity and the 13×13 stay two-card and refuse four.
 - **A site is a fact in `sites.py` and nowhere else.** Whether a label is
   a person, whether folded hands are shown, whether the rake is written,
   where the files live, the header a hand begins with -- one registry

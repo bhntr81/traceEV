@@ -7,9 +7,13 @@ plays top pair with a weak kicker out of position, how often a gutshot
 continues on a paired board, whether anybody folds a set -- needs the hand
 named against the board, and nothing here has ever named it.
 
-The evaluator exists already: `equity.best5` ranks five cards out of seven
-and is checked against eleven known orderings and five published preflop
-equities. So this is classification, not evaluation. It writes four columns:
+The evaluator exists already: `equity.best5` ranks five cards out of five,
+six or seven and is checked against eleven known orderings and five
+published preflop equities. Hold'em uses best-five of seven. Omaha uses
+exactly two hole cards and three board cards -- scoring all four as
+Hold'em is the lie `classify` used to refuse by returning NULL, and
+now refuses by doing the 2+3 walk instead. This is classification, not
+evaluation. It writes four columns:
 
     made     top pair, set, boat, ...   what the hand is now
     kicker   top, good, weak            only where a pair uses a hole card
@@ -41,6 +45,7 @@ Derived from `decisions`, so run it after that table is rebuilt.
 
 import sqlite3
 import sys
+from itertools import combinations
 from pathlib import Path
 
 from equity import RANKS, best5, card, completing
@@ -329,13 +334,8 @@ def _kicker(rank, pair_rank, board_ranks):
     return "good" if rank >= GOOD else "weak"
 
 
-def classify(cards, board):
-    """(made, kicker, fd, sd) for one hand on one board, or all None."""
-    hole, table = parse(cards), parse(board)
-    if len(hole) != 2 or len(table) < 3:
-        return (None, None, None, None)
-
-    shape = best5(hole + table)
+def _named(shape, hole, table):
+    """made / kicker from a five-card shape and the hole cards that made it."""
     name = CATEGORY[shape[0]]
     kicker = None
     if shape[0] == 3:
@@ -346,15 +346,158 @@ def classify(cards, board):
         name, kicker = pair_kind(shape[1], hole, table)
     elif shape[0] == 0:
         name = "high card"
+    return name, kicker
 
-    # A draw is only worth naming while it is still a draw. A made straight
-    # that could improve to a better straight is a straight, and reporting
-    # the redraw beside it would put every made hand into the draw filters
-    # as well -- which is how "how does the pool play a gutshot" comes to
-    # include the hands that already have the straight.
+
+def best_omaha(hole, board):
+    """
+    Best PLO hand: exactly two hole cards and exactly three board cards.
+
+    Scoring all four (or five) hole cards as seven-card Hold'em is the
+    lie this exists to refuse -- a royal on the felt with three suited
+    hole cards is ace-high in Omaha, and calling it a straight flush
+    would put every `--made` filter on fiction.
+    """
+    best = None
+    for h2 in combinations(hole, 2):
+        for b3 in combinations(board, 3):
+            shape = best5(list(h2) + list(b3))
+            if best is None or shape > best[0]:
+                best = (shape, h2, b3)
+    return best
+
+
+def omaha_flush_draw(hole, board):
+    """
+    A flush draw that Omaha can actually make.
+
+    The made hand uses two hole cards and three board cards, so a
+    flush needs two hole cards of the suit. One hole heart on a
+    four-heart board is a Hold'em flush and nothing in PLO -- the
+    failure a 1-card flush-draw label would repeat for every range.
+    """
+    if len(board) >= 5:
+        return None
+    mine, board_n = {}, {}
+    for r, s in board:
+        board_n[s] = board_n.get(s, 0) + 1
+    for r, s in hole:
+        mine.setdefault(s, []).append(r)
+    best = None
+    rank = {"nut": 4, "second": 3, "weak": 2, "backdoor": 1}
+    for suit, ranks in mine.items():
+        if len(ranks) < 2:
+            continue
+        n = board_n.get(suit, 0)
+        if n >= 3:
+            continue                    # already a flush, if it was the best
+        if n == 2:
+            top = max(ranks)
+            label = ("nut" if top == ACE
+                     else "second" if top == ACE - 1 else "weak")
+        elif n == 1 and len(board) == 3:
+            label = "backdoor"
+        else:
+            continue
+        if best is None or rank[label] > rank[best]:
+            best = label
+    return best
+
+
+def _open_four(ranks):
+    """Four consecutive ranks that complete both ways (not JQKA, not A234)."""
+    u = sorted(set(ranks))
+    if len(u) != 4 or u[-1] - u[0] != 3:
+        return False
+    # JQKA only completes with a ten. A234 only completes with a five.
+    if u[-1] == ACE or u == [0, 1, 2, ACE]:
+        return False
+    return True
+
+
+def omaha_straight_draw(hole, board):
+    """
+    Straight draw using two hole cards and three board cards.
+
+    Hold'em's `completing` over unique ranks would call a pocket pair
+    an open-ender -- both nines cannot sit in a five-card straight.
+    Each 2+3 is scored with `best5` instead. Three or more completing
+    ranks is a wrap, the PLO draw Hold'em has no word for.
+    """
+    if len(board) >= 5:
+        return None
+    used = set(hole) | set(board)
+    outs = set()
+    for rank in range(13):
+        nxt = next(((rank, s) for s in range(4)
+                    if (rank, s) not in used), None)
+        if nxt is None:
+            continue
+        extended = list(board) + [nxt]
+        found = False
+        for h2 in combinations(hole, 2):
+            for b3 in combinations(extended, 3):
+                if nxt not in b3:
+                    continue
+                cat = best5(list(h2) + list(b3))[0]
+                if cat in (4, 8):
+                    outs.add(rank)
+                    found = True
+                    break
+            if found:
+                break
+    if not outs:
+        return None
+    if len(outs) == 1:
+        return "gutshot"
+    if len(outs) >= 3:
+        return "wrap"
+    for h2 in combinations(hole, 2):
+        for b2 in combinations(board, 2):
+            if _open_four([r for r, _s in h2] + [r for r, _s in b2]):
+                return "oesd"
+    return "double gutshot"
+
+
+def classify_holdem(hole, table):
+    """Hold'em: best five of two hole plus the board."""
+    shape = best5(hole + table)
+    name, kicker = _named(shape, hole, table)
     fd = flush_draw(hole, table) if shape[0] < 5 else None
     sd = straight_draw(hole, table) if shape[0] < 4 else None
     return (name, kicker, fd, sd)
+
+
+def classify_omaha(hole, table):
+    """PLO4 / PLO5: best two hole cards and three board cards."""
+    picked = best_omaha(hole, table)
+    if picked is None:
+        return (None, None, None, None)
+    shape, h2, _b3 = picked
+    # pair_kind is judged against the whole board -- "top pair" means
+    # the top card of the flop, not of the three cards this combo used.
+    name, kicker = _named(shape, h2, table)
+    fd = omaha_flush_draw(hole, table) if shape[0] < 5 else None
+    sd = omaha_straight_draw(hole, table) if shape[0] < 4 else None
+    return (name, kicker, fd, sd)
+
+
+def classify(cards, board):
+    """(made, kicker, fd, sd) for one hand on one board, or all None."""
+    hole, table = parse(cards), parse(board)
+    if len(table) < 3:
+        return (None, None, None, None)
+    n = len(hole)
+    if n == 2:
+        return classify_holdem(hole, table)
+    if n in (4, 5):
+        # Five-card Omaha uses the same two-plus-three rule as four-card.
+        # The extra hole card is another pair to choose from, not a third
+        # card in the made hand. Gating PLO5 would leave those rows NULL
+        # and every `--game plo5` histogram empty; classifying them as
+        # Hold'em would be the other lie.
+        return classify_omaha(hole, table)
+    return (None, None, None, None)
 
 
 def migrate(con):
@@ -469,6 +612,55 @@ KNOWN = [
 ]
 
 
+# Omaha. Every one is a hand where the Hold'em reading of all four
+# (or five) cards is a different category, or the sample history
+# whose four cards used to stay unnamed. If the code and the table
+# disagree, one of them is wrong -- naming these as Hold'em was how
+# a `--game plo` histogram would have lied.
+KNOWN_OMAHA = [
+    # Hold'em of all four is two pair (aces and kings). Omaha must
+    # use two hole cards: the aces plus the king-high flop is an
+    # overpair, and that is the best 2+3.
+    ("As Ad Kh 7d", "Kc 2h 3s", "overpair", None, None, None),
+    # Three suited broadway cards plus a junker on JT3. Hold'em is a
+    # royal flush. Omaha is ace-high with the nut flush draw and a
+    # wrap -- Q, A and 9 each complete a straight for some 2+3.
+    ("As Ks Qs 2d", "Js Ts 3c", "high card", None, "nut", "wrap"),
+    # One hole heart on a three-heart flop: Hold'em nut flush draw.
+    # Omaha cannot make a flush without two hole cards of the suit.
+    ("Ah Kd 7c 2s", "5h 9h Qh", "high card", None, None, None),
+    # Four hearts on the board, ace of hearts in hand. Hold'em is a
+    # flush. Omaha uses three board cards and two hole cards, so the
+    # ace of hearts plus a offsuit kicker is four hearts -- ace high.
+    # A wheel gutshot is real (2s plus 3h-5h) and is the player's.
+    ("Ah Kd 7c 2s", "5h 9h Qh 3h", "high card", None, None, "gutshot"),
+    # Two hole hearts and three on the flop is a flush in both games,
+    # and must stay one -- the classifier is not "refuse four cards".
+    ("Ah Kh 7c 2s", "2h 5h 9h", "flush", None, None, None),
+    # Set: two hole aces plus one on the board.
+    ("Ah Ad 7c 2s", "As Kh 3d", "set", None, None, None),
+    # Pocket deuces plus a deuce on the board -- still a set.
+    ("2h 2d 3c 4s", "2s Kh 7d", "set", None, None, None),
+    # Wheel with A2 and 345. Both hole cards sit in the straight.
+    ("Ah 2d 8c 9s", "3h 4d 5c", "straight", None, None, None),
+    # The imported ACR sample. Hold'em of all four is two pair
+    # (kings and deuces). Omaha's best 2+3 is kings and eights.
+    # Same category, different cards -- unnamed used to be the
+    # honest answer; two pair is the true one.
+    ("3c 2h Kd 2d", "8h Ks 8c", "two pair", None, None, None),
+    # 9876 on 54x. Three or more ranks complete a 2+3 straight
+    # (3, 6, 8, ...). 9876 on a disconnected flop is not a wrap --
+    # the connectors are in the hole and two more board cards would
+    # have to come, which is a backdoor we do not name.
+    ("9h 8h 7d 6c", "5s 4c 2d", "high card", None, None, "wrap"),
+    # PLO5, same two-plus-three rule. Two queens over T34 is an
+    # overpair; Qh Jh is a backdoor flush, not a made hand. The
+    # fifth card is another pair to choose from, not a third hole
+    # card in the five.
+    ("Qh Jh Qd Kc 2c", "Th 3d 4s", "overpair", None, "backdoor", None),
+]
+
+
 def check(db_path=DB):
     """
     Against hands whose answer was worked out by hand, and against showdowns.
@@ -492,13 +684,32 @@ def check(db_path=DB):
     if wrong:
         fails.append(f"{wrong} known hands classified wrongly")
 
+    omaha_wrong = 0
+    for cards, board, made, kicker, fd, sd in KNOWN_OMAHA:
+        got = classify(cards, board)
+        want = (made, kicker, fd, sd)
+        if got != want:
+            omaha_wrong += 1
+            print(f"    {cards} on {board}: wanted {want}, got {got}")
+    print(f"Omaha hands worked out       "
+          f"{len(KNOWN_OMAHA) - omaha_wrong}/{len(KNOWN_OMAHA)}")
+    if omaha_wrong:
+        fails.append(f"{omaha_wrong} known Omaha hands classified wrongly")
+    # The royal-flush lie: three suited broadway cards on JT is
+    # Hold'em's straight flush and Omaha's ace-high. If this ever
+    # comes back a flush, the 2+3 rule has been lost.
+    lie = classify("As Ks Qs 2d", "Js Ts 3c")
+    if lie[0] in ("straight flush", "flush", "straight"):
+        fails.append(f"Omaha royal-looking hand was named {lie[0]}")
+
     # Histogram groups do not need a corpus. They have to pass on a
     # machine that has not imported yet, the same way query.py's
     # fixture checks do -- otherwise --check invents a failure that
     # is really "no hands.db".
     hist_ok = len(fails)
     grouped = 0
-    for cards, board, made, kicker, fd, sd in KNOWN:
+    shown = list(KNOWN) + list(KNOWN_OMAHA)
+    for cards, board, made, kicker, fd, sd in shown:
         got = group_of(made, fd, sd)
         if got is None:
             fails.append(f"{cards} on {board} was shown and grouped None")
@@ -511,7 +722,7 @@ def check(db_path=DB):
                 fails.append(f"{cards} on {board}: group {got}, want {want}")
         elif made in ("weak pair", "under pair") and got != "weak_pair":
             fails.append(f"{cards} on {board}: group {got}, want weak_pair")
-    print(f"known hands grouped          {grouped}/{len(KNOWN)}")
+    print(f"known hands grouped          {grouped}/{len(shown)}")
     if group_of(None) is not None:
         fails.append("ungrouped cards were not None")
     if group_of("mystery pair") != HIST_OTHER:
@@ -546,8 +757,15 @@ def check(db_path=DB):
         return not fails
     n = con.execute("SELECT COUNT(*) FROM decisions "
                     "WHERE made IS NOT NULL").fetchone()[0]
-    known = con.execute("SELECT COUNT(*) FROM decisions WHERE cards IS NOT NULL "
-                        "AND street <> 'preflop'").fetchone()[0]
+    # Hold'em, PLO4 and PLO5. Three cards, or a game this classifier
+    # does not know, stay unnamed -- NULL means "not this game", not
+    # "high card".
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    game_sql = ("AND game IN ('HOLDEM', 'OMAHA', 'OMAHA5')"
+                if "game" in cols else "")
+    known = con.execute(
+        "SELECT COUNT(*) FROM decisions WHERE cards IS NOT NULL "
+        f"AND street <> 'preflop' {game_sql}").fetchone()[0]
     print(f"decisions with a hand named  {n:,}/{known:,}")
     if n != known:
         fails.append("some postflop decisions with known cards were not named")

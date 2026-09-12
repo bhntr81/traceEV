@@ -147,6 +147,11 @@ def equity(holes, board, samples=SAMPLES, seed=SEED):
     `holes` is a list of two-card strings, one per live player; `board` is
     what is already down. Returns a share per player, summing to one.
     """
+    if any(len(h.split()) != 2 for h in holes):
+        raise ValueError(
+            "equity is Hold'em only -- Omaha uses two of four plus three "
+            "board cards, and scoring four hole cards as seven-card "
+            "Hold'em is a lie")
     hole_c = [[card(c) for c in h.split()] for h in holes]
     board_c = [card(c) for c in board.split()] if board else []
     seen = {c for h in hole_c for c in h} | set(board_c)

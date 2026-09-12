@@ -126,6 +126,12 @@ test has caught a real bug in each of them. Nothing outside the parser and
 the registry should need to know the site exists; if something does, that
 is the bug to fix, not a place to add the name.
 
+**A game is the same idea one noun over.** `games.py` names HOLDEM /
+OMAHA / OMAHA5, hole counts, and `--game` words. Parsers ask
+`games.of` on the header; pool queries default to Hold'em. Scoring
+four hole cards as Hold'em is a plausible lie -- strength uses two
+of them plus three board cards, and equity refuses the rest.
+
 Never write a parser from memory of a format. Without sample files there
 is nothing to run the checks against, and a parser that has not been
 checked is one that is dropping lines quietly.

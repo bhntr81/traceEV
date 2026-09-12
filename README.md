@@ -51,6 +51,7 @@ that already exists — is using the first as the prior for the second.
 
 ```
 sites.py        what each site is, decided once      --check
+games.py        HOLDEM / OMAHA / OMAHA5, decided once --check
 acr.py, ignition.py, pokerstars.py   the parsers, one per format
 importer.py     find, identify and load hand histories   --check
         v
@@ -83,6 +84,7 @@ python query.py --hero --board mono --results
 python query.py --player dblj32 --pos BTN --hands
 python query.py --pot 3bet --ip --street river --define river_barrel3 --do bet
 python query.py --site ignition --quick threebet --chart
+python query.py --game plo --street flop --action bet --hist-postflop
 python query.py --statistics --fmt cash --exclude-reg-vs-fish
 python query.py stats save "regs last 10" --hero --fmt cash --last-sessions 10
 python query.py stats open "regs last 10"

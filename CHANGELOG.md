@@ -8,6 +8,40 @@ Newest first.
 
 ---
 
+## PLO study: Omaha strength, `--game plo` histograms
+
+A new track, stacked on the NLHE H2N freeze
+(`cursor/h2n-dock-back-freeze-7372`) with Omaha import re-added from
+PR #7 (`cursor/omaha-plo-import-ec94`). Master did not have PR #7
+merged; the freeze tip had the study chrome and no `games.py`.
+
+- **`games.py`** — HOLDEM / OMAHA / OMAHA5, `--game` aliases, default
+  pool Hold'em so a PLO VPIP cannot rewrite an NLHE one.
+- **ACR / Ignition import** — PLO4 and PLO5 stored with the right
+  hole count. PokerStars Omaha is the documented skip.
+- **`strength.classify`** — PLO4 and PLO5 use two hole cards and
+  three board cards. The Hold'em reading of all four (royal on JT,
+  flush with one hole heart, two pair from unused kickers) is
+  refused. `wrap` is the straight-draw word Hold'em does not have.
+- **Reports / Statistics / Sessions** — `--game plo` is a who-flag.
+  Default is still HOLDEM. Postflop histogram / Weak % / range
+  breakdowns read Omaha `made` labels. The 13×13 and all-in equity
+  stay two-card.
+
+`--check` fixtures are synthetic PLO hands in `acr.py`, `ignition.py`
+and `strength.KNOWN_OMAHA`. Hold'em `verify-parity` is unchanged.
+No HUD. No solver. No invented equity.
+
+NLHE tracking-half chrome is still the freeze (~97%). PLO study
+readiness is a separate score.
+
+### Not this, on purpose
+
+Omaha equity, a four-card 13×13, PokerStars Omaha import, player
+class measured on PLO. See `GAPS.md`.
+
+---
+
 ## Dock-back + tracking-half freeze
 
 Detached window → **Dock back** → the main Reports tab, same

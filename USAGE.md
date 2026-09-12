@@ -23,8 +23,11 @@ python sites.py --stats                     # what is in the database, per site
 python sites.py --check                     # prove every site's import
 ```
 
-Folders are walked recursively for `*.txt`. Omaha files are skipped. ACR
-hand ids are prefixed `cp-` so the sites can never collide.
+Folders are walked recursively for `*.txt`. ACR/WPN Omaha (PLO4 and PLO5)
+imports; Ignition tags `OMAHA` / `OMAHA5`. PokerStars Omaha is still
+refused at `parse_hand` -- the HEADER accepts the file so the skip is
+the extension point. ACR hand ids are prefixed `cp-` so the sites can
+never collide.
 
 `acr.py` and `ignition.py` are parsers and nothing else; neither is run
 directly.
@@ -1176,11 +1179,20 @@ None of these is a bug. They are the filter asking for something that could
 not have happened, and the point of the message is that you can tell the
 difference without having to guess.
 
-Filters worth knowing: `--hero`/`--pool`, `--site`, `--player`, `--pos`,
+Filters worth knowing: `--hero`/`--pool`, `--site`, `--game`, `--player`, `--pos`,
 `--street`, `--pot`, `--facing`, `--ip`/`--oop`, `--deep N`/`--short N`,
 `--board mono,paired,connected,...`, `--combo`, `--multiway`/`--headsup`,
 `--since`/`--until`, and `--where` for raw SQL over `decisions` when the
 named flags run out. `--help` prints the full list with the SQL each becomes.
+
+`--game` is holdem by default (`plo`, `plo5`, `all`). Mixing PLO VPIP
+into an NLHE number is the same class of error as mixing two sites
+under `fmt='RING'`. `--game plo` is how Reports / Statistics / Sessions
+ask for the other game. Postflop histograms and Weak % then use Omaha
+labels: two hole cards and three board cards, never all four as
+Hold'em. The 13×13 and all-in equity stay two-card -- `--game plo
+--chart` is empty, not a lie. Rebuild derived tables after an Omaha
+import so `game` lands on `spots` and `decisions`.
 
 ### `stats.py` — the stat engine
 

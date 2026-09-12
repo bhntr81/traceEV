@@ -853,7 +853,7 @@ class App(ImportMixin, ttk.Frame):
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
         self.vals = {n: tk.StringVar() for n in
-                     ("site", "stake", "player", "deep", "short",
+                     ("site", "game", "stake", "player", "deep", "short",
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
@@ -1063,7 +1063,7 @@ class App(ImportMixin, ttk.Frame):
                     "--reg", "--fish", "--vs-reg", "--vs-fish",
                     "--with-fish", "--regs-only",
                     "--today")
-    WHO_VALS = ("site", "stake", "player", "since", "until",
+    WHO_VALS = ("site", "game", "stake", "player", "since", "until",
                 "alias", "vs_alias", "villain_type",
                 "session", "hours", "start_of_day", "tz",
                 "fmt", "last_sessions")
@@ -1133,7 +1133,8 @@ class App(ImportMixin, ttk.Frame):
                     self.multi[group] = set(x.strip() for x in v.split(",")
                                             if x.strip())
                 else:
-                    name = {"--site": "site", "--stake": "stake",
+                    name = {"--site": "site", "--game": "game",
+                            "--stake": "stake",
                             "--player": "player", "--deep": "deep",
                             "--short": "short", "--since": "since",
                             "--until": "until", "--where": "where",
@@ -1534,7 +1535,7 @@ class App(ImportMixin, ttk.Frame):
         for flag in query.WHO_SWITCHES:
             if flag in self.flags and flag not in ("--today",):
                 self.flags[flag].set(False)
-        for name in ("player", "alias", "site", "stake", "vs_alias",
+        for name in ("player", "alias", "site", "game", "stake", "vs_alias",
                      "villain_type"):
             if name in self.vals:
                 self.vals[name].set("")
@@ -1860,7 +1861,8 @@ class App(ImportMixin, ttk.Frame):
                             ("river_card", "--river-card")):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
-        for name, flag in (("site", "--site"), ("stake", "--stake"),
+        for name, flag in (("site", "--site"), ("game", "--game"),
+                           ("stake", "--stake"),
                            ("player", "--player"), ("deep", "--deep"),
                            ("short", "--short"), ("since", "--since"),
                            ("until", "--until"), ("where", "--where"),
@@ -1886,7 +1888,7 @@ class App(ImportMixin, ttk.Frame):
                            ("last_sessions", "--last-sessions"),
                            ("call_range", "--call-range")):
             v = self.vals[name].get().strip()
-            if not v or v.startswith("any "):
+            if not v or v.startswith("any ") or v == "holdem (default)":
                 continue
             if name in ("start_of_day", "tz"):
                 # Prefs for `--today` / `--hours`. Emitting them on
@@ -4815,6 +4817,7 @@ class FilterDialog(tk.Toplevel):
         row.pack(fill="x", padx=18)
         for name, blank, values in (
                 ("site", "any site", self.app.options["sites"]),
+                ("game", "holdem (default)", ("plo", "plo5", "all")),
                 ("stake", "any stake", self.app.options["stakes"]),
                 ("player", "any player", self.app.options["players"])):
             box = ttk.Combobox(row, textvariable=self.app.vals[name],
@@ -5109,6 +5112,8 @@ def check(db_path=DB):
         # Picking a screen name would select one site's worth of hero's
         # hands and quietly drop the rest.
         ({"flags": [], "vals": {"player": HERO_CHOICE}}, ["--hero"]),
+        ({"flags": ["--hero"], "vals": {"game": "plo"}},
+         ["--hero", "--game", "plo"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():

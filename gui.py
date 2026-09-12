@@ -66,7 +66,7 @@ SWITCH_FIELDS = {
     "today": "--today",
 }
 VALUE_FIELDS = {
-    "site": "--site", "player": "--player", "pos": "--pos",
+    "site": "--site", "game": "--game", "player": "--player", "pos": "--pos",
     "street": "--street", "pot": "--pot", "facing": "--facing",
     "vs": "--vs", "opener": "--opener",
     "combo": "--combo", "stake": "--stake", "deep": "--deep",
@@ -644,6 +644,12 @@ body.detached .filter, body.detached #related{display:none}
   </fieldset>
   <fieldset><legend>site &amp; stake</legend>
     <label><select id="site"><option value="">any site</option></select></label>
+    <label><select id="game">
+      <option value="">holdem (default)</option>
+      <option value="plo">plo</option>
+      <option value="plo5">plo5</option>
+      <option value="all">all games</option>
+    </select></label>
     <label><select id="stake"><option value="">any stake</option></select></label>
     <label><select id="player"><option value="">any player</option></select></label>
     <label>alias
@@ -876,7 +882,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key','profile']
+['site','game','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key','profile']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -913,7 +919,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick','hist_group']){
+  for (const id of ['site','game','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick','hist_group']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -2060,7 +2066,7 @@ function hydrateFromURL(){
   ['pos','vs','street','pot','facing','board'].forEach(g => {
     if (q.get(g)) state.multi[g] = q.get(g).split(',').filter(Boolean);
   });
-  ['site','stake','player','stack','combo','action','result','pin',
+  ['site','game','stake','player','stack','combo','action','result','pin',
    'session','fmt','last_sessions','alias','hist_group'].forEach(id => {
     const el = $('#'+id);
     if (el && q.get(id)) el.value = q.get(id);
@@ -2160,6 +2166,7 @@ function applyHydrate(h){
     else if (a === '--fish') state.flags.fish = true;
     else if (a === '--player' && argv[i+1]){ $('#player').value = argv[++i]; }
     else if (a === '--site' && argv[i+1]){ $('#site').value = argv[++i]; }
+    else if (a === '--game' && argv[i+1]){ $('#game').value = argv[++i]; }
     else if (a === '--alias' && argv[i+1]){ $('#alias').value = argv[++i]; }
   }
   $('#cohort').value = cohortCompact(h.cohort_predicate);
@@ -2326,6 +2333,8 @@ def check(db_path=DB):
          ["--call-range", "threebet"]),
         ({"hist_group": ["air"]},
          ["--hist-group", "air"]),
+        ({"game": ["plo"]},
+         ["--game", "plo"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))

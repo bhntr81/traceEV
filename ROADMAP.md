@@ -1089,6 +1089,25 @@ IDs/import skip flags. PLO / multi-game is a separate track,
 not more NLHE chrome. Tracking-half NLHE study chrome is
 frozen pending a new track.
 
+## Run — PLO study (Omaha strength)
+
+**Goal:** Real PLO study support beyond import tags. True Omaha
+hand-strength classifier (2-of-4 + 3 board; honest PLO5).
+`--game plo` histograms / Weak % / range breakdowns without
+Hold'em labels. Reports / Statistics / Sessions respect
+`--game plo`; default still HOLDEM. `--check` fixtures from
+synthetic PLO hands. No HUD, no solver, no invented equity.
+
+**Base:** stacked on `cursor/h2n-dock-back-freeze-7372` (PR #15)
+and re-added Omaha import from PR #7. Master did not have PR #7
+merged; the freeze tip had no `games.py`.
+
+**Result:** `games.py` registry; ACR/Ignition PLO4/PLO5 import;
+`strength.classify_omaha` / `KNOWN_OMAHA`; `--game` on query,
+the page, and the window. Hold'em default and `verify-parity`
+unchanged. Gaps: Omaha equity, 13×13, Stars Omaha, PLO player
+class. PLO readiness is scored separately from NLHE ~97%.
+
 ## Run — Statistics Profile Menu + Save/Open
 
 **Goal:** H2N Profile Menu and Save/Open Report on the
