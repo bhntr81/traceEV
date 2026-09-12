@@ -492,8 +492,58 @@ def check(db_path=DB):
     if wrong:
         fails.append(f"{wrong} known hands classified wrongly")
 
+    # Histogram groups do not need a corpus. They have to pass on a
+    # machine that has not imported yet, the same way query.py's
+    # fixture checks do -- otherwise --check invents a failure that
+    # is really "no hands.db".
+    hist_ok = len(fails)
+    grouped = 0
+    for cards, board, made, kicker, fd, sd in KNOWN:
+        got = group_of(made, fd, sd)
+        if got is None:
+            fails.append(f"{cards} on {board} was shown and grouped None")
+            continue
+        grouped += 1
+        drawing = bool(fd or sd)
+        if made in ("high card", "board pair"):
+            want = "draws" if drawing else "air"
+            if got != want:
+                fails.append(f"{cards} on {board}: group {got}, want {want}")
+        elif made in ("weak pair", "under pair") and got != "weak_pair":
+            fails.append(f"{cards} on {board}: group {got}, want weak_pair")
+    print(f"known hands grouped          {grouped}/{len(KNOWN)}")
+    if group_of(None) is not None:
+        fails.append("ungrouped cards were not None")
+    if group_of("mystery pair") != HIST_OTHER:
+        fails.append("an unknown made label did not fall into Other")
+    weak_made = set()
+    for key, _lab, is_weak, names, _draw in HIST_SPEC:
+        if is_weak:
+            weak_made.update(names)
+    if weak_made != set(WEAK):
+        fails.append(f"default hist weak made {sorted(weak_made)}, "
+                     f"not WEAK {list(WEAK)}")
+    if group_of("top pair", "nut", "oesd") != "top_pair":
+        fails.append("top pair plus a draw left its pair bar")
+    print(f"hist groups / Other / weak   "
+          f"{'yes' if len(fails) == hist_ok else 'NO'}")
+
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- known hands and groups only)")
+        return not fails
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "decisions" not in tables:
+        con.close()
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no decisions -- known hands and groups only)")
+        return not fails
     n = con.execute("SELECT COUNT(*) FROM decisions "
                     "WHERE made IS NOT NULL").fetchone()[0]
     known = con.execute("SELECT COUNT(*) FROM decisions WHERE cards IS NOT NULL "
@@ -537,45 +587,6 @@ def check(db_path=DB):
           f"{len(ladder) - 1 - inversions}/{max(len(ladder) - 1, 1)} steps rise")
     if inversions > 1:
         fails.append(f"{inversions} places where a better hand won less often")
-
-    # Histogram groups: every known hand lands on a bar, air/draws
-    # split on whether it is drawing, and default Weak % covers the
-    # same hands WEAK names -- otherwise flipping a group would mean
-    # a different thing from the range table's WEAK line.
-    hist_ok = len(fails)
-    grouped = 0
-    for cards, board, made, kicker, fd, sd in KNOWN:
-        got = group_of(made, fd, sd)
-        if got is None:
-            fails.append(f"{cards} on {board} was shown and grouped None")
-            continue
-        grouped += 1
-        drawing = bool(fd or sd)
-        if made in ("high card", "board pair"):
-            want = "draws" if drawing else "air"
-            if got != want:
-                fails.append(f"{cards} on {board}: group {got}, want {want}")
-        elif made in ("weak pair", "under pair") and got != "weak_pair":
-            fails.append(f"{cards} on {board}: group {got}, want weak_pair")
-    print(f"known hands grouped          {grouped}/{len(KNOWN)}")
-    if group_of(None) is not None:
-        fails.append("ungrouped cards were not None")
-    if group_of("mystery pair") != HIST_OTHER:
-        fails.append("an unknown made label did not fall into Other")
-    # Default weak groups must cover WEAK and nothing else. A pair
-    # with a draw stays on its pair bar (PAF: a made hand is not
-    # also the draw), so weak_pair+air+draws == WEAK as sets.
-    weak_made = set()
-    for key, _lab, is_weak, names, _draw in HIST_SPEC:
-        if is_weak:
-            weak_made.update(names)
-    if weak_made != set(WEAK):
-        fails.append(f"default hist weak made {sorted(weak_made)}, "
-                     f"not WEAK {list(WEAK)}")
-    if group_of("top pair", "nut", "oesd") != "top_pair":
-        fails.append("top pair plus a draw left its pair bar")
-    print(f"hist groups / Other / weak   "
-          f"{'yes' if len(fails) == hist_ok else 'NO'}")
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
