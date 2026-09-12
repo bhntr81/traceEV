@@ -24,10 +24,13 @@ returns. Loading, the schema and the checks are `importer.py` and
 
     python importer.py <folder>     load, whatever sites are in it
     python sites.py --check         prove the import
+    python pokerstars.py --check    NLHE still loads; Omaha skip is the extension point
 """
 
 import re
+import sys
 
+import games
 from acr import _all_money, _money, name_positions
 
 # PokerStars names itself on the first line of every hand. The header is
@@ -75,8 +78,15 @@ def parse_hand(text, source=""):
     if not m:
         return None
     zoom, hand_id, game_desc, sb, bb, day, clock = m.groups()
-    if "hold'em" not in game_desc.lower():
-        return None                      # Omaha files live in the same folder
+    game = games.of(game_desc)
+    # PokerStars Omaha is the same HEADER and the same seats; CARDS_RE
+    # already captures any hole count. What it is not is a format that has
+    # sat next to the money check. Flip this to `if game is None` and write
+    # `game` on the hand (instead of the HOLDEM literal below) once a Stars
+    # Omaha file has been loaded and `sites.py --check` is green. Until
+    # then the skip is explicit, not a dropped line.
+    if game != "HOLDEM":
+        return None
     hh, mm, ss = clock.split(":")
     played_at = "{} {:0>2}:{}:{}".format(day.replace("/", "-"), hh, mm, ss)
 
@@ -158,7 +168,7 @@ def parse_hand(text, source=""):
             continue
         if rest.startswith(("shows", "mucks", "doesn't show")):
             cm = CARDS_RE.search(rest)
-            if cm and len(cm.group(1).split()) == 2:
+            if cm and len(cm.group(1).split()) == games.holes(game):
                 s["cards"] = cm.group(1)
             continue
         if rest.startswith(("sits out", "is sitting out", "leaves", "joins",
@@ -280,3 +290,101 @@ def split_hands(text):
     starts = [m.start() for m in HAND_RE.finditer(text)]
     for i, a in enumerate(starts):
         yield text[a:starts[i + 1] if i + 1 < len(starts) else len(text)]
+
+
+# A Hold'em hand in the dialect this parser was built for, so a change
+# that loads Omaha cannot quietly stop loading the 9,961 NL100 hands.
+# The Omaha header below is the extension point: HEADER accepts it
+# (the site is the format), parse_hand refuses it, and the comment on
+# the skip is what to flip when a Stars Omaha file arrives.
+NLHE = """\
+PokerStars Hand #261810334287:  Hold'em No Limit ($0.50/$1.00 USD) - 2026/08/20 9:43:54 ET
+Table 'Pemba III' 6-max Seat #3 is the button
+Seat 1: Alice ($100 in chips)
+Seat 2: Bob ($100 in chips)
+Seat 3: Carol ($100 in chips)
+Alice: posts small blind $0.50
+Bob: posts big blind $1
+*** HOLE CARDS ***
+Dealt to Alice [As Kd]
+Carol: folds
+Alice: raises $2 to $3
+Bob: folds
+Uncalled bet ($2) returned to Alice
+Alice collected $2 from pot
+*** SUMMARY ***
+Total pot $2 | Rake $0
+"""
+
+OMAHA = """\
+PokerStars Hand #2:  Omaha Pot Limit ($0.05/$0.10 USD) - 2025/05/19 17:18:05 ET
+Table 'Lincolnwood' 6-max Seat #1 is the button
+Seat 1: Alice ($10 in chips)
+Seat 2: Bob ($10 in chips)
+Alice: posts small blind $0.05
+Bob: posts big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [3c 2h Kd 2d]
+Alice: folds
+*** SUMMARY ***
+Total pot $0.15 | Rake $0
+"""
+
+
+def check():
+    """Hold'em still imports; Omaha is refused on purpose, not dropped."""
+    fails = []
+    if not HEADER(NLHE.splitlines()[0]):
+        fails.append("Hold'em HEADER refused")
+    parsed = parse_hand(NLHE, source="nl100stars.txt")
+    if parsed is None:
+        fails.append("Hold'em did not parse")
+        print("Hold'em still parses             NO")
+    else:
+        h, seats = parsed["hand"], {s["label"]: s for s in parsed["seats"]}
+        inp = sum((s["posted"] or 0) + (s["invested"] or 0)
+                  for s in parsed["seats"])
+        house = h["rake"] or 0
+        won = sum(s["won"] or 0 for s in parsed["seats"])
+        want = [
+            (h["game"] == "HOLDEM", "game is HOLDEM"),
+            (h["hand_id"] == "ps-261810334287", "hand id"),
+            (seats["Alice"]["cards"] == "As Kd", "hero's two cards"),
+            (abs(seats["Alice"]["invested"] - 0.50) < 0.001,
+             "raise adds total less what was already in"),
+            (abs(inp - house - won) <= 0.011, "in - house = won"),
+            (seats["Alice"]["position"] == "SB"
+             and seats["Carol"]["position"] == "BTN", "button"),
+        ]
+        bad = [why for ok, why in want if not ok]
+        print(f"Hold'em fixture                 {len(want) - len(bad)}/{len(want)}")
+        for why in bad:
+            print(f"    {why}")
+            fails.append(f"NLHE: {why}")
+
+    if not HEADER(OMAHA.splitlines()[0]):
+        fails.append("Omaha HEADER refused -- the file would be unrecognised")
+        print("Omaha HEADER accepted            NO")
+    else:
+        print("Omaha HEADER accepted            yes")
+    if parse_hand(OMAHA) is not None:
+        fails.append("Omaha parsed -- the skip is the extension point")
+        print("Omaha parse refused              NO")
+    else:
+        print("Omaha parse refused              yes (extension point)")
+
+    print()
+    print("FAIL: " + "; ".join(fails) if fails else "PASS")
+    return not fails
+
+
+def main(argv):
+    if "--check" in argv:
+        return 0 if check() else 1
+    print(__doc__)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+

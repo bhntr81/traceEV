@@ -121,6 +121,22 @@ of reason per row.
 
 Facts that stay true, and that have each been got wrong at least once:
 
+- **A game is a fact in `games.py` and nowhere else.** HOLDEM / OMAHA /
+  OMAHA5, hole counts, `--game` aliases (`plo`, `plo5`, `all`), the
+  three Game Types (`nlhe-cash`, `plo4-cash`, `plo5-cash`), and
+  `variant` / `hole_card_count` live in one registry. The default
+  pool is Hold'em -- mixing the two VPIPs is the same class of error
+  as mixing two sites under `fmt='RING'`. `--game-type` is the
+  variant plus cash; `--game plo` still includes MTT Omaha.
+- **Omaha strength is two hole cards and three board cards.** Scoring
+  all four as Hold'em is a plausible, complete, wrong label -- a royal
+  on JT with three suited broadway cards is ace-high in PLO. PLO5 uses
+  the same two-plus-three rule; the fifth card is another pair to
+  choose from. Equity stays two-card and refuses four. The 13×13 is
+  gated on a PLO filter -- 169 empty squares are not a range.
+- **Ignition, Bodog and Bovada are one HEADER.** Downloads-style
+  files from any of the three brands are the same parser. A prefix
+  that only accepted `Ignition Hand #` skipped the other two whole.
 - **A site is a fact in `sites.py` and nowhere else.** Whether a label is
   a person, whether folded hands are shown, whether the rake is written,
   where the files live, the header a hand begins with -- one registry
@@ -150,13 +166,17 @@ Facts that stay true, and that have each been got wrong at least once:
 - **Where "weak" stops is opinion, and lives in one list.** `strength.WEAK`
   draws the line under middle pair, on the grounds that a middle pair calls
   a river bet and a bottom pair does not. Disagreeing with it should be a
-  line changed, not an argument.
+  line changed, not an argument. Omaha's line is `OMAHA_WEAK` — one pair
+  is not a calling hand the way a middle pair is in Hold'em.
 - **Histogram Weak % is of groups, of the hands that were SEEN.**
-  `strength.HIST_SPEC` orders the bars; Air / Draws / Weak pair default
-  to `is_weak`. Other is implicit leftover and is never weak. A made
-  pair keeps its pair bar even when it also has a draw. Ignition
-  shows every hand including folds; ACR shows 23%. Flipping `is_weak`
-  on a group changes the percentage; the classifier does not.
+  `strength.HIST_SPEC` orders the Hold'em bars; Air / Draws / Weak pair
+  default to `is_weak`. On a PLO filter the family is `OMAHA_HIST_SPEC`
+  (combo / wrap / FD / air / weak made / medium / strong / nuts+).
+  Other is implicit leftover and is never weak. A made hand keeps its
+  made bar even when it also has a draw. `--made "top pair"` is refused
+  on `--game plo`; the filter is `--hist-group weak_made`. One hole
+  heart on a three-heart flop is ace-high, not a flush. Flipping
+  `is_weak` on a group changes the percentage; the classifier does not.
 - **Nothing draws on the river.** `flush_draw` always knew; `straight_draw`
   did not, and a river range came back a third "straight draw" — drawing to
   a card that was never coming.

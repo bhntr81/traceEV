@@ -29,6 +29,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import games
 import sites
 
 DB = Path(__file__).parent / "hands.db"
@@ -49,7 +50,8 @@ SCHEMA = """
 DROP TABLE IF EXISTS spots;
 DROP TABLE IF EXISTS bets;
 CREATE TABLE spots (
-  hand_id TEXT, seat INT, player TEXT, table_id TEXT, fmt TEXT, bb REAL,
+  hand_id TEXT, seat INT, player TEXT, table_id TEXT, fmt TEXT, game TEXT,
+  game_type TEXT, bb REAL,
   played_at TEXT, n_players INT, position TEXT, is_hero INT,
   cards TEXT, combo TEXT, suited INT, pair INT, hi TEXT, lo TEXT,
 
@@ -325,8 +327,12 @@ def build(db_path=DB):
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
 
+    # Every variant. Hold'em was the filter so Omaha never reached a
+    # combo or a strength label; those still refuse four cards, and the
+    # pool filters pin themselves to `games.HOLD` so a PLO VPIP cannot
+    # silently rewrite a Hold'em one.
     hands = con.execute(
-        "SELECT * FROM hands WHERE game='HOLDEM' ORDER BY played_at, hand_id"
+        "SELECT * FROM hands ORDER BY played_at, hand_id"
     ).fetchall()
     seats_by, acts_by = {}, {}
     for r in con.execute("SELECT * FROM seats ORDER BY hand_id, seat"):
@@ -382,7 +388,8 @@ def build(db_path=DB):
             wtsd = int(showdown and s["seat"] in non_folders)
             spot_rows.append((
                 hid, s["seat"], seat_ids.get((hid, s["seat"])), h["table_id"],
-                h["fmt"], bb, h["played_at"], h["n_players"], s["position"],
+                h["fmt"], h["game"], games.type_id(h["game"], h["fmt"]),
+                bb, h["played_at"], h["n_players"], s["position"],
                 s["is_hero"], s["cards"], combo, suited, pair, hi, lo,
 
                 "".join(p["pf_seq"]), p["vpip"], p["pfr"],
@@ -463,8 +470,8 @@ def check(db_path=DB):
         cells = []
         for site in sites.KEYS:
             got, tot = one("SELECT SUM({}), SUM({}) FROM spots WHERE "
-                           "fmt='RING' AND n_players>=5 AND site='{}'".format(
-                               num, den, site))
+                           "fmt='RING' AND n_players>=5 AND {} AND site='{}'".format(
+                               num, den, games.HOLD, site))
             got, tot = got or 0, tot or 0
             cells.append("{:5.1f}% n={:<6d}".format(
                 100 * got / tot if tot else 0, tot))
@@ -474,7 +481,7 @@ def check(db_path=DB):
         print("\nopen sizes actually used, {} ring:".format(site))
         for size, cnt in con.execute(
                 "SELECT ROUND(open_size_bb,1), COUNT(*) FROM spots WHERE rfi=1 "
-                "AND fmt='RING' AND site=? GROUP BY 1 "
+                "AND fmt='RING' AND game='HOLDEM' AND site=? GROUP BY 1 "
                 "ORDER BY 2 DESC LIMIT 8", (site,)):
             print("  {}bb  {}".format(size, cnt))
 
@@ -488,7 +495,7 @@ def check(db_path=DB):
         print("\nhero, by position, {} ring (bb/100):".format(site))
         for pos, n, bb100 in con.execute(
                 "SELECT position, COUNT(*), 100.0*SUM(net_bb)/COUNT(*) FROM spots "
-                "WHERE is_hero=1 AND fmt='RING' AND site=? "
+                "WHERE is_hero=1 AND fmt='RING' AND game='HOLDEM' AND site=? "
                 "GROUP BY position ORDER BY 3", (site,)):
             print("  {:4} {:5d}  {:+8.1f}".format(pos, n, bb100))
 

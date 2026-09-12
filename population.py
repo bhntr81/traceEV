@@ -27,6 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import games
 import sites
 
 DB = Path(__file__).parent / "hands.db"
@@ -40,7 +41,8 @@ DB = Path(__file__).parent / "hands.db"
 # `fmt='RING'` match both sites, and this filter silently went from a pool
 # with 100% of its hole cards to one with 33%, which would have quietly
 # rewritten every revealed range in this module.
-POOL = f"is_hero=0 AND fmt='RING' AND n_players>=5 AND {sites.sql_in(sites.revealing())}"
+POOL = (f"is_hero=0 AND fmt='RING' AND n_players>=5 AND {games.HOLD} "
+        f"AND {sites.sql_in(sites.revealing())}")
 
 POSITIONS = ("UTG", "HJ", "CO", "BTN", "SB", "BB")
 RANKS = "AKQJT98765432"

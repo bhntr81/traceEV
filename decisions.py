@@ -27,6 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import games
 import sites
 from equity import completing
 from spots import combo_of, is_aggressive, with_pot
@@ -40,7 +41,7 @@ DROP TABLE IF EXISTS decisions;
 CREATE TABLE decisions (
   hand_id TEXT, n INT, street TEXT,
   seat INT, player TEXT, is_hero INT, site TEXT,
-  table_id TEXT, fmt TEXT, bb REAL, played_at TEXT, n_players INT,
+  table_id TEXT, fmt TEXT, game TEXT, game_type TEXT, bb REAL, played_at TEXT, n_players INT,
   standard INT, position TEXT, cards TEXT, combo TEXT, board TEXT,
 
   -- the state in front of the player when it was their turn
@@ -145,6 +146,16 @@ CREATE INDEX IF NOT EXISTS dec_size
 CREATE INDEX IF NOT EXISTS dec_runout
     ON decisions(tn_over, tn_pair, tn_flush, tn_straight,
                  rv_over, rv_pair, rv_flush, rv_straight, street);
+-- Partial: Hold'em is almost every row, and an index on a column that
+-- does not narrow is the one that made the stats table 15% slower.
+-- `--game plo` is the rare seek; the default `game = 'HOLDEM'` does
+-- not read this.
+CREATE INDEX IF NOT EXISTS dec_omaha ON decisions(game) WHERE game != 'HOLDEM';
+-- `--game-type plo4-cash` is the same rare seek as `--game plo`, plus
+-- cash. Hold'em cash is almost every row; indexing it would be the
+-- shape that made the stats table slower.
+CREATE INDEX IF NOT EXISTS dec_game_type
+    ON decisions(game_type) WHERE game_type != 'nlhe-cash';
 """
 
 
@@ -240,7 +251,7 @@ def build(db_path=DB):
     con.executescript(SCHEMA)
 
     hands = con.execute(
-        "SELECT * FROM hands WHERE game='HOLDEM' ORDER BY played_at, hand_id"
+        "SELECT * FROM hands ORDER BY played_at, hand_id"
     ).fetchall()
     seats_by, acts_by = {}, {}
     for r in con.execute("SELECT * FROM seats ORDER BY hand_id, seat"):
@@ -349,7 +360,8 @@ def build(db_path=DB):
 
             rows.append((
                 hid, a["n"], street, seat, who.get((hid, seat)),
-                s.get("is_hero"), site, h["table_id"], h["fmt"], h["bb"],
+                s.get("is_hero"), site, h["table_id"], h["fmt"], h["game"],
+                games.type_id(h["game"], h["fmt"]), h["bb"],
                 h["played_at"], h["n_players"], h["standard"], a["position"],
                 s.get("cards"), combo_of(s.get("cards"))[0],
                 board_to(h["board"], street),
@@ -462,8 +474,7 @@ def check(db_path=DB):
 
     n_dec = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
     n_act = con.execute(
-        "SELECT COUNT(*) FROM actions a JOIN hands h USING(hand_id) "
-        "WHERE h.game='HOLDEM'").fetchone()[0]
+        "SELECT COUNT(*) FROM actions").fetchone()[0]
     print(f"every action is a decision   {n_dec}/{n_act}"
           f"{'' if n_dec == n_act else '   <-- rows lost'}")
     if n_dec != n_act:

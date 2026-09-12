@@ -48,6 +48,7 @@ import sqlite3
 import compact
 import diag
 import importer
+import strength
 import notes
 import players
 import sessions
@@ -137,7 +138,9 @@ MADE = ("high card", "board pair", "weak pair", "under pair", "middle pair",
         "flush", "boat", "quads", "straight flush")
 KICKERS = ("top", "good", "weak")
 FLUSH_DRAWS = ("nut", "second", "weak", "backdoor")
-STRAIGHT_DRAWS = ("oesd", "double gutshot", "gutshot")
+STRAIGHT_DRAWS = ("oesd", "double gutshot", "gutshot", "wrap")
+OMAHA_STRENGTH = ("air", "combo", "wrap", "fd", "weak_made",
+                  "medium", "strong", "nuts")
 # Who the other seat is. "The big blind against a button open" is the shape
 # most real questions have, and it needs both halves of the matchup named.
 VS_SIDE = [("--vs-hero", "vs me"), ("--vs-pool", "vs the pool")]
@@ -853,7 +856,7 @@ class App(ImportMixin, ttk.Frame):
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
         self.vals = {n: tk.StringVar() for n in
-                     ("site", "stake", "player", "deep", "short",
+                     ("site", "game", "game_type", "stake", "player", "deep", "short",
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
@@ -1063,7 +1066,7 @@ class App(ImportMixin, ttk.Frame):
                     "--reg", "--fish", "--vs-reg", "--vs-fish",
                     "--with-fish", "--regs-only",
                     "--today")
-    WHO_VALS = ("site", "stake", "player", "since", "until",
+    WHO_VALS = ("site", "game", "game_type", "stake", "player", "since", "until",
                 "alias", "vs_alias", "villain_type",
                 "session", "hours", "start_of_day", "tz",
                 "fmt", "last_sessions")
@@ -1133,7 +1136,10 @@ class App(ImportMixin, ttk.Frame):
                     self.multi[group] = set(x.strip() for x in v.split(",")
                                             if x.strip())
                 else:
-                    name = {"--site": "site", "--stake": "stake",
+                    name = {"--site": "site", "--game": "game",
+                            "--game-type": "game_type", "--type": "game_type",
+                            "--variant": "game",
+                            "--stake": "stake",
                             "--player": "player", "--deep": "deep",
                             "--short": "short", "--since": "since",
                             "--until": "until", "--where": "where",
@@ -1534,8 +1540,8 @@ class App(ImportMixin, ttk.Frame):
         for flag in query.WHO_SWITCHES:
             if flag in self.flags and flag not in ("--today",):
                 self.flags[flag].set(False)
-        for name in ("player", "alias", "site", "stake", "vs_alias",
-                     "villain_type"):
+        for name in ("player", "alias", "site", "game", "game_type", "stake",
+                     "vs_alias", "villain_type"):
             if name in self.vals:
                 self.vals[name].set("")
         self._apply_argv(ctx["subject_argv"], who=True)
@@ -1859,8 +1865,19 @@ class App(ImportMixin, ttk.Frame):
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card")):
             if self.multi.get(group):
-                argv += [flag, ",".join(sorted(self.multi[group]))]
-        for name, flag in (("site", "--site"), ("stake", "--stake"),
+                vals = sorted(self.multi[group])
+                if group == "made" and (
+                        self.vals["game"].get() in ("plo", "plo4", "plo5",
+                                                    "omaha")
+                        or "plo" in (self.vals["game_type"].get() or "")):
+                    vals = [v for v in vals
+                            if not strength.holdem_made_refused(v)]
+                    if not vals:
+                        continue
+                argv += [flag, ",".join(vals)]
+        for name, flag in (("site", "--site"), ("game", "--game"),
+                           ("game_type", "--game-type"),
+                           ("stake", "--stake"),
                            ("player", "--player"), ("deep", "--deep"),
                            ("short", "--short"), ("since", "--since"),
                            ("until", "--until"), ("where", "--where"),
@@ -1886,7 +1903,9 @@ class App(ImportMixin, ttk.Frame):
                            ("last_sessions", "--last-sessions"),
                            ("call_range", "--call-range")):
             v = self.vals[name].get().strip()
-            if not v or v.startswith("any "):
+            if not v or v.startswith("any ") or v == "holdem (default)":
+                continue
+            if name == "game_type" and v.startswith("any"):
                 continue
             if name in ("start_of_day", "tz"):
                 # Prefs for `--today` / `--hours`. Emitting them on
@@ -2168,8 +2187,12 @@ class App(ImportMixin, ttk.Frame):
                                out.get("why") or out.get("error"))
             return
         if view == "chart":
-            self.chart = out if out.get("cells") else None
-            self._draw_chart(out.get("why") or out.get("error"))
+            if out.get("gated"):
+                self.chart = None
+                self._draw_chart(out.get("reason") or out.get("why"))
+            else:
+                self.chart = out if out.get("cells") else None
+                self._draw_chart(out.get("why") or out.get("error"))
             return
         if view == "sessions":
             self._render_sessions(out)
@@ -4715,9 +4738,13 @@ class FilterDialog(tk.Toplevel):
             side="left")
         ttk.Label(row, text="Axs  Kxo  22+  pairs  broadways",
                   style="Dim.TLabel").pack(side="left", padx=14)
-        self._heading(page, "what the hand became")
+        self._heading(page, "what the hand became  (Hold'em)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("made", v))) for v in MADE])
+        self._heading(page, "PLO hand strength  (Omaha groups)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("hist_group", v)))
+            for v in OMAHA_STRENGTH])
         self._heading(page, "kicker, where a pair uses one")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("kicker", v))) for v in KICKERS])
@@ -4739,9 +4766,14 @@ class FilterDialog(tk.Toplevel):
                        "all of Ignition's hands, including the ones that "
                        "folded, and 23% of ACR's. So these narrow hard, and "
                        "a small n here is the data and not the filter.\n\n"
+                       "Hold'em made labels (top pair, overpair, …) are "
+                       "refused on --game plo. PLO uses the Omaha groups: "
+                       "nuts+ / strong / medium / weak made, combo, wrap, "
+                       "FD, air.\n\n"
                        "A draw has to be the player's own: four hearts on "
                        "the board is not a flush draw, it is a board "
-                       "everybody shares."
+                       "everybody shares. One hole heart on a three-heart "
+                       "flop is not an Omaha flush."
                   ).pack(anchor="w", padx=18, pady=(8, 0))
 
     def _lines_tab(self, nb):
@@ -4815,6 +4847,9 @@ class FilterDialog(tk.Toplevel):
         row.pack(fill="x", padx=18)
         for name, blank, values in (
                 ("site", "any site", self.app.options["sites"]),
+                ("game", "holdem (default)", ("plo", "plo5", "all")),
+                ("game_type", "any type",
+                 ("nlhe-cash", "plo4-cash", "plo5-cash")),
                 ("stake", "any stake", self.app.options["stakes"]),
                 ("player", "any player", self.app.options["players"])):
             box = ttk.Combobox(row, textvariable=self.app.vals[name],
@@ -5109,6 +5144,10 @@ def check(db_path=DB):
         # Picking a screen name would select one site's worth of hero's
         # hands and quietly drop the rest.
         ({"flags": [], "vals": {"player": HERO_CHOICE}}, ["--hero"]),
+        ({"flags": ["--hero"], "vals": {"game": "plo"}},
+         ["--hero", "--game", "plo"]),
+        ({"flags": ["--hero"], "vals": {"game_type": "plo4-cash"}},
+         ["--hero", "--game-type", "plo4-cash"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():

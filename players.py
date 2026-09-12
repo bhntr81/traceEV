@@ -45,6 +45,7 @@ import re
 from pathlib import Path
 
 import expr
+import games
 import sites
 from stats import wilson
 
@@ -682,8 +683,15 @@ def migrate(con):
     con.commit()
 
 
-def totals(con, where="1=1", params=()):
-    """One row per (site, player), straight out of `spots`."""
+def totals(con, where=None, params=()):
+    """One row per (site, player), straight out of `spots`.
+
+    Hold'em only by default. A VPIP that mixes PLO and NLHE is the same
+    class of error as one that mixes two sites, and the class that comes
+    out of it describes neither game.
+    """
+    if where is None:
+        where = games.HOLD
     return con.execute(f"""
         SELECT site, player, COUNT(*) hands,
                SUM(vpip) vpip, SUM(pfr) pfr,
@@ -901,6 +909,7 @@ def check(db_path=DB):
             for r in con.execute(
                 "SELECT site, player, COUNT(*) hands, SUM(vpip) vpip, "
                 "SUM(pfr) pfr FROM spots WHERE player IS NOT NULL "
+                f"AND {games.HOLD} "
                 "AND CAST(SUBSTR(hand_id, -1) AS INT) % 2 = ? "
                 "GROUP BY site, player", (odd,))})
     whole = {(r["site"], r["player"]): r["hands"] for r in

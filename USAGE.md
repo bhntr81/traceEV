@@ -23,8 +23,11 @@ python sites.py --stats                     # what is in the database, per site
 python sites.py --check                     # prove every site's import
 ```
 
-Folders are walked recursively for `*.txt`. Omaha files are skipped. ACR
-hand ids are prefixed `cp-` so the sites can never collide.
+Folders are walked recursively for `*.txt`. ACR/WPN Omaha (PLO4 and PLO5)
+imports; Ignition tags `OMAHA` / `OMAHA5`. PokerStars Omaha is still
+refused at `parse_hand` -- the HEADER accepts the file so the skip is
+the extension point. ACR hand ids are prefixed `cp-` so the sites can
+never collide.
 
 `acr.py` and `ignition.py` are parsers and nothing else; neither is run
 directly.
@@ -761,11 +764,18 @@ python query.py hist-postflop --street flop --facing bet
 python query.py --hist-group air --street flop --stats
 ```
 
-Air / Draws / Weak pair default to weak. Other is always last and
-catches leftovers (an unexpected `made`). A top pair with a flush
-draw stays on Top pair. Right-clicking a bar (or passing a flipped
-`is_weak` into `hist_postflop_of`) changes Weak %; the classifier
-does not.
+On Hold'em, Air / Draws / Weak pair default to weak. Other is always
+last and catches leftovers (an unexpected `made`). A top pair with a
+flush draw stays on Top pair.
+
+On `--game plo` / `--game-type plo4-cash` the bars switch: Combo,
+Wrap, FD, Air, Weak made, Medium, Strong, Nuts+. One pair is Weak
+made -- not a Hold'em "top pair" bar. `--made "top pair"` is refused;
+`--hist-group weak_made` is the filter. Weak % reads those Omaha
+`is_weak` flags.
+
+Right-clicking a bar (or passing a flipped `is_weak` into
+`hist_postflop_of`) changes Weak %; the classifier does not.
 
 **It is the range that was *seen*.** Ignition shows every hand at showdown
 including the folds; ACR shows 23%. So on an ACR-heavy filter this describes
@@ -778,8 +788,9 @@ read, every time.
 ### Filtering by what the hand is
 
 ```bash
-python query.py --made "top pair" --kicker weak     # top pair, bad kicker
-python query.py --made set,trips --street river     # sets and trips
+python query.py --made "top pair" --kicker weak     # Hold'em; refused on PLO
+python query.py --made set,trips --street river     # shared labels still work
+python query.py --game plo --hist-group weak_made   # PLO one-pair bucket
 python query.py --fd nut --sd gutshot               # the nut flush draw with a gutshot
 python query.py --combo-draw --street flop          # both draws at once
 python query.py --drawing --pot 3bet                # any draw in a 3-bet pot
@@ -788,10 +799,11 @@ python strength.py --common                         # what the pool turns up wit
 
 | | |
 |---|---|
-| `--made` | high card, board pair, weak pair, under pair, middle pair, top pair, overpair, two pair, trips, set, straight, flush, boat, quads, straight flush |
+| `--made` | Hold'em: high card … straight flush. On PLO, pair-placement names are refused. |
+| `--hist-group` | Hold'em: air, draws, weak_pair, top_pair, …. PLO: combo, wrap, fd, air, weak_made, medium, strong, nuts |
 | `--kicker` | top, good, weak — only where a pair uses a hole card |
 | `--fd` | nut, second, weak, backdoor |
-| `--sd` | oesd, double gutshot, gutshot |
+| `--sd` | oesd, double gutshot, gutshot, wrap |
 
 Four columns rather than one, so a combo draw is a flush draw and a straight
 draw *at once* instead of a fourteenth category, and "pair plus a flush
@@ -1176,11 +1188,24 @@ None of these is a bug. They are the filter asking for something that could
 not have happened, and the point of the message is that you can tell the
 difference without having to guess.
 
-Filters worth knowing: `--hero`/`--pool`, `--site`, `--player`, `--pos`,
+Filters worth knowing: `--hero`/`--pool`, `--site`, `--game`, `--player`, `--pos`,
 `--street`, `--pot`, `--facing`, `--ip`/`--oop`, `--deep N`/`--short N`,
 `--board mono,paired,connected,...`, `--combo`, `--multiway`/`--headsup`,
 `--since`/`--until`, and `--where` for raw SQL over `decisions` when the
 named flags run out. `--help` prints the full list with the SQL each becomes.
+
+`--game` is holdem by default (`plo`, `plo5`, `all`). Mixing PLO VPIP
+into an NLHE number is the same class of error as mixing two sites
+under `fmt='RING'`. `--game plo` is how Reports / Statistics / Sessions
+ask for the other game (MTT included). `--game-type plo4-cash` (also
+`--type`; aliases `plo`, `plo5`, `nlhe`) is the variant plus cash --
+the three defaults are NLHE Cash, PLO4 Cash and PLO5 Cash.
+`--variant` is the same words as `--game`. Postflop histograms and
+Weak % then use Omaha labels: two hole cards and three board cards,
+never all four as Hold'em. The 13×13 is gated on a PLO filter -- it
+does not draw 169 empty squares. Compact prepends `[As Ad Kh 7d]`
+for four- and five-card hands. Rebuild derived tables after an Omaha
+import so `game` / `game_type` land on `spots` and `decisions`.
 
 ### `stats.py` — the stat engine
 

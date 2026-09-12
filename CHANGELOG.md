@@ -8,6 +8,94 @@ Newest first.
 
 ---
 
+## PLO hand-strength: Omaha groups, not Hold'em bars
+
+The histogram on `--game plo` was honest labels on Hold'em bars —
+overpair sat on Overpair, ace-high wrap+FD sat on Draws, and Weak %
+read `strength.WEAK` (under middle pair). That is a Hold'em diagram
+with a new heading.
+
+- **`best_omaha_hand`** — the public 2+3 walk. PLO5 still uses
+  exactly two of five. One hole heart on a three-heart flop is
+  ace-high, not a flush and not an FD.
+- **`OMAHA_HIST_SPEC` / `OMAHA_WEAK`** — Combo, Wrap, FD, Air,
+  Weak made, Medium, Strong, Nuts+. One pair is Weak made. Made
+  hands stay on a made bar even with a draw, same rule as Hold'em.
+- **Hist / Flop Hand / range Weak %** switch by variant.
+  `--made "top pair"` is refused on a PLO filter;
+  `--hist-group weak_made` is the click.
+- **verify-parity J** golden trap + combo fixtures in
+  `fixtures/plo_parity/`. NLHE A–I and the default Hold'em
+  histogram stay on Hold'em groups.
+
+Deferred: PLO combinatoric ranges, PLO6/8, hi/lo, Magnum AA classes.
+
+---
+
+## Multi-game v1: Game Type, Bodog/Bovada, 4/5-card compact, 13×13 gate
+
+The PLO study track widened past strength. Same branch, same freeze
+base, PR #7 import still reconciled in.
+
+- **Bodog / Bovada HEADER** — the network writes three brand names.
+  Downloads-style PLO files were skipped because only `Ignition Hand #`
+  was accepted. `variant` and `hole_card_count` are written on `hands`
+  from the registry, not guessed in a parser.
+- **Game Type** — `{variant, cash|mtt}` → `nlhe-cash` / `plo4-cash` /
+  `plo5-cash`. `--game-type` / `--type` / `--variant` are who-flags.
+  Default `--game` is still Hold'em (all formats) so NLHE reports do
+  not suddenly drop MTT. Stats under a type filter are that type only.
+- **Compact / replayer** — four and five hole cards sit on the line
+  (`[As Ad Kh 7d]`). Hold'em still omits them; the combo column has
+  AhKd.
+- **13×13 gated on PLO** — the chart says why, and Hands still lists
+  the shown cards. An empty 169-square is not a range.
+
+`verify-parity` A–I stay on the NLHE corpus. J is the PLO sibling
+(`fixtures/plo_parity/`). Rebuild derived tables so `game_type`
+lands on `spots` and `decisions`.
+
+### Not this, on purpose
+
+PLO combinatoric heat map, PLO6 / Omaha8, full Omaha taxonomy
+polish, HUD, PokerStars Omaha, player class measured on PLO.
+
+---
+
+## PLO study: Omaha strength, `--game plo` histograms
+
+A new track, stacked on the NLHE H2N freeze
+(`cursor/h2n-dock-back-freeze-7372`) with Omaha import re-added from
+PR #7 (`cursor/omaha-plo-import-ec94`). Master did not have PR #7
+merged; the freeze tip had the study chrome and no `games.py`.
+
+- **`games.py`** — HOLDEM / OMAHA / OMAHA5, `--game` aliases, default
+  pool Hold'em so a PLO VPIP cannot rewrite an NLHE one.
+- **ACR / Ignition import** — PLO4 and PLO5 stored with the right
+  hole count. PokerStars Omaha is the documented skip.
+- **`strength.classify`** — PLO4 and PLO5 use two hole cards and
+  three board cards. The Hold'em reading of all four (royal on JT,
+  flush with one hole heart, two pair from unused kickers) is
+  refused. `wrap` is the straight-draw word Hold'em does not have.
+- **Reports / Statistics / Sessions** — `--game plo` is a who-flag.
+  Default is still HOLDEM. Postflop histogram / Weak % / range
+  breakdowns read Omaha `made` labels. The 13×13 and all-in equity
+  stay two-card.
+
+`--check` fixtures are synthetic PLO hands in `acr.py`, `ignition.py`
+and `strength.KNOWN_OMAHA`. Hold'em `verify-parity` is unchanged.
+No HUD. No solver. No invented equity.
+
+NLHE tracking-half chrome is still the freeze (~97%). PLO study
+readiness is a separate score.
+
+### Not this, on purpose
+
+Omaha equity, a four-card 13×13, PokerStars Omaha import, player
+class measured on PLO. See `GAPS.md`.
+
+---
+
 ## Dock-back + tracking-half freeze
 
 Detached window → **Dock back** → the main Reports tab, same

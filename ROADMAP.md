@@ -1089,6 +1089,54 @@ IDs/import skip flags. PLO / multi-game is a separate track,
 not more NLHE chrome. Tracking-half NLHE study chrome is
 frozen pending a new track.
 
+## Run — PLO study (Omaha strength)
+
+**Goal:** Real PLO study support beyond import tags. True Omaha
+hand-strength classifier (2-of-4 + 3 board; honest PLO5).
+`--game plo` histograms / Weak % / range breakdowns without
+Hold'em labels. Reports / Statistics / Sessions respect
+`--game plo`; default still HOLDEM. `--check` fixtures from
+synthetic PLO hands. No HUD, no solver, no invented equity.
+
+**Base:** stacked on `cursor/h2n-dock-back-freeze-7372` (PR #15)
+and re-added Omaha import from PR #7. Master did not have PR #7
+merged; the freeze tip had no `games.py`.
+
+**Result:** `games.py` registry; ACR/Ignition PLO4/PLO5 import;
+`strength.classify_omaha` / `KNOWN_OMAHA`; `--game` on query,
+the page, and the window. Hold'em default and `verify-parity`
+unchanged. Gaps: Omaha equity, 13×13, Stars Omaha, PLO player
+class. PLO readiness is scored separately from NLHE ~97%.
+
+## Run — Multi-game NLHE vs PLO v1
+
+**Goal:** Parser → schema → Game Type → Reports filter →
+Compact/replayer → UI gates → verify-parity NLHE+PLO.
+Bodog/Bovada PLO files import. PLO4 report ≠ NLHE sample.
+4/5 cards in Compact. No fake Hold'em 13×13 on PLO.
+
+**Result:** HEADER accepts Ignition/Bodog/Bovada. `variant` +
+`hole_card_count` on hands; `game_type` on spots/decisions.
+`--game-type` / `--type` / `--variant`. Compact prepends
+four/five cards. 13×13 gated with a reason. Parity J on
+`fixtures/plo_parity/`. NLHE A–I still PASS. Deferred: PLO
+heat map, PLO6/Omaha8, HUD, Stars Omaha, PLO player class.
+
+## Run — PLO hand-strength (Omaha groups)
+
+**Goal:** `best_omaha_hand` (exactly 2 hole + 3 board; PLO5
+still 2 of 5). Omaha-scoped hist groups with `is_weak`.
+Histograms / Flop Hand / Weak % switch by variant. Hold'em
+`--made` refused on PLO. verify-parity Omaha golden
+fixtures; NLHE path unchanged. No combinatoric ranges,
+PLO6/8, hi/lo, or Magnum AA.
+
+**Result:** `OMAHA_HIST_SPEC` / `OMAHA_WEAK`. PLO histogram
+is Combo / Wrap / FD / Air / Weak made / Medium / Strong /
+Nuts+, not "top pair". Weak % reads Omaha flags. Trap
+(1-heart ≠ flush) and royal-looking wrap+FD are golden in
+`fixtures/plo_parity/`. Default Hold'em hist stays Hold'em.
+
 ## Run — Statistics Profile Menu + Save/Open
 
 **Goal:** H2N Profile Menu and Save/Open Report on the

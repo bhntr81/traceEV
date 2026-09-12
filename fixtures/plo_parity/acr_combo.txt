@@ -1,0 +1,26 @@
+Hand #2459809002 - Omaha (Pot Limit) - $0.05/$0.10 - 2025/05/19 17:45:00 UTC
+Lincolnwood 6-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Bob [As Ks Qs 2d]
+Alice calls $0.05
+*** FLOP *** [Js Ts 3c]
+Alice checks
+Bob checks
+*** TURN *** [Js Ts 3c] [2h]
+Alice checks
+Bob checks
+*** RIVER *** [Js Ts 3c 2h] [7d]
+Alice checks
+Bob checks
+*** SHOW DOWN ***
+Alice shows [9c 8d 4h 3d]
+Bob shows [As Ks Qs 2d]
+*** SUMMARY ***
+Total pot $0.20 | Rake $0
+Board [Js Ts 3c 2h 7d]
+Seat 1: Alice (small blind) showed [9c 8d 4h 3d] and lost
+Seat 2: Bob (big blind) showed [As Ks Qs 2d] and won $0.20
