@@ -566,7 +566,8 @@ class App(ImportMixin, ttk.Frame):
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
-                      "players", "live", "stack", "tag")}
+                      "players", "live", "stack", "tag",
+                      "alias", "vs_alias", "villain_type")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -727,7 +728,8 @@ class App(ImportMixin, ttk.Frame):
     WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
                     "--reg", "--fish", "--vs-reg", "--vs-fish",
                     "--with-fish", "--regs-only")
-    WHO_VALS = ("site", "stake", "player", "since", "until")
+    WHO_VALS = ("site", "stake", "player", "since", "until",
+                "alias", "vs_alias", "villain_type")
 
     def clear_situation(self, keep_preset=False):
         """Drop the situation filters; keep the player, the site, the cohort."""
@@ -802,7 +804,10 @@ class App(ImportMixin, ttk.Frame):
                             "--after": "after", "--then": "then",
                             "--size": "size", "--outcome": "outcome",
                             "--players": "players", "--live": "live",
-                            "--stack": "stack", "--tag": "tag"}.get(a)
+                            "--stack": "stack", "--tag": "tag",
+                            "--alias": "alias", "--vs-alias": "vs_alias",
+                            "--villain-type": "villain_type",
+                            "--vs-class": "villain_type"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -943,6 +948,9 @@ class App(ImportMixin, ttk.Frame):
             argv.append("--cohort")
             flags = {"fold_to_threebet": "--fold-to-threebet"}
             for field, value in conditions:
+                if field == "_expr":
+                    argv.append(value)
+                    continue
                 argv += [flags.get(field, "--" + field), value]
             if site:
                 argv += ["--site", site]
@@ -969,7 +977,10 @@ class App(ImportMixin, ttk.Frame):
                            ("after", "--after"), ("then", "--then"),
                            ("size", "--size"), ("outcome", "--outcome"),
                            ("players", "--players"), ("live", "--live"),
-                           ("stack", "--stack"), ("tag", "--tag")):
+                           ("stack", "--stack"), ("tag", "--tag"),
+                           ("alias", "--alias"),
+                           ("vs_alias", "--vs-alias"),
+                           ("villain_type", "--villain-type")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1711,6 +1722,8 @@ def _cohort_expr(conditions):
     """The compact string the dialog started from, so it can be edited back."""
     parts = []
     for field, value in conditions:
+        if field == "_expr":
+            return value
         if str(value)[:1] in "<>=":
             parts.append(f"{field}{value}")
         else:
@@ -1762,7 +1775,8 @@ class CohortDialog(tk.Toplevel):
         compact.pack(fill="x", padx=24, pady=(0, 10))
         ttk.Label(compact, text="or type", width=14).pack(side="left")
         ttk.Entry(compact, textvariable=self.expr, width=36).pack(side="left")
-        ttk.Label(self, text="vpip>=40,pfr<=10,hands>=100",
+        ttk.Label(self, text="vpip>=40,pfr<=10,hands>=100  or  "
+                  "Value(3Bet)<2 and Opps(3Bet)>100",
                   style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
         body = ttk.Frame(self)
         body.pack(fill="x", padx=24)
@@ -2576,6 +2590,27 @@ class FilterDialog(tk.Toplevel):
             side="left", padx=(18, 6))
         ttk.Entry(row, textvariable=self.app.vals["tag"], width=16).pack(
             side="left")
+
+        self._heading(page, "aliases  (username + room groups)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(0, 8))
+        ttk.Label(row, text="alias", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["alias"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="vs alias", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["vs_alias"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="villain type", style="Dim.TLabel").pack(
+            side="left")
+        ttk.Combobox(row, textvariable=self.app.vals["villain_type"],
+                     values=("", "fish", "reg", "unknown"), width=10,
+                     state="readonly").pack(side="left", padx=(6, 0))
+        ttk.Label(page, style="Dim.TLabel", wraplength=900, justify="left",
+                  text="A single-person alias merges those accounts as "
+                       "the player. A group alias is a villain pool "
+                       "(--vs-alias). --player does not expand a name "
+                       "into an alias."
+                  ).pack(anchor="w", padx=18, pady=(0, 8))
 
         self._heading(page, "anything else, as SQL over `decisions`")
         ttk.Entry(page, textvariable=self.app.vals["where"]).pack(

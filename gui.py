@@ -75,6 +75,9 @@ VALUE_FIELDS = {
     "players": "--players", "live": "--live",
     "stack": "--stack",
     "tag": "--tag",
+    "alias": "--alias",
+    "vs_alias": "--vs-alias",
+    "villain_type": "--villain-type",
     "pre": "--pre", "flop": "--flop", "turn": "--turn",
     "river": "--river", "line": "--line", "node": "--node",
 }
@@ -367,7 +370,7 @@ td.compact{text-align:left;font-weight:500}
   </fieldset>
   <fieldset><legend>multiple players</legend>
     <label>cohort
-      <input id="cohort" placeholder="vpip>=40,pfr<=10,hands>=100"></label>
+      <input id="cohort" placeholder="vpip>=40,pfr<=10,hands>=100 or Value(3Bet)<2 and Opps(3Bet)>100"></label>
     <label>class
       <select id="cohort_class">
         <option value="">any class</option>
@@ -380,6 +383,17 @@ td.compact{text-align:left;font-weight:500}
     <label><select id="site"><option value="">any site</option></select></label>
     <label><select id="stake"><option value="">any stake</option></select></label>
     <label><select id="player"><option value="">any player</option></select></label>
+    <label>alias
+      <input id="alias" placeholder="me (single-person merge)"></label>
+    <label>vs alias
+      <input id="vs_alias" placeholder="nits (group as pool)"></label>
+    <label>villain type
+      <select id="villain_type">
+        <option value="">any</option>
+        <option value="fish">fish</option>
+        <option value="reg">reg</option>
+        <option value="unknown">unknown</option>
+      </select></label>
   </fieldset>
   <fieldset><legend>my position</legend>
     <div class="chips" id="pos"></div>
@@ -528,7 +542,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -560,7 +574,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -976,6 +990,12 @@ def check(db_path=DB):
          ["--cohort", "hands>=100", "--class", "fish", "--pos", "BTN"]),
         ({"marked": ["1"], "tag": ["leak"]},
          ["--marked", "--tag", "leak"]),
+        ({"cohort": ["Value(3Bet) < 2 and Opps(3Bet) > 100"],
+          "pos": ["BTN"]},
+         ["--cohort", "Value(3Bet) < 2 and Opps(3Bet) > 100",
+          "--pos", "BTN"]),
+        ({"villain_type": ["fish"]},
+         ["--villain-type", "fish"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))

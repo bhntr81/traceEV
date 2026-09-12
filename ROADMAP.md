@@ -908,3 +908,16 @@ before the load: PokerStars' "raises $1 to $2" names the increment, not
 the amount added; and an All-in Cash Out leaves no "collected" line. The
 database is 22,165 hands and 173,549 decisions. Goal 1 of Part III is
 demonstrated, not just claimed.
+
+## Run — Expression syntax + aliases (H2N reports/filters arc)
+
+**Goal:** `Value`/`Cases`/`Opps` expressions for Multi-Player cohorts,
+and named (username, room) aliases with CSV, wired into reports.
+No HUD, no solver, `--check` without a corpus.
+
+**Result:** `expr.py` and `aliases.py`. Compact `vpip>=40,pfr<=10` is
+unchanged; `and` / `Value(` is the other grammar. `--alias` merges a
+single-person group; `--vs-alias` is the villain pool; `--player`
+does not auto-expand a name. Documented gaps: no nested expressions,
+no H2N catalog / `[MP;IP]`, no save-cohort-as-alias, `--by player`
+still splits members.

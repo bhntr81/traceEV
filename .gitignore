@@ -16,6 +16,7 @@ hands.db.bak*
 stats.json
 filters.json
 notes.db
+aliases.json
 
 # runtime log
 poker_analysis.log*

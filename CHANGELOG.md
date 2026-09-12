@@ -8,6 +8,55 @@ Newest first.
 
 ---
 
+## Expression syntax + aliases
+
+Two v1 slices that close the planned H2N reports/filters arc.
+
+**Expressions.** A plain stat is a frequency in a spot. An expression is
+math over those frequencies -- no nesting, no second filter language.
+
+    python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+    python query.py --cohort 'Value(wtsd) > 30 and Opps(wtsd) > 50'
+
+`Value(S)` / `Cases(S)` / `Opps(S)` bind S to `stats.BY_KEY` (`3Bet` is
+`threebet`, `WentToSD` is `wtsd`). `Hands()` is the players-table count.
+`and` / `or`, comparisons, `+ - * /`, and `if(cond, a, b)` are the rest.
+`eval()` is not used. Rates are grouped by `site` and `player` together
+-- grouping by name alone would merge two rooms that share a screen
+name. The compact `vpip>=40,pfr<=10` string is unchanged; `and` / `Value(`
+is what switches grammars. `--class` stays a flag beside the expression.
+
+There is no `WentToSDCases` catalog entry. That is `Cases(wtsd)`, and
+the denominator is `Opps(wtsd)` (saw a flop), not `Hands()`.
+
+**Aliases.** A named group of `(username, room)` accounts in
+`aliases.json` (gitignored). Single-person merges histories as one
+player; a group is a villain pool.
+
+    python aliases.py --create me --player NAME --site acr --single
+    python aliases.py --import accounts.csv
+    python query.py --alias me --filter "Flop c-bets"
+    python query.py --hero --vs-alias nits --street flop
+    python query.py --villain-type fish --reg --stats
+
+CSV is `Alias, Username, Room, Is Single Person`. `--player me` does
+not expand an alias. `--hero` still covers imported hero seats via
+`is_hero`. `--villain-type` / `--vs-class` is the typed form of
+`--vs-fish` over `players.py` classification.
+
+`--check` on `expr.py`, `aliases.py`, and the query wiring uses
+in-memory fixtures and a temp store -- no corpus, and nothing creates
+an empty `hands.db`.
+
+### Not this, on purpose
+
+No nested expressions. No H2N full stat-name catalog or `[MP;IP]`
+suffixes. No `VsHeroCases` / `AmountWon` / `ActionProfit` in
+expressions. `--by player` still splits alias members. No
+save-cohort-as-alias. No HUD. No solver.
+
+---
+
 ## Notes + marked hands
 
 Off-table study. Player notes, a star on a hand, and a tag catalog --

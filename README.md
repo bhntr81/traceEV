@@ -63,6 +63,9 @@ players.py      who each player is: reg, fish, unknown  --check
         v
 stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
+expr.py         Value/Cases/Opps over plain stats    --check
+aliases.py      named (username, room) groups        --check
+notes.py        player notes, marks, tags            --check
 opponents.py      what one opponent does differently   --check
 population.py   what the pool does, split-half validated  --check
 check.py        run every check, in dependency order

@@ -36,6 +36,10 @@ money is summed over the hands those decisions happened in.
     python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
     python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10 \
         --pos BTN --stats
+    python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+    python query.py --alias me --filter "Flop c-bets"
+    python query.py --hero --vs-alias nits --street flop
+    python query.py --villain-type fish --reg --stats
     python query.py --hero --board mono --results
     python query.py --hero --pot 3bet --hands
     python query.py --marked --hands
@@ -54,7 +58,9 @@ import re
 import shlex
 import tempfile
 
+import aliases
 import compact
+import expr
 import lines
 import notes
 import players
@@ -122,6 +128,17 @@ VALUE_FLAGS = {
     "--quick": None,        # one or more named filters from `quick_filters`
     "--where": None,        # raw SQL escape hatch
     "--tag": None,          # study tag catalog, over notes.db
+    # Named (username, room) groups from aliases.json. `--player me`
+    # does not expand an alias -- the words can collide, and the
+    # silent reading would drop the person. `--alias` merges as one
+    # hero-side OR; `--vs-alias` is the other seat.
+    "--alias": None,
+    "--vs-alias": None,
+    # The other seat's class, by name. `--vs-fish` is the checkbox;
+    # this is the same column when the word is typed (`fish`, `reg`,
+    # `unknown`, or a comma list).
+    "--villain-type": None,
+    "--vs-class": None,
     # What happened AFTER this decision. Hand2Note's Faced Next / Next
     # Actions: `--after fold` is "the next other seat folded", `--then
     # bet` is "this player bet the next time they acted". A node prefix
@@ -585,7 +602,8 @@ WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
                 "--reg", "--fish", "--vs-reg", "--vs-fish",
                 "--with-fish", "--regs-only")
 WHO_VALUES = ("--player", "--vs-player", "--site", "--stake",
-              "--since", "--until")
+              "--since", "--until",
+              "--alias", "--vs-alias", "--villain-type", "--vs-class")
 
 
 def resolve_filter(name, path=None):
@@ -2048,6 +2066,28 @@ def build(argv):
                     f"WHERE tag IN ({items}))")
                 described.append("tag " + ",".join(names))
                 continue
+            if a in ("--alias", "--vs-alias"):
+                who = "player" if a == "--alias" else "vs_player"
+                try:
+                    parts.append(aliases.where_sql(v, who))
+                except ValueError as e:
+                    raise SystemExit(str(e))
+                _members, single = aliases.members_of(v)
+                kind = "alias" if single else "alias-group"
+                described.append(f"{kind} {v}" if a == "--alias"
+                                 else f"vs {kind} {v}")
+                continue
+            if a in ("--villain-type", "--vs-class"):
+                kinds = [x.strip().lower() for x in str(v).split(",")
+                         if x.strip()]
+                allowed = ("reg", "fish", "unknown")
+                if not kinds or any(k not in allowed for k in kinds):
+                    raise SystemExit(
+                        f"unknown villain type {v!r} -- reg, fish, unknown")
+                items = ", ".join(q(k) for k in kinds)
+                parts.append(f"vs_class IN ({items})")
+                described.append("vs-class " + ",".join(kinds))
+                continue
             if a == "--quick":
                 known = quick_by_key()
                 for name in v.split(","):
@@ -3216,7 +3256,16 @@ def select_cohort(con, spec):
     to reuse one would meet it, and would have no reason to look here.
     """
     conditions, site, klass, durable = spec
-    rows = players.cohort(con, conditions, site, klass, durable)
+    expr_text = None
+    rest = []
+    for item in conditions:
+        if item[0] == "_expr":
+            expr_text = item[1]
+        else:
+            rest.append(item)
+    rows = players.cohort(con, rest, site, klass, durable)
+    if expr_text:
+        rows = expr.filter_players(con, rows, expr_text)
     con.execute("CREATE TEMP TABLE IF NOT EXISTS _cohort "
                 "(site TEXT, player TEXT)")
     con.execute("DELETE FROM _cohort")
@@ -3396,7 +3445,11 @@ def usage():
     print(f"    {'--where':14} raw SQL over `decisions`, for anything above")
     print("\n  Multiple Players cohort filters:")
     print("    --cohort [EXPR]  select players before filtering situations")
-    print("                     EXPR: vpip>=40,pfr<=10,hands>=100")
+    print("                     compact: vpip>=40,pfr<=10,hands>=100")
+    print("                     expression: Value(3Bet)<2 and Opps(3Bet)>100")
+    print("    --alias NAME      merge a single-person alias as the player")
+    print("    --vs-alias NAME   the other seat is in that alias (group or one)")
+    print("    --villain-type T  vs_class IN (reg|fish|unknown); also --vs-class")
     print("    --cohort-hands N   players with at least N hands (bare N is >=)")
     print("    --cohort-vpip  V   player VPIP (40+ means >=40)")
     print("    --cohort-pfr   V   player PFR (<=10, 18, 10+)")
@@ -3550,7 +3603,10 @@ def check_shape():
             (["--live", "2"], "n_live = 2"),
             (["--marked"], "study.hand_marks"),
             (["--noted"], "study.note_hands"),
-            (["--tag", "leak"], "study.hand_tags")):
+            (["--tag", "leak"], "study.hand_tags"),
+            (["--villain-type", "fish"], "vs_class IN ('fish')"),
+            (["--vs-class", "reg,unknown"],
+             "vs_class IN ('reg', 'unknown')")):
         where, _label, _p = build(argv)
         if needle not in where.replace("0.40", "0.4"):
             fails.append(f"{argv} built {where!r}, expected {needle!r}")
@@ -3834,6 +3890,16 @@ def check_cohort():
     if not cohort_loaded(con):
         fails.append("apply_cohort did not park _cohort")
 
+    spec, _ = players.parse_cohort(["--cohort", "Hands() >= 100"])
+    where, header, _label = apply_cohort(con, spec, "1=1", "everything")
+    if header is None or header["players"] != 2 or header["hands"] != 700:
+        fails.append(
+            f"Hands() >= 100 header was {header}, not 2 players / 700 hands")
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    if n != 6:
+        fails.append(f"Hands() cohort kept {n} decisions, not 6")
+
     spec_fish, _ = players.parse_cohort(
         ["--cohort-hands", "100", "--cohort-vpip", "40+", "--class", "fish"])
     rows = players.cohort(con, *spec_fish)
@@ -3842,6 +3908,49 @@ def check_cohort():
                      f"{[r['player'] for r in rows]}")
     con.close()
     print(f"multi-player cohort           "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
+def check_aliases_filter():
+    """
+    `--alias` / `--vs-alias` become an OR of quoted (site, name) pairs.
+    No corpus -- a temp aliases.json is enough to tell a merge from
+    `--hero`, which is a different door (`is_hero = 1`).
+    """
+    fails = []
+    was = aliases.PATH
+    folder = Path(tempfile.mkdtemp())
+    aliases.PATH = folder / "aliases.json"
+    try:
+        aliases.create("me", "HeroA", "acr", single=True)
+        aliases.add("me", "HeroB", "pokerstars")
+        aliases.create("nits", "TightGuy", "acr", single=False)
+        where, label, _ = build(["--alias", "me"])
+        if "HeroA" not in where or "pokerstars" not in where:
+            fails.append(f"--alias SQL dropped a member: {where}")
+        if "is_hero" in where:
+            fails.append("--alias used is_hero instead of the named merge")
+        if "alias" not in label:
+            fails.append(f"--alias label hid the name: {label}")
+        where, label, _ = build(["--vs-alias", "nits"])
+        if "vs_player" not in where or "TightGuy" not in where:
+            fails.append(f"--vs-alias SQL was {where}")
+        if "group" not in label:
+            fails.append(f"group alias label was {label}")
+        try:
+            build(["--alias", "missing"])
+            fails.append("missing alias was accepted")
+        except SystemExit:
+            pass
+        who = who_only(["--alias", "me", "--street", "flop"])
+        if "--alias" not in who or "--street" in who:
+            fails.append(f"who_only dropped --alias: {who}")
+    finally:
+        aliases.PATH = was
+    print(f"alias / vs-alias filters      "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:
         print(f"    {f}")
@@ -4054,6 +4163,7 @@ def check(db_path=DB):
     fails.extend(check_filterdef())
     fails.extend(check_compare())
     fails.extend(check_cohort())
+    fails.extend(check_aliases_filter())
     fails.extend(check_study())
     fails.extend(compact.check())
     db = Path(db_path)

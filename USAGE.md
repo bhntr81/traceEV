@@ -569,6 +569,8 @@ then the situation filters apply inside what is left:
 
 ```bash
 python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+python query.py --cohort 'Value(wtsd) > 30 and Opps(wtsd) > 50' --pos BTN
 python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10 --pos BTN
 python query.py --cohort --hands ">=500" --site acr
 python query.py --cohort --vpip ">=35" --pfr "<12" --pos BTN --street flop
@@ -583,8 +585,10 @@ Three writings of the same idea:
 
 - **`--cohort 'vpip>=40,pfr<=10,hands>=100'`** — compact string. `40+` is
   `>=40`. `class=fish` / `site=acr` / `durable=1` are allowed in the
-  string. This is not Hand2Note's Expression language (`VPIP>30 AND
-  HandsCount>1000`); that is a later milestone.
+  string.
+- **`--cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100'`** — expression over
+  plain stats. `and` / `or` / `Value(` switch out of the compact list.
+  Do not mix `class=fish` into that string; use `--class` beside it.
 - **`--cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10`** — aliases
   that do not collide with `--hands` the view. A bare number on
   `--cohort-hands` means at least that many.
@@ -613,10 +617,11 @@ as well as name, so the situations are narrowed to that site too.
 chooses people and a report describes a situation; save the situation and
 pick the players beside it.
 
-Not this, on purpose: Expression Value/Opps cohort strings; Preflop Range
-on the pool; Bet Sizes as a cohort view; two cohorts side by side (that is
-`--versus` of two populations, already shipped, not a second Multi-Player
-compare).
+Not this, on purpose: nested `Value(Value(...))`; H2N's full stat-name
+catalog and positional `[MP;IP]` suffixes; `VsHeroCases` / `AmountWon` /
+`ActionProfit` as expression atoms; Preflop Range on the pool; Bet Sizes
+as a cohort view; two cohorts side by side (that is `--versus` of two
+populations, already shipped, not a second Multi-Player compare).
 
 Bear the sample size in mind before reading anything into a small cohort. 85
 ACR players have 100+ hands and eight have 500+, so `--hands ">=500"` is
@@ -629,10 +634,15 @@ eight people, and eight people are not a pool.
 ```bash
 python query.py --reg --vs-reg          # how regulars play each other
 python query.py --reg --vs-fish         # and how they play a recreational
+python query.py --villain-type fish --reg --stats
 python query.py --vs-player NAME        # against one named opponent
 python players.py --list reg            # who the regs are
 python players.py NAME                  # one player in full
 ```
+
+`--villain-type` / `--vs-class` is the typed form of `--vs-fish` /
+`--vs-reg`: `vs_class IN ('fish')`, or a comma list (`reg,unknown`).
+The classification is still `players.py` -- reg, fish, or unknown.
 
 A **reg** plays a third of hands or fewer and raises at least one in ten. A
 **fish** is loose or passive — over a third of hands, or almost never
@@ -789,6 +799,72 @@ the star on each row.
 Not this, on purpose: live HUD "Add Note"; exporting tagged hands as a
 history file; pasting a raw HH into a stat note. Compact Hand View is
 already the line on the row -- this does not redo it.
+
+### Expressions over plain stats
+
+A plain stat is a frequency in a spot (`stats.BY_KEY`). An expression is
+math over those frequencies, used first as a Multi-Player cohort:
+
+```bash
+python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
+python query.py --cohort 'Value(wtsd) > 30 and Opps(wtsd) > 50'
+python query.py --cohort 'vpip>=40 and pfr<=10 and Hands()>=100'
+```
+
+| atom | meaning |
+|---|---|
+| `Value(S)` | `100 * hits / opps` (0 if they never faced the chance) |
+| `Cases(S)` | hits |
+| `Opps(S)` | opportunities |
+| `Hands()` / `HandsCount()` | the `players` table hand count |
+
+`S` is a registry key or a short alias: `3Bet` → `threebet`, `cbet` →
+`cbet_flop`, `WentToSD` → `wtsd`. There is no `WentToSDCases` name --
+that is `Cases(wtsd)`, and the denominator is `Opps(wtsd)` (hands that
+saw a flop), not `Hands()`. `and` / `or`, comparisons, `+ - * /`, and
+`if(cond, a, b)` are the rest. Expressions do not nest:
+`Value(Value(vpip))` is refused.
+
+A comma compact string without `and`/`or`/`Value(` is still the v1
+field list. `--class fish` stays a flag beside the expression.
+
+Not this, on purpose: the full Hand2Note stat-name catalog; positional
+`[MP;IP]` suffixes; `VsHeroCases`, `AmountWon`, `ActionProfit` as
+expression atoms (those stay report columns).
+
+### Aliases
+
+A named group of `(username, room)` accounts, stored in `aliases.json`
+(gitignored, like `stats.json`). Not a table inside `hands.db`.
+
+```bash
+python aliases.py --create me --player HeroACR --site acr --single
+python aliases.py --add me --player HeroPS --site pokerstars
+python aliases.py --list
+python aliases.py --import accounts.csv
+python aliases.py --export accounts.csv
+
+python query.py --alias me --filter "Flop c-bets"
+python query.py --hero --vs-alias nits --street flop
+```
+
+CSV columns, Hand2Note's order: `Alias, Username, Room, Is Single Person`.
+`Room` accepts the registry keys and the usual nicknames (`wpn`, `ps`,
+`bovada`). **Is Single Person = true** merges those histories as one
+player (hero on a second site). **false** is a style / group, usable as
+`--vs-alias` -- the other seat is in that set.
+
+`--hero` already merges every imported hero seat via `is_hero = 1`.
+`--alias` is the same idea for names that are not that flag.
+`--player me` does **not** expand an alias -- a screen name and an
+alias can share a word.
+
+Reports: pick a person, a single-person alias, or a group alias as a
+pool (`--vs-alias`). `--by player` still splits the members; the alias
+is a filter, not a rewritten identity.
+
+Not this, on purpose: save-cohort-as-alias; HUD; treating `--player`
+as an alias lookup.
 
 ### When nothing matches
 

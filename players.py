@@ -41,6 +41,7 @@ import sys
 import re
 from pathlib import Path
 
+import expr
 import sites
 from stats import wilson
 
@@ -108,6 +109,12 @@ def cohort(con, conditions=(), site=None, klass=None, durable=None):
     """Return players matching safe, player-level Multiple Players filters."""
     where, params = ["1=1"], []
     for field, value in conditions:
+        # An expression is evaluated after this SELECT, against
+        # `stats.rates_by`. Unpacking it as a comparator would raise
+        # "invalid condition" on a string that parse_cohort already
+        # accepted, and look like the box was broken.
+        if field == "_expr":
+            continue
         column = COHORT_FIELDS.get(field)
         value = normalize_condition(value)
         match = CONDITION.fullmatch(value)
@@ -250,15 +257,21 @@ def normalize_condition(value, default_ge=False):
 def parse_cohort_expr(text):
     """
     `vpip>=40,pfr<=10,hands>=100` as the conditions `parse_cohort` already
-    feeds `cohort()`.
+    feeds `cohort()`, or a Value/Cases/Opps expression stashed as `_expr`.
 
-    Expression Value/Opps strings (`VPIP>30 AND HandsCount>1000`) are a
-    later milestone. This is the v1 shape: comma-separated field+comparator
-    over the same columns the flags already name, plus `class=`, `site=`,
-    `durable=`.
+    The compact form is still a comma list over the players-table
+    columns. `and` / `or` / `Value(` switch to `expr.parse` -- mixing
+    a comma `class=fish` into that string is refused (use `--class`).
     """
+    text = str(text).strip()
+    if expr.is_expression(text):
+        try:
+            expr.parse(text)
+        except ValueError as e:
+            raise SystemExit(f"invalid expression: {e}")
+        return [("_expr", text)], None, None, None
     conditions, site, klass, durable = [], None, None, None
-    parts = [p.strip() for p in str(text).split(",") if p.strip()]
+    parts = [p.strip() for p in text.split(",") if p.strip()]
     if not parts:
         raise SystemExit(
             "--cohort needs an expression -- "
@@ -326,7 +339,10 @@ def parse_cohort(argv):
         a = argv[i]
         if a == "--cohort":
             nxt = argv[i + 1] if i + 1 < len(argv) else None
-            if nxt is not None and not nxt.startswith("-"):
+            # `-Value(vpip)<0` is an expression that happens to start
+            # with a minus; treating it as a flag would swallow it.
+            if nxt is not None and (
+                    not nxt.startswith("-") or expr.is_expression(nxt)):
                 extra, e_site, e_klass, e_durable = parse_cohort_expr(nxt)
                 conditions.extend(extra)
                 for field, _value in extra:
@@ -392,7 +408,12 @@ def describe_cohort(spec):
     does not say it: eight players is the same eight whatever picked them.
     """
     conditions, site, klass, durable = spec
-    said = [f"{field} {value}" for field, value in conditions]
+    said = []
+    for field, value in conditions:
+        if field == "_expr":
+            said.append(value)
+        else:
+            said.append(f"{field} {value}")
     if site:
         said.append(f"site {site}")
     if klass:
@@ -792,6 +813,12 @@ def check_parse():
         # `40+` on the existing `--vpip` flag, and class in the string.
         (["--cohort", "vpip 40+,class=fish", "--street", "flop"],
          [("vpip", ">=40")], ["--street", "flop"]),
+        (["--cohort", "Value(3Bet) < 2 and Opps(3Bet) > 100",
+          "--filter", "3bet"],
+         [("_expr", "Value(3Bet) < 2 and Opps(3Bet) > 100")],
+         ["--filter", "3bet"]),
+        (["--cohort", "vpip>=40 and pfr<=10", "--pos", "BTN"],
+         [("_expr", "vpip>=40 and pfr<=10")], ["--pos", "BTN"]),
     ]
     for argv, want_conditions, want_rest in splits:
         spec, rest = parse_cohort(list(argv))
@@ -813,6 +840,15 @@ def check_parse():
             fails.append(f"parse_cohort_expr({bad!r}) was accepted")
     if refused < 4:
         fails.append("a compact expression that is not a condition was accepted")
+    try:
+        parse_cohort_expr("Value(notastat) < 1")
+        fails.append("unknown stat in an expression was accepted")
+    except SystemExit:
+        pass
+    if describe_cohort(
+            ([("_expr", "Value(3Bet) < 2 and Opps(3Bet) > 100")],
+             None, None, None)) != "Value(3Bet) < 2 and Opps(3Bet) > 100":
+        fails.append("describe_cohort hid the expression text")
     print(f"the cohort takes only its own flags  "
           f"{len(splits) - len([f for f in fails if 'parse_cohort' in f])}"
           f"/{len(splits)}")
