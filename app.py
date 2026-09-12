@@ -1062,18 +1062,11 @@ class App(ImportMixin, ttk.Frame):
                 out["outcomes"] = query.outcomes_of(con, where)
                 if pin:
                     try:
-                        pin_argv = (query.who_only(argv)
-                                    + query.without_who(query.resolve_filter(pin)))
-                        pin_where, pin_label, _ = query.build(pin_argv)
+                        argv_a, argv_b = query.pin_sides(argv, pin)
+                        out["compare"] = query.compare_of(
+                            con, argv_a, argv_b, None, pin)
                     except SystemExit as e:
                         out["pinned"] = {"error": str(e), "name": pin}
-                    else:
-                        out["pinned"] = {
-                            "name": pin, "label": pin_label,
-                            "summary": query.spot_summary(
-                                con, pin_where, pin_argv),
-                            "profit": query.action_profit_of(con, pin_where),
-                        }
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "chart":
@@ -1226,38 +1219,63 @@ class App(ImportMixin, ttk.Frame):
                    (220, 80, 60, 100, 80),
                    {"stat": "w"})
         self._stat_iids = {}
-        summ = out.get("summary")
-        if summ and summ["opps"]:
-            tv.insert("", "end", values=("HITS / OPPORTUNITIES", "", "", "", ""),
+        cmp = out.get("compare")
+        if cmp:
+            a, b = cmp["a"], cmp["b"]
+            sa, sb = a.get("summary") or {}, b.get("summary") or {}
+            pa, pb = a.get("profit") or {}, b.get("profit") or {}
+            tv.insert("", "end", values=("THIS vs PINNED", "", "", "", ""),
                       tags=("group",))
             tv.insert("", "end", values=(
-                f"hits  ({summ['label']})", f"{summ['hits']:,}", "",
-                f"{summ['opps']:,} opps", ""))
+                "", (a.get("name") or "this")[:22],
+                "", (b.get("name") or "pinned")[:22], ""))
             tv.insert("", "end", values=(
-                "hits / 1000 hands", f"{summ['per_1k']:.1f}",
-                f"±{summ['band']:.1f}" if summ["band"] < 1
-                else f"±{summ['band']:.0f}",
-                f"{summ['hands']:,} hands", ""))
+                "hits / opps",
+                f"{sa.get('hits', 0):,} / {sa.get('opps', 0):,}",
+                "",
+                f"{sb.get('hits', 0):,} / {sb.get('opps', 0):,}", ""))
             tv.insert("", "end", values=(
-                f"{summ['label']}", f"{summ['pct']:.1f}%",
-                f"±{summ['band']:.1f}" if summ["band"] < 1
-                else f"±{summ['band']:.0f}",
-                f"{summ['opps']:,}", ""))
+                "freq",
+                f"{sa.get('pct', 0):.1f}%" if sa.get("opps") else "–",
+                "",
+                f"{sb.get('pct', 0):.1f}%" if sb.get("opps") else "–", ""))
+            tv.insert("", "end", values=(
+                "hits / 1000",
+                f"{sa.get('per_1k', 0):.1f}", "",
+                f"{sb.get('per_1k', 0):.1f}", ""))
+            this_ap = (f"{pa['bb_per_hand']:+.2f} bb"
+                       if pa.get("bb_per_hand") is not None else "–")
+            pin_ap = (f"{pb['bb_per_hand']:+.2f} bb"
+                      if pb.get("bb_per_hand") is not None else "–")
+            tv.insert("", "end", values=(
+                "action profit", this_ap, "", pin_ap, ""))
+            diff = cmp.get("freq_diff") or {}
+            if diff.get("d") is not None:
+                tv.insert("", "end", values=(
+                    "freq this − pin",
+                    f"{100 * diff['d']:+.1f} pts",
+                    f"[{100 * diff['lo']:+.1f}, {100 * diff['hi']:+.1f}]",
+                    "", ""), tags=("note",))
+        else:
+            summ = out.get("summary")
+            if summ and summ["opps"]:
+                tv.insert("", "end", values=("HITS / OPPORTUNITIES", "", "", "", ""),
+                          tags=("group",))
+                tv.insert("", "end", values=(
+                    f"hits  ({summ['label']})", f"{summ['hits']:,}", "",
+                    f"{summ['opps']:,} opps", ""))
+                tv.insert("", "end", values=(
+                    "hits / 1000 hands", f"{summ['per_1k']:.1f}",
+                    f"±{summ['band']:.1f}" if summ["band"] < 1
+                    else f"±{summ['band']:.0f}",
+                    f"{summ['hands']:,} hands", ""))
+                tv.insert("", "end", values=(
+                    f"{summ['label']}", f"{summ['pct']:.1f}%",
+                    f"±{summ['band']:.1f}" if summ["band"] < 1
+                    else f"±{summ['band']:.0f}",
+                    f"{summ['opps']:,}", ""))
         pinned = out.get("pinned")
-        if pinned and not pinned.get("error"):
-            tv.insert("", "end", values=("PINNED  " + pinned["name"],
-                                         "", "", "", ""), tags=("group",))
-            ps = pinned.get("summary") or {}
-            if ps.get("opps"):
-                tv.insert("", "end", values=(
-                    f"pin hits  ({ps['label']})", f"{ps['hits']:,}",
-                    f"{ps['pct']:.1f}%", f"{ps['opps']:,} opps", ""))
-            pp = pinned.get("profit") or {}
-            if pp.get("bb_per_hand") is not None:
-                tv.insert("", "end", values=(
-                    "pin action profit", f"{pp['bb_per_hand']:+.2f} bb",
-                    "", f"{pp['priced']:,} priced", ""))
-        elif pinned and pinned.get("error"):
+        if pinned and pinned.get("error"):
             tv.insert("", "end", values=(pinned["error"], "", "", "", ""),
                       tags=("note",))
         prof = out.get("profit")

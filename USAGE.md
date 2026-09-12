@@ -280,13 +280,28 @@ spot. `--quick raise_cbet` leads with raise c-bet, not VPIP.
 python query.py --hero --filter "Flop c-bets"
 python query.py --hero --filter raise_cbet --by position
 python query.py --filter "Flop c-bets" --pin "Flop vs c-bet"
+python query.py --hero --compare "Flop c-bets" "Flop vs c-bet"
 python query.py --presets                 # also --filters
 ```
 
 `--filter` is `--preset` with a wider lock: a Smart Report, a `--quick`
-key, or a JSON argv list. `--pin` is `--versus` pointed at another
-report, same person -- hero's flop c-bets against hero's vs-c-bet, not
-against the pool.
+key, or a JSON argv list.
+
+**`--pin`** freezes another named report, same person, and prints a
+two-column summary: hits/opps, the primary frequency, hits per 1k,
+and Action Profit v1 when priced. The frequency gap is an interval
+on the difference. Changing the filter leaves the pin where it is --
+that is the point. In the window and on the page the pin box does
+the same thing above the rest of this report.
+
+**`--compare A B`** is the same table with both sides named. Who-flags
+(`--hero`) apply to both.
+
+**`--versus`** is the other verb: every stat, Holm-corrected, for when
+the question is "is this gap real?" not "what did each spot do?"
+
+v1 does not draw two full `--by` grids. Pin the spot summary; `--versus`
+is still the test. No Multi-Player pane.
 
 The custom action builder is flags, not a second language.
 `FilterDef` is those flags as a value -- line patterns plus the

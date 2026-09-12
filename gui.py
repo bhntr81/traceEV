@@ -130,14 +130,9 @@ def payload(con, params):
         pin = (params.get("pin", [""])[0] or "").strip()
         if pin:
             try:
-                pin_argv = (query.who_only(argv)
-                            + query.without_who(query.resolve_filter(pin)))
-                pin_where, pin_label, _ = query.build(pin_argv)
-                out["pinned"] = {
-                    "name": pin, "label": pin_label,
-                    "summary": query.spot_summary(con, pin_where, pin_argv),
-                    "profit": query.action_profit_of(con, pin_where),
-                }
+                argv_a, argv_b = query.pin_sides(argv, pin)
+                out["compare"] = query.compare_of(
+                    con, argv_a, argv_b, None, pin)
             except SystemExit as e:
                 out["pinned"] = {"name": pin, "error": str(e)}
         return out
@@ -568,7 +563,31 @@ function render(d){
         ? `<p class="empty">no stat can occur inside this filter<br><span class="n">asking for a preflop stat inside street=flop does this</span></p>`
         : nope(); return; }
     let g = null, h = `<p class="n">${d.decisions.toLocaleString()} decisions match</p><table><tbody>`;
-    if (d.summary && d.summary.opps){
+    if (d.compare && d.compare.a && d.compare.b){
+      const A = d.compare.a, B = d.compare.b;
+      const sa = A.summary || {}, sb = B.summary || {};
+      const pa = A.profit || {}, pb = B.profit || {};
+      const ap = p => p.bb_per_hand == null ? '–'
+        : ((p.bb_per_hand>=0?'+':'') + p.bb_per_hand.toFixed(2) + ' bb');
+      h += `<tr><td class="group">this vs pinned</td>`
+        + `<td class="group">${A.name || 'this'}</td><td></td>`
+        + `<td class="group">${B.name || 'pinned'}</td></tr>`
+        + `<tr><td>hits / opps</td>`
+        + `<td>${(sa.hits||0).toLocaleString()} / ${(sa.opps||0).toLocaleString()}</td><td></td>`
+        + `<td>${(sb.hits||0).toLocaleString()} / ${(sb.opps||0).toLocaleString()}</td></tr>`
+        + `<tr><td>freq</td>`
+        + `<td>${sa.opps ? sa.pct.toFixed(1)+'%' : '–'}</td><td></td>`
+        + `<td>${sb.opps ? sb.pct.toFixed(1)+'%' : '–'}</td></tr>`
+        + `<tr><td>hits / 1000</td>`
+        + `<td>${(sa.per_1k||0).toFixed(1)}</td><td></td>`
+        + `<td>${(sb.per_1k||0).toFixed(1)}</td></tr>`
+        + `<tr><td>action profit</td><td>${ap(pa)}</td><td></td><td>${ap(pb)}</td></tr>`;
+      const fd = d.compare.freq_diff;
+      if (fd && fd.d != null)
+        h += `<tr><td>freq this − pin</td>`
+          + `<td>${(100*fd.d).toFixed(1)} pts</td>`
+          + `<td class="n" colspan="2">[${(100*fd.lo).toFixed(1)}, ${(100*fd.hi).toFixed(1)}]</td></tr>`;
+    } else if (d.summary && d.summary.opps){
       h += `<tr><td colspan="4" class="group">hits / opportunities</td></tr>`
         + `<tr><td>hits (${d.summary.label})</td><td>${d.summary.hits.toLocaleString()}</td>`
         + `<td class="n"></td><td class="n">${d.summary.opps.toLocaleString()} opps</td></tr>`
@@ -579,19 +598,7 @@ function render(d){
         + `<td class="n">±${d.summary.band.toFixed(0)}</td>`
         + `<td class="n">n=${d.summary.opps.toLocaleString()}</td></tr>`;
     }
-    if (d.pinned && !d.pinned.error){
-      h += `<tr><td colspan="4" class="group">pinned · ${d.pinned.name}</td></tr>`;
-      const ps = d.pinned.summary || {};
-      if (ps.opps)
-        h += `<tr><td>pin hits (${ps.label})</td><td>${ps.hits.toLocaleString()}</td>`
-          + `<td class="n">${ps.pct.toFixed(1)}%</td>`
-          + `<td class="n">${ps.opps.toLocaleString()} opps</td></tr>`;
-      const pp = d.pinned.profit || {};
-      if (pp.bb_per_hand != null)
-        h += `<tr><td>pin action profit</td>`
-          + `<td>${(pp.bb_per_hand>=0?'+':'')+pp.bb_per_hand.toFixed(2)} bb</td>`
-          + `<td class="n"></td><td class="n">${pp.priced.toLocaleString()} priced</td></tr>`;
-    } else if (d.pinned && d.pinned.error){
+    if (d.pinned && d.pinned.error){
       h += `<tr><td colspan="4" class="n">${d.pinned.error}</td></tr>`;
     }
     if (d.profit && d.profit.n){

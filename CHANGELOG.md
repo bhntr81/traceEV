@@ -8,6 +8,37 @@ Newest first.
 
 ---
 
+## Pin / side-by-side compare
+
+Hand2Note's `+` adds a pane; Pin freezes one report while you change
+the other. `--pin` used to be an alias for `--versus` -- the Holm
+table of every stat -- which is a test, not a pane. It is now the
+two-column summary those two spots actually need:
+
+    hits / opps     THIS              PINNED
+    freq            30.0%             40.0%
+    hits / 1000     12.0              8.0
+    action profit   +2.40 bb          −1.10 bb
+    freq THIS − PINNED   −10.0 pts  [−18, −2]
+
+`--compare "Flop c-bets" "Flop vs c-bet"` names both sides.
+`--hero` stays on both; leaving it off B would compare you to the
+pool and look like a finding. `--versus` is still the Holm table.
+
+The window and the page draw the same two columns above the rest
+of this report. Changing the filter leaves the pin where it is.
+
+`--check` holds the person-keeping, the two reports staying
+different, and a two-hand fixture whose first-in Action Profit is
+(+10 − 5) / 2.
+
+### Not this, on purpose
+
+No HUD. No second `--by` grid (richer pin). No Multi-Player view.
+No interval on Action Profit -- v1 is a mean of priced hits.
+
+---
+
 ## Custom filter builder as a FilterDef, not a second language
 
 Hand2Note's custom filter is a street-by-street action graph with

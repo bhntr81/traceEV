@@ -174,8 +174,9 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            "--preset",
            # `--filter` is the research-brief name for opening a spot:
            # a Smart Report, a --quick key, or a JSON argv list. `--pin`
-           # is --versus pointed at another report, same person. Both
-           # expand in `main` before `build` sees the line.
+           # freezes another named report, same person, for the two-
+           # column compare. `--versus` is the Holm table of every
+           # stat. `--compare` takes two names and is handled in main.
            "--filter", "--pin", "--from", "--branch",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
@@ -1264,6 +1265,101 @@ def action_profit_of(con, where):
                  "not opportunities, not Won$."),
         "edges": list(ACTION_PROFIT_EDGES),
     }
+
+
+def pin_sides(argv, name):
+    """
+    This filter vs a named report, same person.
+
+    A pinned report is another situation. Leaving `--hero` off B
+    would compare hero's flop c-bets to the pool's vs-c-bet and
+    call the gap a finding.
+    """
+    return (situation_only(argv),
+            who_only(argv) + without_who(resolve_filter(name)))
+
+
+def compare_sides(who_argv, name_a, name_b):
+    """Two named reports, same person as the leftover flags."""
+    who = who_only(who_argv)
+    return (who + without_who(resolve_filter(name_a)),
+            who + without_who(resolve_filter(name_b)))
+
+
+def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
+    """
+    Two spots, the numbers Hand2Note pins next to each other.
+
+    Hits/opps, the primary frequency, hits per 1k, and Action Profit
+    v1 when priced. The frequency gap is an interval on the
+    DIFFERENCE (Newcombe), not whether the two bands overlap. Profit
+    is two means sitting next to each other -- v1 has no interval on
+    a mean of priced hits, and inventing one would look like EV.
+    """
+    where_a, label_a, _ = build(situation_only(argv_a))
+    where_b, label_b, _ = build(situation_only(argv_b))
+    sa = spot_summary(con, where_a, argv_a)
+    sb = spot_summary(con, where_b, argv_b)
+    pa = action_profit_of(con, where_a)
+    pb = action_profit_of(con, where_b)
+    freq_diff = None
+    if sa.get("opps") and sb.get("opps"):
+        d, lo, hi, pv = difference(sa["hits"], sa["opps"],
+                                   sb["hits"], sb["opps"])
+        freq_diff = {"d": d, "lo": lo, "hi": hi, "p": pv}
+    return {
+        "a": {"name": name_a, "label": label_a, "argv": list(argv_a),
+              "summary": sa, "profit": pa},
+        "b": {"name": name_b, "label": label_b, "argv": list(argv_b),
+              "summary": sb, "profit": pb},
+        "freq_diff": freq_diff,
+    }
+
+
+def show_compare(got):
+    """The two-column pin summary, for a terminal."""
+    a, b = got["a"], got["b"]
+    head_a = a.get("name") or "this"
+    head_b = b.get("name") or "pinned"
+    print(f"\nTHIS  {head_a}")
+    print(f"      {a['label']}")
+    print(f"PIN   {head_b}")
+    print(f"      {b['label']}")
+    print("=" * 64)
+
+    def cells(side):
+        s, p = side["summary"], side["profit"]
+        hits = (f"{s['hits']:,} / {s['opps']:,}" if s.get("opps") else "–")
+        freq = f"{s['pct']:.1f}%" if s.get("opps") else "–"
+        per = f"{s['per_1k']:.1f}" if s.get("hands") else "–"
+        if p.get("bb_per_hand") is not None:
+            ap = f"{p['bb_per_hand']:+.2f} bb"
+            priced = f"{p['priced']:,} priced"
+        elif p.get("n"):
+            ap, priced = "–", f"{p['n']:,} unpriced"
+        else:
+            ap, priced = "–", "–"
+        return hits, freq, per, ap, priced
+
+    ca, cb = cells(a), cells(b)
+    rows = (("hits / opps", ca[0], cb[0]),
+            (f"freq  ({a['summary'].get('label') or 'hits'})", ca[1], cb[1]),
+            ("hits / 1000", ca[2], cb[2]),
+            ("action profit", ca[3], cb[3]),
+            ("", ca[4], cb[4]))
+    print(f"{'':20} {'THIS':>18} {'PINNED':>18}")
+    for label, x, y in rows:
+        print(f"{label:20} {x:>18} {y:>18}")
+    diff = got.get("freq_diff")
+    if diff and diff.get("d") is not None:
+        print()
+        print(f"freq THIS − PINNED   {100 * diff['d']:+.1f} pts  "
+              f"[{100 * diff['lo']:+.1f}, {100 * diff['hi']:+.1f}]")
+        print("  interval on the difference, not whether the two "
+              "bands overlap")
+    print()
+    print("  Action Profit is v1 (priced hits). A dash is unpriced. "
+          "--versus is the Holm table of every stat.")
 
 
 def matching_hands(con, where, limit=None):
@@ -3247,8 +3343,12 @@ def usage():
           f"{', '.join(list(reports())[:3])}, ... (see --presets)")
     print(f"    {'--filter':14} the same, a --quick key, JSON argv, "
           f"or a FilterDef object")
-    print(f"    {'--pin':14} compare this filter to another report "
-          f"(--versus with a name)")
+    print(f"    {'--pin':14} freeze a named report, same person: "
+          f"two-column Hits/Opps / freq / Action Profit")
+    print(f"    {'--compare':14} two named reports, same columns "
+          f"(--compare \"Flop c-bets\" \"Flop vs c-bet\")")
+    print(f"    {'--versus':14} Holm table of every stat between "
+          f"two populations (raw flags)")
     print("\n  positions: " + ", ".join(POSITIONS))
     print("  streets:   " + ", ".join(STREETS))
     print("  pot types: " + ", ".join(POT_TYPES))
@@ -3452,6 +3552,72 @@ def check_filterdef():
     return fails
 
 
+def check_compare():
+    """
+    Pin keeps the person; compare holds two spots; the two-column
+    numbers come from the same functions the report already prints.
+
+    No corpus. A pin that dropped `--hero` would compare you to the
+    pool and look like a finding.
+    """
+    fails = []
+    this, pinned = pin_sides(["--hero", "--street", "flop"], "Flop vs c-bet")
+    if "--hero" not in pinned:
+        fails.append("pin dropped --hero on the other side")
+    if "--not-pfa" not in pinned or "--pfa" in pinned:
+        fails.append(f"pin did not open Flop vs c-bet: {pinned}")
+    if "--hero" not in this:
+        fails.append("pin dropped --hero on this side")
+    a, b = compare_sides(["--hero"], "Flop c-bets", "Flop vs c-bet")
+    if "--hero" not in a or "--hero" not in b:
+        fails.append("compare dropped --hero on a side")
+    if _canonical(a) == _canonical(b):
+        fails.append("compare of two reports produced the same filter")
+    if "--facing" not in a or "check" not in a:
+        fails.append(f"compare A was not Flop c-bets: {a}")
+    if "--facing" not in b or "bet" not in b:
+        fails.append(f"compare B was not Flop vs c-bet: {b}")
+
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, n INT, seat INT, action TEXT, agg INT, "
+        "to_call REAL, amount REAL, pot_before REAL, bb REAL, "
+        "first_in INT, was_agg INT, pot_frac REAL, street TEXT)")
+    con.execute(
+        "CREATE TABLE spots ("
+        "hand_id TEXT, seat INT, fmt TEXT, wtsd INT, won REAL, net_bb REAL)")
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
+         ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop"),
+         ("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
+         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop"),
+         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop")])
+    con.executemany(
+        "INSERT INTO spots VALUES (?,?,?,?,?,?)",
+        [("h1", 1, "RING", 0, 15, 10),
+         ("h5", 1, "RING", 0, 0, -5)])
+    got = compare_of(con, ["--first-in"], ["--last-raise"],
+                     "first in", "last raise")
+    if got["a"]["summary"]["opps"] == got["b"]["summary"]["opps"]:
+        fails.append("compare_of gave both sides the same opportunities")
+    # Two first-in bets: uncontested +10, bet-fold -5. Mean +2.5.
+    ap = (got["a"]["profit"] or {}).get("bb_per_hand")
+    if ap is None or abs(ap - 2.5) > 1e-9:
+        fails.append(f"pinned first-in action profit was {ap}, not +2.5")
+    if not got.get("freq_diff"):
+        fails.append("compare_of dropped the frequency difference")
+    if got["a"]["name"] != "first in" or got["b"]["name"] != "last raise":
+        fails.append("compare_of dropped a side's name")
+    con.close()
+    print(f"pin / side-by-side compare    "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check_fixture():
     """
     Outcome / size / first-in against a hand-built table.
@@ -3610,6 +3776,7 @@ def check(db_path=DB):
     fails.extend(check_shape())
     fails.extend(check_fixture())
     fails.extend(check_filterdef())
+    fails.extend(check_compare())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -4046,6 +4213,16 @@ def main(argv):
     argv = ["--quick" if a == "--hit" else a for a in argv]
     if "--from" in argv and "--filter" not in argv:
         argv[argv.index("--from")] = "--filter"
+    compare_names = None
+    if "--compare" in argv:
+        i = argv.index("--compare")
+        rest = argv[i + 1:]
+        if len(rest) < 2:
+            raise SystemExit(
+                "--compare needs two report names -- "
+                '--compare "Flop c-bets" "Flop vs c-bet"')
+        compare_names = (rest[0], rest[1])
+        argv = argv[:i] + rest[2:]
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
               "--chart", "--related", "--faced-next", "--next-actions"):
@@ -4159,21 +4336,30 @@ def main(argv):
 
     other = opt("--versus")
     pinned = opt("--pin")
-    if pinned and other is not None:
-        raise SystemExit("--pin and --versus both compare two filters -- "
-                         "use one")
-    if pinned or other is not None:
-        text = pinned or other
+    if sum(x is not None for x in (pinned, other, compare_names)) > 1:
+        raise SystemExit("--pin, --compare and --versus are three verbs -- "
+                         "use one. --pin / --compare are the two-column "
+                         "spot summary; --versus is the Holm table.")
+    if compare_names or pinned:
+        if compare_names:
+            argv_a, argv_b = compare_sides(argv, compare_names[0],
+                                           compare_names[1])
+            name_a, name_b = compare_names
+        else:
+            argv_a, argv_b = pin_sides(argv, pinned)
+            name_a, name_b = None, pinned
+        if not Path(DB).exists():
+            raise SystemExit(f"no database at {DB} -- load some hands first")
+        con = sqlite3.connect(DB)
+        show_compare(compare_of(con, argv_a, argv_b, name_a, name_b))
+        con.close()
+        return 0
+    if other is not None:
         try:
-            other_argv, named_spot = resolve_filter(text), True
+            other_argv, named_spot = resolve_filter(other), True
         except SystemExit:
-            if pinned:
-                raise
-            other_argv, named_spot = shlex.split(text), False
+            other_argv, named_spot = shlex.split(other), False
         if named_spot:
-            # A pinned report is another situation, same person. Leaving
-            # `--hero` off B would compare hero's flop c-bets to the
-            # whole pool's vs-c-bet and call the gap a finding.
             other_argv = who_only(argv) + without_who(other_argv)
         if not Path(DB).exists():
             raise SystemExit(f"no database at {DB} -- load some hands first")
