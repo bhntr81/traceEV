@@ -8,6 +8,81 @@ Newest first.
 
 ---
 
+## Action Profit on a called bet, and a study-flow that can be found
+
+Two leftovers from the tracking-half arc. No HUD. No solver. No
+Dispersion / EV diff.
+
+### Added — later pot after a called bet, on Action Profit
+
+Call Profit Rate already accounted the caller's side. The aggressor's
+Action Profit on a bet that was called and played on was a dash --
+the most common continue, left unpriced so a stuffed zero could not
+look like break-even.
+
+The smallest honest rule is the same formula, from the other seat:
+`(won − chips this seat put in from THIS action on) / bb`. Later
+streets are assigned back because that is what happened after they
+bet and got called, not because we invented the other action's EV.
+On a heads-up called pot with no later chips the two numbers sum to
+`pot_before` (the dead money), and `--check` holds that identity.
+
+  * bet 5, called, lose = −5
+  * bet 5, called, win 20, no more chips = +15
+  * bet 5, called, then bet 10, win 40 = +25
+
+Still unpriced: a raise-back with no call (unless they folded to it
+-- that is −this bet), MTT, an uncontested pot whose rake left
+`won=0`. Fold-out stays `+pot_before`; bet-fold stays −amount.
+Those two do not need `won`, and `won` on an uncalled bet is
+site-shaped.
+
+`--check` holds the three original examples, the three called-bet
+rows, a raise-back left unpriced, an MTT called bet left unpriced,
+Faced Next's call branch at −6, and the HU identity. No corpus.
+
+### Added — study-flow polish (window + page)
+
+Bet Sizes, Pin and Faced Next were on Stats under a page of profit
+footnotes, and in the filter dialog under Actions after street / pot
+/ situation. They are the walk Hand2Note actually does.
+
+  * **Sizes** is a first-class tab, next to Stats, on the window and
+    the page. It is the Bet Sizes pane without opening `--by size`.
+  * The pin box is labelled **Pin compare**.
+  * The filter dialog opens a **Study** tab (second, after Reports)
+    for Faced Next, Next Actions, Outcome and Bet Size.
+  * Stats leads with Faced Next / Outcome / Bet Sizes after the
+    compact profit line, then the footnotes, then the named stats.
+
+No rewrite. Same `query.build`, same CASE, same click-to-apply.
+
+### Fixed — Windows cp1252 cannot print U+2212
+
+`--hero --filter "Flop c-bets" --stats` on a live corpus printed
+hits and Action Profit, then died in `_print_mean_profit` on the
+note (`bet 5, raise, fold = −5`). The console is cp1252; U+2212
+is not in it. Notes, edges, and the pin-compare line now use
+ASCII `-`. `_harden_stdout` / `_cli_print` replace rather than
+crash if another one slips in. `--check` encodes those strings
+as cp1252.
+
+Live `query.py --check` against the ~249MB `hands.db` passed on
+PR #4 before this branch. Full `check.py` on that corpus is
+still a remaining gap. Window `--check` needs Tk.
+
+### Not this, on purpose
+
+No HUD. No solver. No Dispersion / EV diff. A raise-back that they
+call is still unpriced -- that pot is not this bet's money.
+
+### What's next
+
+Dispersion / EV diff. Live `check.py` on a real `hands.db`. Window
+`--check` needs Tk.
+
+---
+
 ## Bet Sizes pane and a richer pin
 
 Two leftovers from the tracking-half arc. No HUD. No solver. No

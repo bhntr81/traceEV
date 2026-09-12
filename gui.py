@@ -174,6 +174,23 @@ def payload(con, params):
                 out["pinned"] = {"name": pin, "error": str(e)}
         return out
 
+    if view == "sizes":
+        sizes = query.bet_sizes_of(con, where, argv)
+        out = {"label": label, "sizes": sizes,
+               "related": query.related_spots(argv),
+               "why": None if sizes["rows"] else nothing()}
+        pin = (params.get("pin", [""])[0] or "").strip()
+        if pin:
+            try:
+                argv_a, argv_b = query.pin_sides(argv, pin)
+                out["compare"] = query.compare_of(
+                    con, argv_a, argv_b, None, pin, bet_sizes=True)
+                if out["compare"].get("sizes"):
+                    out["why"] = None
+            except SystemExit as e:
+                out["pinned"] = {"name": pin, "error": str(e)}
+        return out
+
     if view == "report":
         dim = params.get("by", ["position"])[0]
         if dim not in query.DIMENSIONS:
@@ -397,8 +414,30 @@ td.compact{text-align:left;font-weight:500}
 <aside>
   <fieldset><legend>smart reports</legend>
     <label><select id="preset"><option value="">no report</option></select></label>
-    <label>pin / compare
+    <label>Pin compare
       <select id="pin"><option value="">none</option></select></label>
+  </fieldset>
+  <fieldset><legend>study  (Faced Next, size, outcome)</legend>
+    <label>the other seat then
+      <select id="after"><option value="">any</option></select></label>
+    <label>this player then
+      <select id="then"><option value="">any</option></select></label>
+    <label>outcome of this bet
+      <select id="outcome"><option value="">any</option>
+        <option value="fold-out">all villains fold</option>
+        <option value="call">one villain call</option>
+        <option value="raise-back">villain raise</option>
+      </select></label>
+    <label>bet size
+      <select id="size"><option value="">any</option>
+        <option value="s">small</option>
+        <option value="m">medium</option>
+        <option value="l">large</option>
+        <option value="p">pot+</option>
+        <option value="o">overbet</option>
+        <option value="0.4-0.75">0.4–0.75 pot</option>
+        <option value="50%+">50%+</option>
+      </select></label>
   </fieldset>
   <fieldset><legend>who</legend>
     <div class="chips" id="who">
@@ -482,29 +521,7 @@ td.compact{text-align:left;font-weight:500}
     <label>from <input id="since" type="date"></label>
     <label>to <input id="until" type="date"></label>
   </fieldset>
-  <fieldset><legend>faced next / next actions</legend>
-    <label>the other seat then
-      <select id="after"><option value="">any</option></select></label>
-    <label>this player then
-      <select id="then"><option value="">any</option></select></label>
-  </fieldset>
   <fieldset><legend>custom action</legend>
-    <label>outcome of this bet
-      <select id="outcome"><option value="">any</option>
-        <option value="fold-out">all villains fold</option>
-        <option value="call">one villain call</option>
-        <option value="raise-back">villain raise</option>
-      </select></label>
-    <label>bet size
-      <select id="size"><option value="">any</option>
-        <option value="s">small</option>
-        <option value="m">medium</option>
-        <option value="l">large</option>
-        <option value="p">pot+</option>
-        <option value="o">overbet</option>
-        <option value="0.4-0.75">0.4–0.75 pot</option>
-        <option value="50%+">50%+</option>
-      </select></label>
     <label>or pot-frac range <input id="pot_frac" placeholder="0.4-0.75"></label>
     <label>stack bb <input id="stack" placeholder="100+  or  80-200"></label>
     <label>players at the table <input id="players" type="number" min="2" max="10"></label>
@@ -525,6 +542,7 @@ td.compact{text-align:left;font-weight:500}
 <section>
   <nav id="tabs">
     <button data-v="stats" class="on">stats</button>
+    <button data-v="sizes">sizes</button>
     <button data-v="range">range</button>
     <button data-v="chart">chart</button>
     <button data-v="report">report</button>
@@ -814,21 +832,11 @@ function render(d){
     };
     if (d.profit && d.profit.n){
       h += `<tr><td>action profit</td><td>${meanBand(d.profit)}</td><td class="n">priced hits</td>`
-        + `<td class="n">${d.profit.priced.toLocaleString()} of ${d.profit.n.toLocaleString()}</td></tr>`
-        + `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
-      if (d.profit.interval_note)
-        h += `<tr><td colspan="4" class="n">${d.profit.interval_note}</td></tr>`;
-      for (const edge of (d.profit.edges || []))
-        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+        + `<td class="n">${d.profit.priced.toLocaleString()} of ${d.profit.n.toLocaleString()}</td></tr>`;
     }
     if (d.call_profit && d.call_profit.n){
       h += `<tr><td>call profit</td><td>${meanBand(d.call_profit)}</td><td class="n">priced calls</td>`
-        + `<td class="n">${d.call_profit.priced.toLocaleString()} of ${d.call_profit.n.toLocaleString()}</td></tr>`
-        + `<tr><td colspan="4" class="n">${d.call_profit.note}</td></tr>`;
-      if (d.call_profit.interval_note)
-        h += `<tr><td colspan="4" class="n">${d.call_profit.interval_note}</td></tr>`;
-      for (const edge of (d.call_profit.edges || []))
-        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+        + `<td class="n">${d.call_profit.priced.toLocaleString()} of ${d.call_profit.n.toLocaleString()}</td></tr>`;
     }
     if (d.amount_won && d.amount_won.hands){
       const w = d.amount_won;
@@ -838,41 +846,10 @@ function render(d){
         + `<td class="n">${w.bb100>=0?'+':''}${w.bb100.toFixed(1)} bb/100 ±${w.error.toFixed(0)}</td>`
         + `<td class="n">${w.hands.toLocaleString()} cash hands</td></tr>`
         + `<tr><td>Won hand%</td><td>${w.won_pct.toFixed(1)}%${wband}</td>`
-        + `<td class="n"></td><td class="n">${w.won_hands.toLocaleString()} of ${w.hands.toLocaleString()}</td></tr>`
-        + `<tr><td colspan="4" class="n">${w.note}</td></tr>`;
-    }
-    if (d.cohort_range){
-      const cr = d.cohort_range, cov = cr.coverage || {};
-      h += `<tr><td colspan="4" class="group">preflop range — this cohort</td></tr>`
-        + `<tr><td>hole cards shown</td><td>${(cr.seen||0).toLocaleString()} of ${(cr.total||0).toLocaleString()}</td>`
-        + `<td class="n">${(cov.pct||0).toFixed(0)}%</td><td></td></tr>`;
-      for (const s of (cov.sites || []))
-        h += `<tr><td>${s.site || '?'}</td><td>${s.seen.toLocaleString()}/${s.total.toLocaleString()}</td>`
-          + `<td class="n">${s.pct.toFixed(0)}%</td><td class="n">${s.note||''}</td></tr>`;
-      if (cov.note)
-        h += `<tr><td colspan="4" class="n">${cov.note}</td></tr>`;
-      if (cr.top && cr.top.length)
-        h += `<tr><td>most of it</td><td colspan="3">${cr.top.map(t => t.combo+' '+t.pct.toFixed(1)+'%').join(', ')}</td></tr>`;
-    }
-    if (d.actions && d.actions.mix && d.actions.mix.length){
-      h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
-      for (const r of d.actions.mix.concat(d.actions.extra || []))
-        h += `<tr><td>${r.label}</td>`
-          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
-          + `<td class="n">±${r.band.toFixed(0)}</td>`
-          + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
-    }
-    if (d.outcomes && d.outcomes.rows && d.outcomes.rows.length){
-      h += `<tr><td colspan="4" class="group">outcome</td></tr>`;
-      for (const r of d.outcomes.rows)
-        h += `<tr class="drill" data-flag="outcome" data-key="${r.key}">`
-          + `<td>${r.label}</td>`
-          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
-          + `<td class="n">±${r.band.toFixed(0)}</td>`
-          + `<td class="n">n=${r.k.toLocaleString()}</td></tr>`;
+        + `<td class="n"></td><td class="n">${w.won_hands.toLocaleString()} of ${w.hands.toLocaleString()}</td></tr>`;
     }
     for (const [title, flag, blob] of [
-        ['faced next (the other seat)', 'after', d.faced],
+        ['faced next (the other seat) — click a row', 'after', d.faced],
         ['next actions (this player)', 'then', d.next]]){
       if (!blob || !blob.rows || !blob.rows.length) continue;
       h += `<tr><td colspan="4" class="group">${title}</td></tr>`;
@@ -889,10 +866,19 @@ function render(d){
           + `<td class="n">${act}</td></tr>`;
       }
     }
+    if (d.outcomes && d.outcomes.rows && d.outcomes.rows.length){
+      h += `<tr><td colspan="4" class="group">outcome — click a row</td></tr>`;
+      for (const r of d.outcomes.rows)
+        h += `<tr class="drill" data-flag="outcome" data-key="${r.key}">`
+          + `<td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.k.toLocaleString()}</td></tr>`;
+    }
     if (d.compare && d.compare.sizes){
       h += htmlCompareSizes(d.compare);
     } else if (d.sizes && d.sizes.rows && d.sizes.rows.length){
-      h += `<tr><td colspan="4" class="group">bet sizes</td></tr>`;
+      h += `<tr><td colspan="4" class="group">bet sizes — click a row, or the sizes tab</td></tr>`;
       for (const r of d.sizes.rows){
         const ap = r.profit || {};
         const act = ap.bb_per_hand == null ? '–'
@@ -903,6 +889,43 @@ function render(d){
           + `<td class="n">${r.hits.toLocaleString()} / ${r.opps.toLocaleString()}</td>`
           + `<td class="n">${act}</td></tr>`;
       }
+    }
+    if (d.actions && d.actions.mix && d.actions.mix.length){
+      h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
+      for (const r of d.actions.mix.concat(d.actions.extra || []))
+        h += `<tr><td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
+    }
+    if (d.profit && d.profit.n){
+      h += `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
+      if (d.profit.interval_note)
+        h += `<tr><td colspan="4" class="n">${d.profit.interval_note}</td></tr>`;
+      for (const edge of (d.profit.edges || []))
+        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+    }
+    if (d.call_profit && d.call_profit.n){
+      h += `<tr><td colspan="4" class="n">${d.call_profit.note}</td></tr>`;
+      if (d.call_profit.interval_note)
+        h += `<tr><td colspan="4" class="n">${d.call_profit.interval_note}</td></tr>`;
+      for (const edge of (d.call_profit.edges || []))
+        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+    }
+    if (d.amount_won && d.amount_won.hands)
+      h += `<tr><td colspan="4" class="n">${d.amount_won.note}</td></tr>`;
+    if (d.cohort_range){
+      const cr = d.cohort_range, cov = cr.coverage || {};
+      h += `<tr><td colspan="4" class="group">preflop range — this cohort</td></tr>`
+        + `<tr><td>hole cards shown</td><td>${(cr.seen||0).toLocaleString()} of ${(cr.total||0).toLocaleString()}</td>`
+        + `<td class="n">${(cov.pct||0).toFixed(0)}%</td><td></td></tr>`;
+      for (const s of (cov.sites || []))
+        h += `<tr><td>${s.site || '?'}</td><td>${s.seen.toLocaleString()}/${s.total.toLocaleString()}</td>`
+          + `<td class="n">${s.pct.toFixed(0)}%</td><td class="n">${s.note||''}</td></tr>`;
+      if (cov.note)
+        h += `<tr><td colspan="4" class="n">${cov.note}</td></tr>`;
+      if (cr.top && cr.top.length)
+        h += `<tr><td>most of it</td><td colspan="3">${cr.top.map(t => t.combo+' '+t.pct.toFixed(1)+'%').join(', ')}</td></tr>`;
     }
     if (d.compare && d.compare.packs && (d.compare.packs.a||[]).length + (d.compare.packs.b||[]).length){
       h += htmlComparePacks(d.compare);
@@ -975,7 +998,7 @@ function render(d){
     }
     out.innerHTML = h + '</tbody></table>';
 
-  } else if (state.view === 'report'){
+  } else if (state.view === 'report' || state.view === 'sizes'){
     if (d.compare && (d.compare.sizes || d.compare.by)){
       out.innerHTML = htmlReportCompare(d); return;
     }
@@ -992,7 +1015,7 @@ function render(d){
           + `<td class="n">${r.hits.toLocaleString()} / ${r.opps.toLocaleString()}</td>`
           + `<td class="n">${act}</td></tr>`;
       }
-      h += '</tbody></table><p class="n">freq is this size of the parent filter. Checks and folds have no size. act bb is Action Profit v1; later pot on a called bet stays unpriced.</p>';
+      h += '</tbody></table><p class="n">freq is this size of the parent filter. Checks and folds have no size. act bb is Action Profit; a called bet is (won − chips from here). A raise-back with no call stays unpriced unless they folded.</p>';
       out.innerHTML = h;
       out.querySelectorAll('tr.drill').forEach(tr => {
         tr.onclick = () => { $('#size').value = tr.dataset.key; load(); };
@@ -1287,6 +1310,14 @@ def check(db_path=DB):
     print(f"page and command line agree  {len(cases) - len(fails)}/{len(cases)}")
     for f in fails:
         print(f"    {f}")
+    if 'data-v="sizes"' not in PAGE:
+        fails.append("page has no sizes tab")
+    if "Pin compare" not in PAGE:
+        fails.append("page pin box is not labelled Pin compare")
+    if "study  (Faced Next" not in PAGE:
+        fails.append("page buried Faced Next -- no study fieldset")
+    print(f"study-flow labels on the page  "
+          f"{'yes' if 'data-v=\"sizes\"' in PAGE and 'Pin compare' in PAGE else 'NO'}")
 
     # Every view must answer, including on a filter that matches nothing --
     # which a user will type within a minute of being handed a form.
@@ -1300,7 +1331,7 @@ def check(db_path=DB):
               "PASS (no hands.db -- form/CLI only)")
         return not fails
     con = sqlite3.connect(db_path)
-    views = ("stats", "report", "results", "hands", "graph")
+    views = ("stats", "sizes", "report", "results", "hands", "graph")
     broke = []
     for v in views:
         for form in ({"view": [v]},

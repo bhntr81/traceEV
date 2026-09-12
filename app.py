@@ -686,7 +686,7 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box.pack(side="left")
         self.preset_box.bind("<<ComboboxSelected>>",
                              lambda _e: self._on_preset())
-        ttk.Label(bar, text="pin", style="Dim.TLabel").pack(
+        ttk.Label(bar, text="Pin compare", style="Dim.TLabel").pack(
             side="left", padx=(14, 6))
         self.pin = tk.StringVar(value="")
         self.pin_box = ttk.Combobox(
@@ -869,13 +869,13 @@ class App(ImportMixin, ttk.Frame):
         self.related_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("stats", "range", "chart", "report", "results", "graph",
-                     "hands"):
+        for name in ("stats", "sizes", "range", "chart", "report", "results",
+                     "graph", "hands"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "range", "report", "results", "hands"):
+        for name in ("stats", "sizes", "range", "report", "results", "hands"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -913,6 +913,7 @@ class App(ImportMixin, ttk.Frame):
         # without going back through the dialog.
         self.tree["stats"].bind("<Double-1>", self._drill_stat)
         self.tree["report"].bind("<Double-1>", self._drill_stat)
+        self.tree["sizes"].bind("<Double-1>", self._drill_stat)
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -1101,6 +1102,16 @@ class App(ImportMixin, ttk.Frame):
                             con, argv_a, argv_b, None, pin, packs=True)
                     except SystemExit as e:
                         out["pinned"] = {"error": str(e), "name": pin}
+            elif view == "sizes":
+                out["sizes"] = query.bet_sizes_of(con, where, argv)
+                if pin:
+                    try:
+                        argv_a, argv_b = query.pin_sides(argv, pin)
+                        out["compare"] = query.compare_of(
+                            con, argv_a, argv_b, None, pin,
+                            bet_sizes=True)
+                    except SystemExit as e:
+                        out["pinned"] = {"error": str(e), "name": pin}
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "chart":
@@ -1208,7 +1219,7 @@ class App(ImportMixin, ttk.Frame):
             return
         tv = self.tree[view]
         tv.delete(*tv.get_children())
-        if out.get("error") or (out.get("why") and view != "report"):
+        if out.get("error") or (out.get("why") and view not in ("report", "sizes")):
             tv.configure(columns=("msg",))
             tv.heading("msg", text="")
             tv.column("msg", width=900, anchor="w")
@@ -1348,6 +1359,10 @@ class App(ImportMixin, ttk.Frame):
         if pinned and pinned.get("error"):
             tv.insert("", "end", values=(pinned["error"], "", "", "", ""),
                       tags=("note",))
+        # Compact profit first, then the study walk (Faced Next /
+        # Outcome / Bet Sizes), then footnotes. The edges used to
+        # sit on top of the walk and bury it -- that is why Sizes
+        # and Faced Next were shipped and still not found.
         prof = out.get("profit")
         if prof and prof["n"]:
             if prof["bb_per_hand"] is not None:
@@ -1359,14 +1374,6 @@ class App(ImportMixin, ttk.Frame):
                 tv.insert("", "end", values=(
                     "action profit", "unpriced", "", f"{prof['n']:,}", ""),
                     tags=("note",))
-            tv.insert("", "end", values=(prof["note"], "", "", "", ""),
-                      tags=("note",))
-            if prof.get("interval_note"):
-                tv.insert("", "end", values=(prof["interval_note"], "", "", "", ""),
-                          tags=("note",))
-            for edge in prof.get("edges") or []:
-                tv.insert("", "end", values=(edge, "", "", "", ""),
-                          tags=("note",))
         callp = out.get("call_profit")
         if callp and callp["n"]:
             if callp["bb_per_hand"] is not None:
@@ -1379,14 +1386,6 @@ class App(ImportMixin, ttk.Frame):
                 tv.insert("", "end", values=(
                     "call profit", "unpriced", "", f"{callp['n']:,}", ""),
                     tags=("note",))
-            tv.insert("", "end", values=(callp["note"], "", "", "", ""),
-                      tags=("note",))
-            if callp.get("interval_note"):
-                tv.insert("", "end", values=(
-                    callp["interval_note"], "", "", "", ""), tags=("note",))
-            for edge in callp.get("edges") or []:
-                tv.insert("", "end", values=(edge, "", "", "", ""),
-                          tags=("note",))
         won = out.get("amount_won")
         if won and won.get("hands"):
             band = (_profit_band(won) if won.get("lo") is not None
@@ -1399,6 +1398,89 @@ class App(ImportMixin, ttk.Frame):
             tv.insert("", "end", values=(
                 "Won hand%", f"{won['won_pct']:.1f}%", wband,
                 f"{won['won_hands']:,} of {won['hands']:,}", ""))
+        for title, key, blob in (
+                ("FACED NEXT  (the other seat)  -- click a row",
+                 "after", out.get("faced")),
+                ("NEXT ACTIONS  (this player)", "then", out.get("next"))):
+            if not (blob and blob.get("rows")):
+                continue
+            tv.insert("", "end", values=(title, "", "", "", ""), tags=("group",))
+            for r in blob["rows"]:
+                iid = f"{key}:{r['key']}" if r.get("key") else ""
+                ap = (r.get("profit") or {})
+                act = (f"{ap['bb_per_hand']:+.2f}" if ap.get("bb_per_hand")
+                       is not None else "–")
+                tv.insert("", "end", iid=iid or None,
+                          tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r.get('hits', r['k']):,} / {r.get('opps', r['n']):,}",
+                                  act))
+        outs = out.get("outcomes") or {}
+        if outs.get("rows"):
+            tv.insert("", "end", values=("OUTCOME  -- click a row",
+                                        "", "", "", ""),
+                      tags=("group",))
+            for r in outs["rows"]:
+                tv.insert("", "end", iid=f"outcome:{r['key']}",
+                          tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['k']:,}", ""))
+        if not (out.get("compare") or {}).get("sizes"):
+            sizes = out.get("sizes") or {}
+            if sizes.get("rows"):
+                tv.insert("", "end", values=("BET SIZES  -- click a row, or the Sizes tab",
+                                            "", "", "", ""),
+                          tags=("group",))
+                for r in sizes["rows"]:
+                    ap = r.get("profit") or {}
+                    act = (f"{ap['bb_per_hand']:+.2f}"
+                           if ap.get("bb_per_hand") is not None else "–")
+                    tv.insert("", "end", iid=f"size:{r['key']}",
+                              tags=("thin",) if r["n"] < 30 else (),
+                              values=(r["label"], f"{r['pct']:.1f}%",
+                                      f"±{r['band']:.1f}" if r["band"] < 1
+                                      else f"±{r['band']:.0f}",
+                                      f"{r['hits']:,} / {r['opps']:,}",
+                                      act))
+        acts = out.get("actions") or {}
+        if acts.get("mix"):
+            tv.insert("", "end", values=("THIS SPOT", "", "", "", ""),
+                      tags=("group",))
+            for r in acts["mix"]:
+                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['n']:,}", ""))
+            for r in acts.get("extra") or []:
+                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['n']:,}", ""))
+        if prof and prof["n"]:
+            tv.insert("", "end", values=(prof["note"], "", "", "", ""),
+                      tags=("note",))
+            if prof.get("interval_note"):
+                tv.insert("", "end", values=(prof["interval_note"], "", "", "", ""),
+                          tags=("note",))
+            for edge in prof.get("edges") or []:
+                tv.insert("", "end", values=(edge, "", "", "", ""),
+                          tags=("note",))
+        if callp and callp["n"]:
+            tv.insert("", "end", values=(callp["note"], "", "", "", ""),
+                      tags=("note",))
+            if callp.get("interval_note"):
+                tv.insert("", "end", values=(
+                    callp["interval_note"], "", "", "", ""), tags=("note",))
+            for edge in callp.get("edges") or []:
+                tv.insert("", "end", values=(edge, "", "", "", ""),
+                          tags=("note",))
+        if won and won.get("hands") and won.get("note"):
             tv.insert("", "end", values=(won["note"], "", "", "", ""),
                       tags=("note",))
         cr = out.get("cohort_range")
@@ -1425,67 +1507,6 @@ class App(ImportMixin, ttk.Frame):
                     ", ".join(f"{t['combo']} {t['pct']:.1f}%"
                               for t in cr["top"]),
                     "", "", ""), tags=("note",))
-        acts = out.get("actions") or {}
-        if acts.get("mix"):
-            tv.insert("", "end", values=("THIS SPOT", "", "", "", ""),
-                      tags=("group",))
-            for r in acts["mix"]:
-                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
-                          values=(r["label"], f"{r['pct']:.1f}%",
-                                  f"±{r['band']:.1f}" if r["band"] < 1
-                                  else f"±{r['band']:.0f}",
-                                  f"{r['n']:,}", ""))
-            for r in acts.get("extra") or []:
-                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
-                          values=(r["label"], f"{r['pct']:.1f}%",
-                                  f"±{r['band']:.1f}" if r["band"] < 1
-                                  else f"±{r['band']:.0f}",
-                                  f"{r['n']:,}", ""))
-        outs = out.get("outcomes") or {}
-        if outs.get("rows"):
-            tv.insert("", "end", values=("OUTCOME", "", "", "", ""),
-                      tags=("group",))
-            for r in outs["rows"]:
-                tv.insert("", "end", iid=f"outcome:{r['key']}",
-                          tags=("thin",) if r["n"] < 30 else (),
-                          values=(r["label"], f"{r['pct']:.1f}%",
-                                  f"±{r['band']:.1f}" if r["band"] < 1
-                                  else f"±{r['band']:.0f}",
-                                  f"{r['k']:,}", ""))
-        for title, key, blob in (
-                ("FACED NEXT  (the other seat)", "after", out.get("faced")),
-                ("NEXT ACTIONS  (this player)", "then", out.get("next"))):
-            if not (blob and blob.get("rows")):
-                continue
-            tv.insert("", "end", values=(title, "", "", "", ""), tags=("group",))
-            for r in blob["rows"]:
-                iid = f"{key}:{r['key']}" if r.get("key") else ""
-                ap = (r.get("profit") or {})
-                act = (f"{ap['bb_per_hand']:+.2f}" if ap.get("bb_per_hand")
-                       is not None else "–")
-                tv.insert("", "end", iid=iid or None,
-                          tags=("thin",) if r["n"] < 30 else (),
-                          values=(r["label"], f"{r['pct']:.1f}%",
-                                  f"±{r['band']:.1f}" if r["band"] < 1
-                                  else f"±{r['band']:.0f}",
-                                  f"{r.get('hits', r['k']):,} / {r.get('opps', r['n']):,}",
-                                  act))
-        if not (out.get("compare") or {}).get("sizes"):
-            sizes = out.get("sizes") or {}
-            if sizes.get("rows"):
-                tv.insert("", "end", values=("BET SIZES", "", "", "", ""),
-                          tags=("group",))
-                for r in sizes["rows"]:
-                    ap = r.get("profit") or {}
-                    act = (f"{ap['bb_per_hand']:+.2f}"
-                           if ap.get("bb_per_hand") is not None else "–")
-                    tv.insert("", "end", iid=f"size:{r['key']}",
-                              tags=("thin",) if r["n"] < 30 else (),
-                              values=(r["label"], f"{r['pct']:.1f}%",
-                                      f"±{r['band']:.1f}" if r["band"] < 1
-                                      else f"±{r['band']:.0f}",
-                                      f"{r['hits']:,} / {r['opps']:,}",
-                                      act))
         group = None
         for r in out["rows"]:
             if r["group"] != group:
@@ -1619,8 +1640,17 @@ class App(ImportMixin, ttk.Frame):
                               f"{r['hits']:,} / {r['opps']:,}", act))
         tv.insert("", "end", values=(
             "freq is this size of the parent filter. Checks and folds "
-            "have no size. act bb is Action Profit v1; later pot on a "
-            "called bet stays unpriced.", "", "", ""), tags=("note",))
+            "have no size. act bb is Action Profit; a called bet is "
+            "(won − chips from here). A raise-back with no call stays "
+            "unpriced unless they folded.", "", "", ""), tags=("note",))
+
+    def _render_sizes(self, tv, out):
+        """The Sizes tab is the Bet Sizes pane, not a second report."""
+        cmp = out.get("compare")
+        if cmp and cmp.get("sizes"):
+            self._render_report_compare(tv, out, cmp)
+            return
+        self._render_report_sizes(tv, out.get("sizes") or {})
 
     def _render_report_compare(self, tv, out, cmp):
         """Two `--by` grids or two Bet Sizes tables, THIS vs PINNED."""
@@ -2460,7 +2490,9 @@ class FilterDialog(tk.Toplevel):
 
         nb = ttk.Notebook(self, style="Big.TNotebook")
         nb.pack(fill="both", expand=True, padx=16, pady=(14, 0))
+        self.nb = nb
         self._reports_tab(nb)
+        self._study_tab(nb)
         self._quick_tab(nb)
         self._positions_tab(nb)
         self._actions_tab(nb)
@@ -2651,6 +2683,48 @@ class FilterDialog(tk.Toplevel):
                 self.app.preset.set("")
         return on, off, (lambda n=name: self.app.preset.get() == n)
 
+    def _study_tab(self, nb):
+        """
+        Faced Next / Bet Sizes / Outcome, where the study walk starts.
+
+        These lived on Actions under street / pot / situation, so the
+        three things Hand2Note actually clicks from a report were a
+        scroll away from the report box. They are still the same
+        vars `query.build` already understands.
+        """
+        page = self._page(nb, "Study")
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="Walk the spot. Faced Next is what the other seat "
+                       "did after this action; Next Actions is what this "
+                       "player did next; Outcome is what the pot did with "
+                       "the bet; Bet Size is the pot-frac bucket. Click a "
+                       "row on Stats or Sizes to apply the same thing."
+                  ).pack(anchor="w", padx=18, pady=(12, 0))
+        self._heading(page, "faced next  (the other seat then)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("after", v)))
+            for v in list(query.AFTER) + ["none"]])
+        self._heading(page, "next actions  (this player then)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._val_item("then", v)))
+            for v in list(query.AFTER) + ["none"]])
+        self._heading(page, "outcome of this bet")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, query.OUTCOMES[v][1], *self._val_item("outcome", v)))
+            for v in ("fold-out", "call", "raise-back")])
+        self._heading(page, "bet size  (fraction of the pot)")
+        self._grid(page, [(lambda parent, v=v, t=t: self._pick(
+            parent, t, *self._val_item("size", v)))
+            for v, t in (("s", "small"), ("m", "medium"), ("l", "large"),
+                         ("p", "pot+"), ("o", "overbet"))])
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(2, 0))
+        ttk.Label(row, text="or a range", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["size"], width=14).pack(
+            side="left", padx=(6, 18))
+        ttk.Label(row, text="0.4-0.75   50%+   <=0.33",
+                  style="Dim.TLabel").pack(side="left")
+
     def _quick_tab(self, nb):
         page = self._page(nb, "Quick Filters")
         by_group = {}
@@ -2707,30 +2781,11 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "situation")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in SITUATIONS])
-        self._heading(page, "faced next  (the other seat then)")
-        self._grid(page, [(lambda parent, v=v: self._pick(
-            parent, v, *self._val_item("after", v)))
-            for v in list(query.AFTER) + ["none"]])
-        self._heading(page, "next actions  (this player then)")
-        self._grid(page, [(lambda parent, v=v: self._pick(
-            parent, v, *self._val_item("then", v)))
-            for v in list(query.AFTER) + ["none"]])
-        self._heading(page, "outcome of this bet")
-        self._grid(page, [(lambda parent, v=v: self._pick(
-            parent, query.OUTCOMES[v][1], *self._val_item("outcome", v)))
-            for v in ("fold-out", "call", "raise-back")])
-        self._heading(page, "bet size  (fraction of the pot)")
-        self._grid(page, [(lambda parent, v=v, t=t: self._pick(
-            parent, t, *self._val_item("size", v)))
-            for v, t in (("s", "small"), ("m", "medium"), ("l", "large"),
-                         ("p", "pot+"), ("o", "overbet"))])
-        row = ttk.Frame(page)
-        row.pack(fill="x", padx=18, pady=(2, 0))
-        ttk.Label(row, text="or a range", style="Dim.TLabel").pack(side="left")
-        ttk.Entry(row, textvariable=self.app.vals["size"], width=14).pack(
-            side="left", padx=(6, 18))
-        ttk.Label(row, text="0.4-0.75   50%+   <=0.33",
-                  style="Dim.TLabel").pack(side="left")
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="Faced Next, Bet Size and Outcome are on the Study "
+                       "tab -- the walk from this spot, not another street "
+                       "or pot type."
+                  ).pack(anchor="w", padx=18, pady=(8, 0))
         self._heading(page, "stack  (effective bb)")
         row = ttk.Frame(page)
         row.pack(fill="x", padx=18)
@@ -3149,8 +3204,8 @@ def check(db_path=DB):
     # that matches nothing -- which is one click away at all times.
     con = sqlite3.connect(db_path)
     broke = []
-    views = ("stats", "range", "chart", "report", "results", "hands",
-             "graph")
+    views = ("stats", "sizes", "range", "chart", "report", "results",
+             "hands", "graph")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:
@@ -3214,6 +3269,13 @@ def check(db_path=DB):
     # turning the wheel.
     gone = FilterDialog(app)
     gone.update_idletasks()
+    names = [gone.nb.tab(i, "text") for i in gone.nb.tabs()]
+    if "Study" not in names:
+        fails.append("filter dialog has no Study tab")
+    elif names[1] != "Study":
+        fails.append(f"Study tab was {names[1]!r}, not second after Reports")
+    if "sizes" not in app.tabs:
+        fails.append("window has no Sizes tab")
     gone.cancel()
     root.update()
     stale = None
