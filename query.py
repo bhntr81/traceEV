@@ -44,6 +44,8 @@ money is summed over the hands those decisions happened in.
     python query.py --hero --board mono --results
     python query.py --hero --pot 3bet --hands
     python query.py --session FIRST_HAND --stats
+    python query.py --statistics --fmt cash --last-sessions 10
+    python query.py --statistics --exclude-reg-vs-fish --hit threebet
     python query.py --today --hero --results
     python query.py --hours 4 --start-of-day 6 --tz acr=-5
     python query.py --marked --hands
@@ -138,6 +140,13 @@ VALUE_FLAGS = {
     # report does not move when the clock prefs do.
     "--session": None,
     "--hours": None,
+    # Cash | MTT on the Statistics tab, and transferable to Reports.
+    # `cash` is everything that is not a tournament (RING, ZONE, BLITZ).
+    "--fmt": None,
+    # Last N hero cash sit-downs (`sessions` table). MTT has none.
+    "--last-sessions": None,
+    # The Call Range sibling of a named stat: same chance, a call.
+    "--call-range": None,
     # The shape of the betting rather than one decision in it. Each takes a
     # GLOB pattern over the strings `lines.py` derives, so `--flop "XB*"` is
     # "checked to somebody, who bet, and then anything at all".
@@ -231,6 +240,11 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            # Clock prefs for `--today` / `--hours`. Not predicates:
            # they change how those two flags are compiled.
            "--start-of-day", "--tz")
+
+# Not filters, and they take no value. OPTIONS skip two tokens
+# (flag + argument). Putting exclude there ate `--hero` and
+# Reports opened without the person -- the check that caught it.
+SKIP = ("--exclude-reg-vs-fish", "--statistics")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -588,7 +602,9 @@ def situation_only(argv):
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
-        if a in OPTIONS:
+        if a in SKIP:
+            i += 1
+        elif a in OPTIONS:
             i += 2
         elif a in VALUE_FLAGS:
             out += argv[i:i + 2]
@@ -685,7 +701,8 @@ WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
 WHO_VALUES = ("--player", "--vs-player", "--site", "--stake",
               "--since", "--until",
               "--alias", "--vs-alias", "--villain-type", "--vs-class",
-              "--session", "--hours")
+              "--session", "--hours",
+              "--fmt", "--last-sessions")
 
 
 def resolve_filter(name, path=None):
@@ -3011,6 +3028,9 @@ def build(argv):
             described.append(word)
             i += 1
             continue
+        if a in SKIP:
+            i += 1
+            continue
         if a in OPTIONS:
             i += 2
             continue
@@ -3172,6 +3192,28 @@ def build(argv):
                 except ValueError as e:
                     raise SystemExit(str(e))
                 described.append(f"last {v} hours")
+                continue
+            if a == "--fmt":
+                try:
+                    sql, word = fmt_sql(v)
+                except ValueError as e:
+                    raise SystemExit(str(e))
+                parts.append("(" + sql + ")")
+                described.append(word)
+                continue
+            if a == "--last-sessions":
+                try:
+                    parts.append("(" + sessions.last_n_sql(v) + ")")
+                except ValueError as e:
+                    raise SystemExit(str(e))
+                described.append(f"last {int(v)} sessions")
+                continue
+            if a == "--call-range":
+                key = str(v).strip()
+                if key not in BY_KEY:
+                    raise SystemExit(f"unknown call-range stat {key!r}")
+                parts.append("(" + call_range_sql(key) + ")")
+                described.append("call range of " + BY_KEY[key].label)
                 continue
             if a in LINE_FLAGS:
                 # Normalised rather than taken as typed, because the columns
@@ -3344,6 +3386,287 @@ def why_empty(con, parts):
 
     return ("no two of these conflict on their own, but together they select "
             "nothing -- drop one at a time to find the pair that does")
+
+
+# The H2N Statistics grid. A curated subset of the registry, not every
+# sizing leftover -- the dump of all matching stats is still the `stats`
+# tab. Showdown stats are spots-sourced and counted over the same
+# (hand, seat) sample as the decision rows.
+CURATED = (
+    "vpip", "pfr", "rfi", "limp", "iso", "threebet", "coldcall", "squeeze",
+    "fold_to_3bet", "fourbet", "fold_to_4bet", "steal", "fold_to_steal",
+    "bb_defend",
+    "cbet_flop", "fold_to_cbet", "raise_cbet", "donk_flop", "checkraise_flop",
+    "cbet_turn", "delayed_cbet", "probe_turn", "fold_to_turn_bet",
+    "cbet_river", "fold_to_river_bet",
+    "wtsd", "wsd", "wwsf",
+)
+
+# H2N: a regular's decision with a fish still in is "played against a
+# fish" and drops out of the Statistics sample. Fish-vs-reg stays --
+# that is how a fish plays against regs. Unknown stays. Reports never
+# see this predicate; it is AND-ed on only in `statistics_of`.
+REG_VS_FISH = "(player_class = 'reg' AND n_fish > 0)"
+
+
+def fmt_sql(mode):
+    """Cash (not MTT) or a tournament, or a literal `fmt` value."""
+    raw = str(mode or "").strip()
+    if not raw:
+        raise ValueError("--fmt needs cash, mtt, or a stored format")
+    key = raw.lower()
+    if key in ("cash", "ring"):
+        return "fmt IS NOT NULL AND fmt <> 'MTT'", "cash"
+    if key == "mtt":
+        return "fmt = 'MTT'", "mtt"
+    if raw in ("RING", "ZONE", "BLITZ", "MTT") or key in (
+            "ring", "zone", "blitz", "mtt"):
+        token = raw.upper() if raw.isalpha() else raw
+        return f"fmt = {q(token)}", f"fmt {token}"
+    raise ValueError(
+        f"unknown fmt {mode!r} -- cash, mtt, RING, ZONE, BLITZ, MTT")
+
+
+def with_exclude(where, on):
+    """AND the Statistics-only reg-vs-fish drop onto a decisions WHERE."""
+    if not on:
+        return where
+    return f"({where}) AND NOT ({REG_VS_FISH})"
+
+
+def call_range_sql(stat):
+    """
+    Same chance as the stat, a call instead of the stat's action.
+
+    3bet's chance is facing an open; Call Range is Call Open Raise.
+    An all-in call is `action='A'` and `agg=0`; a raise is `agg=1`.
+    """
+    st = BY_KEY[stat] if isinstance(stat, str) else stat
+    return f"({st.chance}) AND action IN ('C','A') AND agg = 0"
+
+
+def action_range_sql(stat):
+    st = BY_KEY[stat] if isinstance(stat, str) else stat
+    return f"({st.chance}) AND ({st.action})"
+
+
+def reports_argv(subject_argv, key, kind="action", combo=None):
+    """
+    Open-in-Reports flags for a Statistics click.
+
+    Who, date, cash/MTT, last-N stay. The exclude flag does not --
+    Reports ignore it, matching H2N. `--villain-type` is already a
+    Reports filter and is not invented here.
+    """
+    out = list(who_only(subject_argv or []))
+    if kind == "call":
+        out += ["--call-range", key]
+    else:
+        out += ["--quick", key]
+    if combo:
+        out += ["--combo", combo]
+    return out
+
+
+def take_stat_drill(argv):
+    """
+    Pull click-stat flags off a Statistics command so they do not
+    become the sample.
+
+    `--hit` / `--quick` / `--call-range` / a cell `--combo` describe
+    the drill, not the subject. Leaving them in made the grid the
+    3bet hands and every rate read 100% or empty.
+    """
+    hit = kind = combo = None
+    out = []
+    i = 0
+    argv = list(argv or [])
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--call-range", "--quick", "--hit", "--combo") and \
+                i + 1 < len(argv):
+            val = argv[i + 1]
+            if a == "--call-range":
+                hit, kind = val, "call"
+            elif a in ("--quick", "--hit") and hit is None:
+                hit, kind = val, "action"
+            elif a == "--combo":
+                combo = val
+            i += 2
+            continue
+        out.append(a)
+        i += 1
+    return out, hit, kind or "action", combo
+
+
+def spots_sample_sql(dec_where):
+    """Spots rows whose (hand, seat) appear in the Statistics sample."""
+    return (
+        "(hand_id, seat) IN (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE {dec_where})"
+    )
+
+
+def class_counts(con, where):
+    """How many identities of each class sit in this sample."""
+    rows = con.execute(
+        f"SELECT COALESCE(player_class, 'unknown'), "
+        f"COUNT(DISTINCT site || char(0) || player), "
+        f"COUNT(DISTINCT hand_id || char(0) || seat) "
+        f"FROM decisions WHERE {where} GROUP BY 1"
+    ).fetchall()
+    out = {"reg": 0, "fish": 0, "unknown": 0,
+           "reg_hands": 0, "fish_hands": 0, "unknown_hands": 0}
+    for klass, n_pl, n_h in rows:
+        key = klass if klass in ("reg", "fish") else "unknown"
+        out[key] += n_pl
+        out[key + "_hands"] += n_h
+    out["players"] = out["reg"] + out["fish"] + out["unknown"]
+    out["seats"] = out["reg_hands"] + out["fish_hands"] + out["unknown_hands"]
+    return out
+
+
+def statistics_of(con, where, argv=None, exclude=False):
+    """
+    The Statistics grid: curated rates for this subject, one sample.
+
+    `exclude` is the H2N rebuild flag. It is not a `build()` switch.
+    Passing `--exclude-reg-vs-fish` on a Reports command is a no-op
+    because `build` skips it; this function is the only place that
+    AND-s the predicate.
+    """
+    argv = list(argv or [])
+    sample = with_exclude(where, exclude)
+    n_dec = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {sample}").fetchone()[0]
+    n_all = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    try:
+        counted = stat_rates(con, sample)
+    except sqlite3.OperationalError:
+        # A fixture (and a half-built DB) may lack a column a leftover
+        # stat names. One missing column must not blank the whole grid
+        # -- that is how a 3bet rate vanished while VPIP still worked.
+        counted = {}
+        for key in CURATED:
+            st = BY_KEY.get(key)
+            if st is None or st.source != "d":
+                continue
+            try:
+                n, k, _p, _lo, _hi = rate(con, st, sample)
+                counted[key] = (n, k)
+            except sqlite3.OperationalError:
+                counted[key] = (0, 0)
+    spots_where = spots_sample_sql(sample)
+    rows = []
+    for key in CURATED:
+        st = BY_KEY.get(key)
+        if st is None:
+            continue
+        if st.source == "s":
+            tables = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "spots" not in tables:
+                n = k = 0
+                p = lo = hi = 0.0
+            else:
+                n, k, p, lo, hi = rate(con, st, spots_where)
+        else:
+            n, k = counted.get(key, (0, 0))
+            if not n:
+                p = lo = hi = 0.0
+            else:
+                p, lo, hi = wilson(k, n)
+        rows.append({
+            "key": st.key, "label": st.label, "group": st.group,
+            "note": st.note, "source": st.source,
+            "n": n, "k": k, "pct": 100 * p,
+            "band": 100 * (hi - lo) / 2,
+            "has_call": st.source == "d",
+        })
+    counts = class_counts(con, sample)
+    return {
+        "n": n_dec, "n_all": n_all, "excluded": max(0, n_all - n_dec),
+        "exclude": bool(exclude),
+        "rows": rows, "counts": counts,
+        "label": None,
+        "note": (
+            "exclude_reg_vs_fish drops a regular's decision when a fish "
+            "is still in (n_fish > 0). Fish-vs-reg and unknown stay. "
+            "Reports and Sessions do not use this flag."
+        ),
+    }
+
+
+def stat_range_of(con, where, key, kind="action", exclude=False,
+                  combo=None, hand_limit=200):
+    """
+    Click-stat payload: the 13x13 of the hits (or the Call Range),
+    plus compact hands. `kind` is `action` or `call`.
+    """
+    st = BY_KEY.get(key)
+    if st is None:
+        raise SystemExit(f"unknown stat {key!r}")
+    sample = with_exclude(where, exclude)
+    if kind == "call":
+        pred = call_range_sql(st)
+        title = "Call Range of " + st.label
+    else:
+        pred = action_range_sql(st)
+        title = st.label
+    drill = f"({sample}) AND ({pred})"
+    if combo:
+        items = ", ".join(q(c) for c in expand_combo(combo))
+        drill = f"({drill}) AND combo IN ({items})"
+        title = f"{title} · {combo}"
+    chart = chart_of(con, drill)
+    rng = range_of(con, drill)
+    hands = matching_hands(con, drill, limit=hand_limit)
+    notes.decorate(con, hands)
+    return {
+        "key": key, "kind": kind, "title": title,
+        "combo": combo, "where": drill,
+        "chart": chart, "range": rng, "hands": hands,
+        "reports_argv": reports_argv([], key, kind, combo),
+    }
+
+
+def show_statistics(con, where, label, argv=None, exclude=False,
+                    hit=None, kind="action", parts=(), combo=None):
+    """The Statistics grid, printed. `--hit` drills one stat."""
+    got = statistics_of(con, where, argv, exclude=exclude)
+    print(f"\nStatistics  {label}")
+    print("=" * (len(label) + 13))
+    c = got["counts"]
+    print(f"{got['n']:,} decisions"
+          + (f"  (excluded {got['excluded']:,} reg-vs-fish of "
+             f"{got['n_all']:,})" if exclude else "")
+          + f"  ·  {c['players']:,} identities  "
+          f"{c['reg']} regs / {c['fish']} fish / {c['unknown']} unknown")
+    print()
+    group = None
+    for r in got["rows"]:
+        if r["group"] != group:
+            group = r["group"]
+            print(f"  [{group}]")
+        if not r["n"]:
+            print(f"    {r['label']:22}    –")
+            continue
+        print(f"    {r['label']:22} {r['pct']:5.1f}%  n={r['n']:,}  "
+              f"±{r['band']:.1f}")
+    if exclude:
+        print()
+        print("  " + got["note"])
+    if not hit:
+        return got
+    drill = stat_range_of(con, where, hit, kind=kind, exclude=exclude,
+                          combo=combo)
+    print(f"\n  {drill['title']}")
+    show_chart(con, drill["where"], drill["title"])
+    compact.attach(con, drill["hands"], fmt="text")
+    print(f"  {len(drill['hands']):,} hands  (Open in Reports: "
+          f"{' '.join(reports_argv(argv or [], hit, kind, combo))})")
+    return got
 
 
 def stats_of(con, where):
@@ -4802,6 +5125,13 @@ def usage():
     print(f"    {'--action':14} this decision: fold, check, call, bet, raise")
     print(f"    {'--result':14} whole-hand: won, lost, even, showdown, "
           f"no-showdown")
+    print(f"    {'--fmt':14} cash (not MTT) or mtt -- Statistics mode")
+    print(f"    {'--last-sessions':14} last N hero cash sit-downs")
+    print(f"    {'--call-range':14} same chance as a stat, a call "
+          f"(3bet → Call Open Raise)")
+    print(f"    {'--statistics':14} curated Statistics grid (H2N tab)")
+    print(f"    {'--exclude-reg-vs-fish':14} Statistics sample only -- "
+          f"Reports / Sessions ignore it")
     print(f"    {'--session':14} one sit-down (id = first hand); "
           f"see sessions.py")
     print(f"    {'--today':14} local Today via start-of-day hour "
@@ -5547,6 +5877,21 @@ def check_sessions():
     gone = without_who(["--session", "h1", "--pot", "3bet"])
     if "--session" in gone:
         fails.append("without_who kept --session")
+    fmt_w, fmt_l, _ = build(["--fmt", "cash"])
+    if "fmt <> 'MTT'" not in fmt_w or fmt_l != "cash":
+        fails.append(f"--fmt cash compiled to {fmt_w!r} / {fmt_l!r}")
+    mtt_w, mtt_l, _ = build(["--fmt", "mtt"])
+    if "fmt = 'MTT'" not in mtt_w or mtt_l != "mtt":
+        fails.append(f"--fmt mtt compiled to {mtt_w!r} / {mtt_l!r}")
+    last_w, last_l, _ = build(["--last-sessions", "10"])
+    if "LIMIT 10" not in last_w or "last 10 sessions" not in last_l:
+        fails.append(f"--last-sessions compiled to {last_w!r} / {last_l!r}")
+    who = who_only(["--fmt", "cash", "--last-sessions", "5",
+                    "--street", "flop"])
+    if "--fmt" not in who or "--last-sessions" not in who:
+        fails.append("who_only dropped --fmt / --last-sessions")
+    if "--street" in who:
+        fails.append("who_only kept --street with fmt")
     today, tlabel, _ = build(["--today", "--start-of-day", "6"])
     if "played_at" not in today or "site = 'acr'" not in today:
         fails.append(f"--today was not per-site: {today!r}")
@@ -5561,6 +5906,163 @@ def check_sessions():
     except SystemExit:
         pass
     print(f"session / today / hours flags  "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
+def check_statistics():
+    """
+    Statistics grid, Call Range, and exclude_reg_vs_fish.
+
+    No corpus. The failure this catches is the H2N one: a rebuild flag
+    that leaked into Reports, or a Call Range that was the raise again.
+    """
+    fails = []
+    if "--exclude-reg-vs-fish" not in SKIP:
+        fails.append("exclude flag is not in SKIP -- build() would "
+                     "raise or apply it to Reports")
+    if "--exclude-reg-vs-fish" in OPTIONS:
+        fails.append("exclude flag is in OPTIONS -- build() skips two "
+                     "tokens and would drop the next flag")
+    try:
+        build(["--exclude-reg-vs-fish"])
+    except SystemExit:
+        fails.append("build() rejected --exclude-reg-vs-fish instead of "
+                     "skipping it (Reports must ignore it)")
+    excl_w, excl_l, _ = build(["--exclude-reg-vs-fish", "--hero"])
+    if "n_fish" in excl_w or "player_class = 'reg'" in excl_w:
+        fails.append("build() applied exclude_reg_vs_fish -- Reports "
+                     "would change with the Statistics toggle")
+    if "is_hero = 1" not in excl_w:
+        fails.append("build(--exclude-reg-vs-fish --hero) dropped --hero")
+    kept_hero = who_only(["--exclude-reg-vs-fish", "--hero"])
+    if "--hero" not in kept_hero:
+        fails.append("who_only ate --hero after the exclude flag")
+
+    cr_w, cr_l, _ = build(["--call-range", "threebet"])
+    if "facing='open'" not in cr_w.replace(" ", "") and \
+            "facing = 'open'" not in cr_w:
+        # chance is street='preflop' AND facing='open'
+        if "facing='open'" not in cr_w:
+            fails.append(f"--call-range threebet lost the chance: {cr_w!r}")
+    if "action IN ('C','A')" not in cr_w:
+        fails.append(f"--call-range threebet was not a call: {cr_w!r}")
+    if "agg = 0" not in cr_w:
+        fails.append("--call-range threebet counted raises as calls")
+    if "agg=1" in cr_w.replace(" ", ""):
+        fails.append("--call-range threebet still used the 3bet action")
+
+    opened = reports_argv(["--hero", "--fmt", "cash", "--last-sessions", "3",
+                           "--exclude-reg-vs-fish"],
+                          "threebet", "action")
+    if "--quick" not in opened or "threebet" not in opened:
+        fails.append(f"Open in Reports missing --quick threebet: {opened}")
+    if "--exclude-reg-vs-fish" in opened:
+        fails.append("Open in Reports carried the exclude flag")
+    if "--hero" not in opened or "--fmt" not in opened:
+        fails.append("Open in Reports dropped the subject / cash mode")
+    called = reports_argv(["--hero"], "threebet", "call", "AKs")
+    if called != ["--hero", "--call-range", "threebet", "--combo", "AKs"]:
+        fails.append(f"Call Range reports_argv drifted: {called}")
+
+    cleaned, hit, kind, combo = take_stat_drill(
+        ["--hero", "--quick", "threebet", "--combo", "AKs", "--fmt", "cash"])
+    if hit != "threebet" or kind != "action" or combo != "AKs":
+        fails.append(f"take_stat_drill lost the click: {hit} {kind} {combo}")
+    if "--quick" in cleaned or "--combo" in cleaned:
+        fails.append("take_stat_drill left the drill on the sample argv")
+    if "--hero" not in cleaned or "--fmt" not in cleaned:
+        fails.append("take_stat_drill dropped the subject")
+    sample, _, _ = build(cleaned)
+    if "facing='open'" in sample.replace(" ", "") or \
+            "facing = 'open'" in sample:
+        fails.append("Statistics --hit leaked into the grid sample")
+    cleaned_c, hit_c, kind_c, _ = take_stat_drill(
+        ["--call-range", "threebet", "--hero"])
+    if hit_c != "threebet" or kind_c != "call" or "--call-range" in cleaned_c:
+        fails.append("take_stat_drill did not lift Call Range off the sample")
+
+    # Four 3bets: reg-vs-fish, reg-vs-reg, fish-vs-reg, unknown-vs-fish.
+    # Exclude must drop only the first. `--quick threebet` (Reports)
+    # must still see all four.
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, n INT, seat INT, player TEXT, site TEXT, "
+        "player_class TEXT, n_fish INT, n_reg INT, vs_class TEXT, "
+        "street TEXT, facing TEXT, action TEXT, agg INT, combo TEXT, "
+        "fmt TEXT, is_hero INT, played_at TEXT)")
+    rows = [
+        ("h1", 1, 1, "RegA", "acr", "reg", 1, 0, "fish",
+         "preflop", "open", "R", 1, "AKs", "RING", 1, "2026-09-01"),
+        ("h2", 1, 1, "RegA", "acr", "reg", 0, 1, "reg",
+         "preflop", "open", "R", 1, "AQs", "RING", 1, "2026-09-01"),
+        ("h3", 1, 1, "FishB", "acr", "fish", 0, 1, "reg",
+         "preflop", "open", "R", 1, "KQs", "RING", 1, "2026-09-01"),
+        ("h4", 1, 1, "UnkC", "acr", "unknown", 1, 0, "fish",
+         "preflop", "open", "R", 1, "AJo", "RING", 1, "2026-09-01"),
+        ("h5", 1, 1, "RegA", "acr", "reg", 1, 0, "fish",
+         "preflop", "open", "C", 0, "T9s", "RING", 1, "2026-09-01"),
+    ]
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        rows)
+    where, _, _ = build([])
+    all_n = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {where}"
+                        ).fetchone()[0]
+    got = statistics_of(con, where, [], exclude=False)
+    dropped = statistics_of(con, where, [], exclude=True)
+    # five decisions; exclude drops h1 and h5 (reg + n_fish>0)
+    if got["n"] != 5:
+        fails.append(f"statistics_of without exclude saw {got['n']}, not 5")
+    if dropped["n"] != 3:
+        fails.append(f"exclude_reg_vs_fish left {dropped['n']}, not 3 "
+                     "(should drop the two reg-vs-fish rows)")
+    if dropped["excluded"] != 2:
+        fails.append(f"excluded count was {dropped['excluded']}, not 2")
+    # Reports path: --quick threebet still sees every 3bet including
+    # the reg-vs-fish raise. h5 is a call, not a 3bet.
+    q_w, _, _ = build(["--quick", "threebet"])
+    q_n = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {q_w}"
+                      ).fetchone()[0]
+    if q_n != 4:
+        fails.append(f"--quick threebet (Reports) saw {q_n}, not 4 -- "
+                     "exclude leaked into build()")
+    tb = next((r for r in dropped["rows"] if r["key"] == "threebet"), None)
+    if tb is None or tb["k"] != 3:
+        fails.append(f"excluded 3bet hits were {tb}, not 3 "
+                     "(reg-vs-reg + fish-vs-reg + unknown)")
+    cr = call_range_sql("threebet")
+    cr_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {cr}").fetchone()[0]
+    if cr_n != 1:
+        fails.append(f"Call Range of 3bet saw {cr_n}, not the one call")
+    # The one call is h5, a reg-vs-fish limp-call. Exclude drops it
+    # from the Statistics Call Range sample.
+    cr_ex = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {with_exclude(cr, True)}"
+    ).fetchone()[0]
+    if cr_ex != 0:
+        fails.append("excluded Call Range still kept the reg-vs-fish call")
+    con.close()
+    if all_n != 5:
+        fails.append("fixture WHERE 1=1 was not 5 rows")
+
+    mem = sqlite3.connect(":memory:")
+    mem.execute(
+        "CREATE TABLE decisions (hand_id TEXT, seat INT, player TEXT, "
+        "site TEXT, player_class TEXT, n_fish INT, street TEXT, "
+        "facing TEXT, action TEXT, agg INT, combo TEXT)")
+    empty = statistics_of(mem, "1=1")
+    mem.close()
+    if [r["key"] for r in empty["rows"]] != list(CURATED):
+        fails.append("statistics_of did not return the curated grid")
+    if "threebet" not in CURATED:
+        fails.append("3bet is not on the Statistics grid")
+
+    print(f"Statistics / Call Range / exclude  "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:
         print(f"    {f}")
@@ -5894,6 +6396,7 @@ def check(db_path=DB):
     fails.extend(check_aliases_filter())
     fails.extend(check_study())
     fails.extend(check_sessions())
+    fails.extend(check_statistics())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -6390,10 +6893,12 @@ def main(argv):
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
               "--chart", "--related", "--faced-next", "--next-actions",
-              "--bet-sizes"):
+              "--bet-sizes", "--statistics"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
+    exclude_reg_vs_fish = "--exclude-reg-vs-fish" in argv
+    argv = [a for a in argv if a != "--exclude-reg-vs-fish"]
 
     def opt(name, default=None):
         if name not in argv:
@@ -6577,6 +7082,11 @@ def main(argv):
         con.close()
         return 0
 
+    stat_hit = stat_kind = stat_combo = None
+    if mode == "--statistics":
+        # Click-stat flags are the drill. `build` must not see them
+        # or the grid becomes the 3bet hands and every rate is a lie.
+        argv, stat_hit, stat_kind, stat_combo = take_stat_drill(argv)
     where, label, _parts = build(argv)
     if preset:
         label = f"{preset}: {label}"
@@ -6619,6 +7129,10 @@ def main(argv):
         show_chain_report(con, where, label, argv, True)
     elif mode == "--bet-sizes":
         show_bet_sizes(con, where, label, argv, _parts)
+    elif mode == "--statistics":
+        show_statistics(con, where, label, argv, exclude=exclude_reg_vs_fish,
+                        hit=stat_hit, kind=stat_kind or "action",
+                        parts=_parts, combo=stat_combo)
     elif dim:
         show_report(con, where, label, dim, columns, min_n, argv=argv)
     else:

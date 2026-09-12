@@ -80,6 +80,9 @@ VALUE_FIELDS = {
     "tag": "--tag",
     "session": "--session",
     "hours": "--hours",
+    "fmt": "--fmt",
+    "last_sessions": "--last-sessions",
+    "call_range": "--call-range",
     "start_of_day": "--start-of-day",
     "tz": "--tz",
     "alias": "--alias",
@@ -146,6 +149,10 @@ def payload(con, params):
             crumbs = []
     if crumbs:
         argv = query.drill_stack(argv, crumbs)
+    if view == "statistics":
+        # Click-stat / Call Range / cell combo are the drill. Left
+        # in, the grid would be the 3bet hands and every rate a lie.
+        argv, _, _, _ = query.take_stat_drill(argv)
     spec, argv = players.parse_cohort(argv)
     where, label, parts = query.build(argv)
     notes.attach(con)
@@ -189,6 +196,45 @@ def payload(con, params):
         if sid:
             out["detail"] = sessions.detail_of(con, sid, clock=clock)
         out["label"] = label
+        return out
+
+    if view == "statistics":
+        exclude = params.get("exclude_reg_vs_fish", [""])[0] in (
+            "1", "true", "on")
+        out = query.statistics_of(con, where, argv, exclude=exclude)
+        out["label"] = label
+        out["why"] = None if out.get("n") else nothing()
+        if spec is not None:
+            try:
+                old_rf = con.row_factory
+                con.row_factory = sqlite3.Row
+                try:
+                    out["cohort"] = {
+                        "describe": players.describe_cohort(spec),
+                        **players.cohort_summary(players.cohort(con, *spec)),
+                    }
+                finally:
+                    con.row_factory = old_rf
+            except ValueError:
+                out["cohort"] = {"describe": players.describe_cohort(spec)}
+        key = (params.get("stat_key", [""])[0] or "").strip()
+        kind = "action"
+        call = (params.get("call_range", [""])[0] or "").strip()
+        if call:
+            key, kind = call, "call"
+        combo = (params.get("combo", [""])[0] or "").strip() or None
+        if key:
+            try:
+                drill = query.stat_range_of(
+                    con, where, key, kind=kind, exclude=exclude,
+                    combo=combo)
+                compact.attach(con, drill.get("hands") or [], fmt="html")
+                notes.decorate(con, drill.get("hands") or [])
+                out["drill"] = drill
+                out["open_reports"] = query.reports_argv(
+                    argv, key, kind, combo)
+            except SystemExit as e:
+                out["drill_error"] = str(e)
         return out
 
     if view == "study":
@@ -494,6 +540,16 @@ td.compact{text-align:left;font-weight:500}
 .ctx button{display:block;width:100%;text-align:left;background:none;border:0;
   color:var(--ink);padding:5px 12px;cursor:pointer;font:inherit}
 .ctx button:hover{background:var(--edge)}
+.statgrid{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0}
+.statcol{min-width:140px}
+.statcell{display:block;background:var(--panel);border:1px solid var(--edge);
+  border-radius:6px;padding:6px 8px;margin:3px 0;cursor:pointer;text-align:left;
+  color:var(--ink);font:inherit;width:100%}
+.statcell.on{background:var(--accent);color:#14161a}
+.statcell:hover{border-color:var(--accent)}
+.chartcell{display:inline-block;width:36px;height:36px;margin:1px;
+  font-size:9px;text-align:center;line-height:11px;vertical-align:top;
+  cursor:pointer;border:0;color:var(--ink)}
 </style>
 <header>
   <h1>poker_analysis</h1>
@@ -601,6 +657,23 @@ td.compact{text-align:left;font-weight:500}
       timezone offset. An empty Today is usually the hour or the
       offset, not missing hands. Raw from/to stay played_at.</p>
   </fieldset>
+  <fieldset><legend>statistics</legend>
+    <label>Cash or MTT
+      <select id="fmt"><option value="">any</option>
+        <option value="cash">cash</option>
+        <option value="mtt">mtt</option>
+      </select></label>
+    <label>last N sessions <input id="last_sessions" placeholder="10"></label>
+    <label><input id="exclude_reg_vs_fish" type="checkbox">
+      exclude reg-vs-fish (Statistics only)</label>
+    <label>click-stat
+      <input id="stat_key" placeholder="threebet"></label>
+    <label>Call Range <input id="call_range" placeholder="threebet"></label>
+    <input type="hidden" id="quick">
+    <p class="n">The exclude box is a Statistics compute flag.
+      Reports and Sessions ignore it. villain_type stays a Reports
+      filter. Last N is cash sit-downs.</p>
+  </fieldset>
   <fieldset><legend>faced next / next actions</legend>
     <label>the other seat then
       <select id="after"><option value="">any</option></select></label>
@@ -662,6 +735,7 @@ td.compact{text-align:left;font-weight:500}
   <nav id="tabs">
     <button data-v="sessions">sessions</button>
     <button data-v="study" class="on">study</button>
+    <button data-v="statistics">statistics</button>
     <button data-v="stats">stats</button>
     <button data-v="range">range</button>
     <button data-v="chart">chart</button>
@@ -730,7 +804,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -767,11 +841,15 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
   if (state.sessionId) p.set('session_id', state.sessionId);
+  const ex = $('#exclude_reg_vs_fish');
+  if (ex && ex.checked) p.set('exclude_reg_vs_fish', '1');
+  const sk = $('#stat_key');
+  if (sk && sk.value.trim()) p.set('stat_key', sk.value.trim());
   return p;
 }
 const money = v => `<span class="${v>=0?'pos':'neg'}">${v>=0?'+':''}${
@@ -927,6 +1005,96 @@ function pinStep(step){
   opt.value = JSON.stringify(argv);
   box.value = opt.value;
   load();
+}
+function renderStatistics(d){
+  const c = d.counts || {};
+  let h = `<p class="n">${(d.n||0).toLocaleString()} decisions`;
+  if (d.exclude)
+    h += ` · excluded ${(d.excluded||0).toLocaleString()} reg-vs-fish of ${(d.n_all||0).toLocaleString()}`;
+  h += ` · ${c.players||0} identities · ${c.reg||0} regs / ${c.fish||0} fish / ${c.unknown||0} unknown`;
+  if (d.cohort)
+    h += ` · ${d.cohort.describe||'cohort'}`
+      + (d.cohort.players
+        ? ` (${d.cohort.regs||0} regs / ${d.cohort.fish||0} fish / ${d.cohort.unknown||0} unknown)`
+        : '');
+  h += '</p>';
+  h += `<p class="n">${d.note||''}</p>`;
+  const by = {};
+  for (const r of (d.rows||[]))
+    (by[r.group||''] = by[r.group||''] || []).push(r);
+  h += '<div class="statgrid">';
+  for (const [g, items] of Object.entries(by)){
+    h += `<div class="statcol"><p class="n">${g}</p>`;
+    for (const r of items){
+      const pct = r.n ? r.pct.toFixed(1)+'%' : '–';
+      const on = ($('#stat_key') && $('#stat_key').value===r.key) ? ' on' : '';
+      h += `<button type="button" class="statcell${on}" data-key="${r.key}">`
+        + `<b>${r.label}</b><br>${pct}`
+        + (r.n ? ` <span class="n">n=${r.n.toLocaleString()}</span>` : '')
+        + `</button>`;
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+  const drill = d.drill;
+  if (d.drill_error) h += `<p class="empty">${d.drill_error}</p>`;
+  if (drill){
+    h += `<p><b>${drill.title||''}</b> `
+      + `<button type="button" id="stat_range">Range</button> `
+      + `<button type="button" id="stat_call">Call Range</button> `
+      + `<button type="button" id="stat_reports">Open in Reports</button></p>`;
+    const cells = (drill.chart && drill.chart.cells) || {};
+    const seen = (drill.chart && drill.chart.seen) || 0;
+    h += '<div>';
+    const ranks = 'AKQJT98765432';
+    for (let i=0;i<13;i++){
+      for (let j=0;j<13;j++){
+        const combo = ranks[i]===ranks[j] ? ranks[i]+ranks[j]
+          : (i<j ? ranks[i]+ranks[j]+'s' : ranks[j]+ranks[i]+'o');
+        const n = (cells[combo]||[0])[0];
+        const share = seen ? (100*n/seen) : 0;
+        h += `<button type="button" class="chartcell" data-combo="${combo}" `
+          + `style="background:rgba(76,154,255,${Math.min(1, share/8)})">`
+          + `${combo}<br>${n?share.toFixed(1):''}</button>`;
+      }
+      h += '<br>';
+    }
+    h += '</div>';
+    h += renderStudyHands(drill.hands||[]);
+  }
+  $('#out').innerHTML = h;
+  $('#out').querySelectorAll('.statcell').forEach(b => {
+    b.onclick = () => { $('#stat_key').value = b.dataset.key;
+      const cr = $('#call_range'); if (cr) cr.value = '';
+      load(); };
+  });
+  const rangeBtn = $('#stat_range'), callBtn = $('#stat_call');
+  if (rangeBtn) rangeBtn.onclick = () => {
+    const cr = $('#call_range'); if (cr) cr.value = ''; load(); };
+  if (callBtn) callBtn.onclick = () => {
+    const cr = $('#call_range'); if (cr && $('#stat_key'))
+      cr.value = $('#stat_key').value;
+    load();
+  };
+  const open = $('#stat_reports');
+  if (open) open.onclick = () => {
+    state.view = 'study';
+    document.querySelectorAll('#tabs button').forEach(x =>
+      x.classList.toggle('on', x.dataset.v==='study'));
+    const cr = $('#call_range');
+    const sk = $('#stat_key');
+    const q = $('#quick');
+    // Action range is --quick KEY. Call Range is already --call-range.
+    // The exclude box is not an argv flag and stays behind.
+    if (q) q.value = (cr && cr.value) ? '' : ((sk && sk.value) || '');
+    if (cr && cr.value) { /* --call-range already in params */ }
+    else if (cr) cr.value = '';
+    load();
+  };
+  $('#out').querySelectorAll('.chartcell').forEach(b => {
+    b.onclick = () => { $('#combo').value = b.dataset.combo; load(); };
+  });
+  bindHandRows(d.drill || {});
 }
 function renderSessions(d){
   const warn = d.warning || '';
@@ -1223,6 +1391,10 @@ function render(d){
   if (state.view === 'sessions'){
     if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
     renderSessions(d); return;
+  }
+  if (state.view === 'statistics'){
+    if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
+    renderStatistics(d); return;
   }
   if (state.view === 'study'){
     if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
@@ -1758,6 +1930,10 @@ def check(db_path=DB):
         ({"session": ["h1"]}, ["--session", "h1"]),
         ({"street": ["flop"], "pfa": ["1"], "facing": ["check"]},
          ["--street", "flop", "--pfa", "--facing", "check"]),
+        ({"fmt": ["cash"], "last_sessions": ["10"]},
+         ["--fmt", "cash", "--last-sessions", "10"]),
+        ({"call_range": ["threebet"]},
+         ["--call-range", "threebet"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))
@@ -1771,6 +1947,13 @@ def check(db_path=DB):
     print(f"page and command line agree  {len(cases) - len(fails)}/{len(cases)}")
     for f in fails:
         print(f"    {f}")
+
+    leaked = argv_from({"exclude_reg_vs_fish": ["1"], "hero": ["1"]})
+    if "--exclude-reg-vs-fish" in leaked:
+        fails.append("exclude_reg_vs_fish leaked into argv_from -- "
+                     "Reports would change with the Statistics toggle")
+    print(f"exclude stays off Reports     "
+          f"{'yes' if '--exclude-reg-vs-fish' not in leaked else 'NO'}")
 
     parent = argv_from({"stack": ["80-120"]})
     child = query.drill_child(parent, {"flag": "--action", "value": "call"})
@@ -1797,8 +1980,8 @@ def check(db_path=DB):
               "PASS (no hands.db -- form/CLI only)")
         return not fails
     con = sqlite3.connect(db_path)
-    views = ("sessions", "study", "stats", "report", "results", "hands",
-             "graph")
+    views = ("sessions", "study", "statistics", "stats", "report",
+             "results", "hands", "graph")
     broke = []
     for v in views:
         for form in ({"view": [v]},

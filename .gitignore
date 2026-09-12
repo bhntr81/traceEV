@@ -18,6 +18,7 @@ filters.json
 notes.db
 aliases.json
 sessions.json
+player_types.json
 
 # runtime log
 poker_analysis.log*

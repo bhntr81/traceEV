@@ -532,6 +532,28 @@ def session_sql(sid):
             f"WHERE session_id = '{lit}')")
 
 
+def last_n_sql(n):
+    """
+    The N most recent sit-downs, as a predicate over hand_id.
+
+    Newest by `end`, then id, so two sessions that closed in the same
+    second stay stable. N is interpolated as an int -- a string here
+    would be a LIMIT injection and a filter that selected everything.
+    These are cash sit-downs (the sessions table). MTT last-N is not
+    this: tournament chips are not a sit-down in this table.
+    """
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        raise ValueError("--last-sessions needs a positive integer")
+    if n < 1:
+        raise ValueError("--last-sessions needs a positive integer")
+    return (
+        "hand_id IN (SELECT hand_id FROM session_hands WHERE session_id IN "
+        f"(SELECT id FROM sessions ORDER BY end DESC, id DESC LIMIT {n}))"
+    )
+
+
 def in_window(session, clock, start_local, end_local):
     """True if the session *starts* inside the local window."""
     local = clock.to_local(session.start, session.site)
@@ -1006,6 +1028,14 @@ def check():
         f"SELECT COUNT(*) FROM spots WHERE is_hero=1 AND "
         f"({session_sql(built[0].id)})").fetchone()[0]
     trip("--session selects that sit-down's hands", n == 2)
+    last2 = last_n_sql(2)
+    trip("last-N is the newest sit-downs by end",
+         "LIMIT 2" in last2 and "ORDER BY end DESC" in last2)
+    try:
+        last_n_sql(0)
+        trip("--last-sessions 0 was refused", False)
+    except ValueError:
+        trip("--last-sessions 0 was refused", True)
     # Second ensure is a no-op on the same stamp.
     again = ensure(con)
     trip("ensure is idempotent on an unchanged spots",
