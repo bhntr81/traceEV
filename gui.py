@@ -148,6 +148,7 @@ def payload(con, params):
                 "faced": query.chain_report(con, where, argv, False),
                 "next": query.chain_report(con, where, argv, True),
                "outcomes": query.outcomes_of(con, where),
+               "sizes": query.bet_sizes_of(con, where, argv),
                "related": query.related_spots(argv),
                "why": None if n_dec else nothing()}
         if query.pack_wants_won(argv):
@@ -168,7 +169,7 @@ def payload(con, params):
             try:
                 argv_a, argv_b = query.pin_sides(argv, pin)
                 out["compare"] = query.compare_of(
-                    con, argv_a, argv_b, None, pin)
+                    con, argv_a, argv_b, None, pin, packs=True)
             except SystemExit as e:
                 out["pinned"] = {"name": pin, "error": str(e)}
         return out
@@ -177,29 +178,43 @@ def payload(con, params):
         dim = params.get("by", ["position"])[0]
         if dim not in query.DIMENSIONS:
             return {"error": f"unknown dimension {dim}"}
-        expr, order = query.DIMENSIONS[dim]
         cols = [c for c in (params.get("show", [""])[0] or "").split(",") if c]
         cols = [c for c in cols if c in BY_KEY] or query.columns_for(argv)
-        grid = {c: query.rates_by(con, BY_KEY[c], expr, where) for c in cols}
-        counts = query.counts_by(con, expr, where)
-        keys = sorted({k for g in grid.values() for k in g} | set(counts),
-                      key=lambda k: order(k) if k is not None else "")
-        won_by = (query.amount_won_by(con, where, expr)
-                  if query.pack_wants_won(argv) else {})
-        return {
-            "label": label, "dim": dim,
+        pin = (params.get("pin", [""])[0] or "").strip()
+        out = {"label": label, "dim": dim,
+               "related": query.related_spots(argv)}
+        if pin:
+            try:
+                argv_a, argv_b = query.pin_sides(argv, pin)
+                out["compare"] = query.compare_of(
+                    con, argv_a, argv_b, None, pin,
+                    dim=dim, columns=cols, bet_sizes=(dim == "size"))
+            except SystemExit as e:
+                out["pinned"] = {"name": pin, "error": str(e)}
+        if dim == "size":
+            sizes = query.bet_sizes_of(con, where, argv)
+            out["sizes"] = sizes
+            out["columns"] = []
+            out["won_by"] = {}
+            out["why"] = None if sizes["rows"] or out.get("compare") else nothing()
+            out["rows"] = [{"key": r["key"], "n": r["hits"],
+                            "cells": []} for r in sizes["rows"]]
+            return out
+        got = query.report_of(con, where, dim, cols, argv)
+        won_by = got["won_by"]
+        out.update({
             "columns": [{"key": c, "label": BY_KEY[c].label} for c in cols],
             "won_by": {str(k): won_by[k] for k in won_by},
-            "related": query.related_spots(argv),
-            "why": None if keys else nothing(),
+            "why": None if got["keys"] or out.get("compare") else nothing(),
             "rows": [{
-                "key": str(k), "n": counts.get(k, 0),
+                "key": str(k), "n": got["counts"].get(k, 0),
                 "won": won_by.get(k),
                 "cells": [
-                    None if not grid[c].get(k, (0, 0))[0] else {
-                        "pct": 100 * grid[c][k][1] / grid[c][k][0],
-                        "n": grid[c][k][0]}
-                    for c in cols]} for k in keys]}
+                    None if not got["grid"][c].get(k, (0, 0))[0] else {
+                        "pct": 100 * got["grid"][c][k][1] / got["grid"][c][k][0],
+                        "n": got["grid"][c][k][0]}
+                    for c in cols]} for k in got["keys"]]})
+        return out
 
     if view == "results":
         dim = params.get("by", [""])[0]
@@ -647,6 +662,94 @@ function openSpot(s){
   load();
 }
 
+function htmlCompareSizes(cmp){
+  const A = ((cmp.sizes||{}).a||{}).rows || [];
+  const B = ((cmp.sizes||{}).b||{}).rows || [];
+  const byA = Object.fromEntries(A.map(r => [r.key, r]));
+  const byB = Object.fromEntries(B.map(r => [r.key, r]));
+  const keys = ['s','m','l','p','o'].filter(k => byA[k] || byB[k]);
+  if (!keys.length) return '';
+  const cell = r => {
+    if (!r || !r.opps) return '–';
+    const ap = r.profit || {};
+    const act = ap.bb_per_hand == null ? '–'
+      : ((ap.bb_per_hand>=0?'+':'') + ap.bb_per_hand.toFixed(2));
+    return `${r.hits.toLocaleString()}/${r.opps.toLocaleString()} ${r.pct.toFixed(1)}% ${act}`;
+  };
+  let h = `<tr><td colspan="4" class="group">bet sizes</td></tr>`;
+  for (const k of keys){
+    const ra = byA[k] || {}, name = ra.label || (byB[k]||{}).label || k;
+    h += `<tr class="drill" data-flag="size" data-key="${k}">`
+      + `<td>${name}</td><td>${cell(byA[k])}</td><td></td>`
+      + `<td>${cell(byB[k])}</td></tr>`;
+  }
+  return h;
+}
+function htmlComparePacks(cmp){
+  const A = (cmp.packs||{}).a || [], B = (cmp.packs||{}).b || [];
+  const byA = Object.fromEntries(A.map(r => [r.key, r]));
+  const byB = Object.fromEntries(B.map(r => [r.key, r]));
+  const keys = [];
+  const seen = {};
+  for (const r of A.concat(B)){
+    if (seen[r.key]) continue;
+    seen[r.key] = 1;
+    keys.push(r.key);
+  }
+  if (!keys.length) return '';
+  let h = `<tr><td colspan="4" class="group">this vs pinned (every stat)</td></tr>`;
+  let g = null;
+  const cell = r => r && r.n ? `${r.pct.toFixed(1)}% n=${r.n.toLocaleString()}` : '–';
+  for (const k of keys){
+    const a = byA[k], b = byB[k], row = a || b;
+    if (row.group !== g){
+      g = row.group;
+      h += `<tr><td colspan="4" class="group">${g}</td></tr>`;
+    }
+    h += `<tr class="drill" data-flag="quick" data-key="${k}">`
+      + `<td>${row.label}</td><td>${cell(a)}</td><td></td>`
+      + `<td>${cell(b)}</td></tr>`;
+  }
+  return h;
+}
+function htmlReportCompare(d){
+  const cmp = d.compare;
+  if (cmp.sizes){
+    return '<table><tbody>'
+      + `<tr><td class="group">this vs pinned</td>`
+      + `<td class="group">${(cmp.a&&cmp.a.name)||'this'}</td><td></td>`
+      + `<td class="group">${(cmp.b&&cmp.b.name)||'pinned'}</td></tr>`
+      + htmlCompareSizes(cmp) + '</tbody></table>'
+      + '<p class="n">freq is this size of the parent filter. act bb is Action Profit v1.</p>';
+  }
+  const blob = cmp.by || {};
+  const ga = blob.a || {}, gb = blob.b || {};
+  const cols = ga.cols || gb.cols || (d.columns||[]).map(c => c.key);
+  const labels = {};
+  (d.columns||[]).forEach(c => { labels[c.key] = c.label; });
+  const keys = Array.from(new Set([...(ga.keys||[]), ...(gb.keys||[])]));
+  let h = `<table><thead><tr><th>${blob.dim||d.dim||'by'}</th>`;
+  for (const side of ['this','pin']){
+    for (const c of cols) h += `<th>${side} ${labels[c]||c}</th>`;
+    h += `<th>${side} n</th>`;
+  }
+  h += '</tr></thead><tbody>';
+  const pct = (grid, c, k) => {
+    const pair = (grid[c]||{})[k];
+    if (!pair || !pair[0]) return '–';
+    return (100*pair[1]/pair[0]).toFixed(1)+'%';
+  };
+  for (const k of keys){
+    h += `<tr><td>${k}</td>`;
+    for (const g of [ga, gb]){
+      for (const c of cols) h += `<td>${pct(g.grid||{}, c, k)}</td>`;
+      h += `<td class="n">${((g.counts||{})[k]||0).toLocaleString()}</td>`;
+    }
+    h += '</tr>';
+  }
+  return h + '</tbody></table>';
+}
+
 function render(d){
   const out = $('#out');
   $('#filter').textContent = 'filter: ' + (d.label || 'everything');
@@ -786,6 +889,24 @@ function render(d){
           + `<td class="n">${act}</td></tr>`;
       }
     }
+    if (d.compare && d.compare.sizes){
+      h += htmlCompareSizes(d.compare);
+    } else if (d.sizes && d.sizes.rows && d.sizes.rows.length){
+      h += `<tr><td colspan="4" class="group">bet sizes</td></tr>`;
+      for (const r of d.sizes.rows){
+        const ap = r.profit || {};
+        const act = ap.bb_per_hand == null ? '–'
+          : ((ap.bb_per_hand>=0?'+':'') + ap.bb_per_hand.toFixed(2));
+        h += `<tr class="drill" data-flag="size" data-key="${r.key}">`
+          + `<td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">${r.hits.toLocaleString()} / ${r.opps.toLocaleString()}</td>`
+          + `<td class="n">${act}</td></tr>`;
+      }
+    }
+    if (d.compare && d.compare.packs && (d.compare.packs.a||[]).length + (d.compare.packs.b||[]).length){
+      h += htmlComparePacks(d.compare);
+    }
     for (const r of d.rows){
       if (r.group !== g){ g = r.group;
         h += `<tr><td colspan="4" class="group">${g}</td></tr>`; }
@@ -802,6 +923,8 @@ function render(d){
         if (!key) return;
         if (flag === 'quick'){
           state.multi.quick = [key];
+        } else if (flag === 'size'){
+          $('#size').value = key;
         } else {
           $('#'+flag).value = key;
         }
@@ -853,7 +976,30 @@ function render(d){
     out.innerHTML = h + '</tbody></table>';
 
   } else if (state.view === 'report'){
-    if (!d.rows.length){ out.innerHTML = nope(); return; }
+    if (d.compare && (d.compare.sizes || d.compare.by)){
+      out.innerHTML = htmlReportCompare(d); return;
+    }
+    if (d.dim === 'size' || d.sizes){
+      const rows = (d.sizes && d.sizes.rows) || [];
+      if (!rows.length){ out.innerHTML = nope(); return; }
+      let h = '<table><thead><tr><th>size</th><th>freq</th><th>hits / opps</th><th>act bb</th></tr></thead><tbody>';
+      for (const r of rows){
+        const ap = r.profit || {};
+        const act = ap.bb_per_hand == null ? '–'
+          : ((ap.bb_per_hand>=0?'+':'') + ap.bb_per_hand.toFixed(2));
+        h += `<tr class="drill" data-flag="size" data-key="${r.key}">`
+          + `<td>${r.label}</td><td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">${r.hits.toLocaleString()} / ${r.opps.toLocaleString()}</td>`
+          + `<td class="n">${act}</td></tr>`;
+      }
+      h += '</tbody></table><p class="n">freq is this size of the parent filter. Checks and folds have no size. act bb is Action Profit v1; later pot on a called bet stays unpriced.</p>';
+      out.innerHTML = h;
+      out.querySelectorAll('tr.drill').forEach(tr => {
+        tr.onclick = () => { $('#size').value = tr.dataset.key; load(); };
+      });
+      return;
+    }
+    if (!d.rows || !d.rows.length){ out.innerHTML = nope(); return; }
     const hasWon = !!(d.won_by && Object.keys(d.won_by).length);
     let h = '<table><thead><tr><th>'+d.dim+'</th>'
       + d.columns.map(c=>`<th>${c.label}</th>`).join('') + '<th>n</th>'

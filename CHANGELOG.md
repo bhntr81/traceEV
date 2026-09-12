@@ -8,6 +8,56 @@ Newest first.
 
 ---
 
+## Bet Sizes pane and a richer pin
+
+Two leftovers from the tracking-half arc. No HUD. No solver. No
+Dispersion / EV diff.
+
+### Added — Bet Sizes pane
+
+Hits/opps, freq, and Action Profit v1 by pot-frac bucket (`s m l p
+o`). The edges are `lines.bucket` / `--size m` as SQL (`size_expr`),
+not a second set of cuts -- a report and a filter that named
+different pots would look like a finding.
+
+The current filter is the opportunities. Checks and folds have no
+size and are not a row. `--bet-sizes` and `--by size` print the
+pane; `--size LETTER` opens a row. The same block sits on `--stats`,
+the window's stats and report tabs, and the page.
+
+### Added — richer pin
+
+`--pin` / `--compare` still print the compact THIS vs PINNED
+summary. They now also draw the breakdown:
+
+  * `--by position` (or any other split) -- two `--by` grids, keys
+    aligned
+  * `--by size` / `--bet-sizes` -- two Bet Sizes tables
+  * no split -- two full stat packs under the compact rows
+
+The window's pin box and the page's pin select do the same: the
+report tab is two grids (or two size tables); the stats tab is the
+compact summary plus two size tables and two packs.
+
+`--check` holds the CASE against `lines.bucket` on every edge,
+including the ones that sit exactly on a boundary, and a pin of
+first-in vs last-raise whose size letters and `--by street` n
+cannot be the same on both sides. No corpus.
+
+### Not this, on purpose
+
+No HUD. No solver. No Dispersion / EV diff. No assigning later pot
+back onto a bet that was called -- Action Profit on a size row
+stays unpriced there. Live `check.py` on a real `hands.db` is still
+a remaining gap. Window `--check` needs Tk.
+
+### What's next
+
+Dispersion / EV diff. Action Profit later-pot-on-called-bet. Live
+`check.py` on a real `hands.db`. Window `--check` needs Tk.
+
+---
+
 ## Intervals on profit means, Won$ on c-bet packs, cohort preflop range
 
 Three leftovers from the tracking-half arc. No HUD. No solver. No
@@ -69,9 +119,8 @@ bet that was called -- that stays unpriced on Action Profit.
 
 ### What's next
 
-Richer pin, Dispersion / EV diff, Bet Sizes pane, a second `--by`
-pin grid. Live `check.py` on a real `hands.db`. Window `--check`
-needs Tk.
+Dispersion / EV diff. Action Profit later-pot-on-called-bet. Live
+`check.py` on a real `hands.db`. Window `--check` needs Tk.
 
 ---
 

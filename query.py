@@ -272,6 +272,40 @@ STUDY_SWITCHES = {
 # Each is an SQL expression over `decisions`, plus how to order the rows,
 # since a report sorted alphabetically puts August before February and the
 # big blind before the button.
+#
+# Size letters are `lines.bucket` as SQL, not a second set of edges.
+# `--size m`, `--by size` and the Bet Sizes pane have to name the same
+# pots; a CASE that drifted from `size_sql` would split a report and a
+# filter onto different hands and look like a finding.
+
+
+def size_expr():
+    """SQL CASE matching lines.bucket and size_sql, one letter per pot-frac."""
+    parts = ["CASE"]
+    prev = None
+    for edge, name in lines.SIZES:
+        if prev is None:
+            parts.append(
+                f"WHEN pot_frac IS NOT NULL AND pot_frac <= {edge} "
+                f"THEN '{name}'")
+        else:
+            parts.append(
+                f"WHEN pot_frac > {prev} AND pot_frac <= {edge} "
+                f"THEN '{name}'")
+        prev = edge
+    parts.append(f"WHEN pot_frac > {prev} THEN '{lines.OVERBET}'")
+    parts.append("ELSE NULL END")
+    return " ".join(parts)
+
+
+SIZE_NAMES = {
+    "s": "small (<=40%)",
+    "m": "medium (40-60%)",
+    "l": "large (60-90%)",
+    "p": "pot (90-120%)",
+    "o": "overbet (>120%)",
+}
+
 DIMENSIONS = {
     "position": ("position", lambda k: (
         ["UTG", "HJ", "CO", "BTN", "SB", "BB"].index(k)
@@ -319,6 +353,8 @@ DIMENSIONS = {
     "hand": ("made", str),
     "flush_draw": ("fd", str),
     "straight_draw": ("sd", str),
+    "size": (size_expr(), lambda k: (
+        list(lines.BUCKETS).index(k) if k in lines.BUCKETS else 99)),
 }
 
 # A Smart Report is a named situation, the way Hand2Note's tree is: not
@@ -1505,7 +1541,8 @@ def compare_sides(who_argv, name_a, name_b):
             who + without_who(resolve_filter(name_b)))
 
 
-def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
+def compare_of(con, argv_a, argv_b, name_a=None, name_b=None,
+               dim=None, columns=None, bet_sizes=False, packs=False):
     """
     Two spots, the numbers Hand2Note pins next to each other.
 
@@ -1517,6 +1554,12 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
     n and, when two or more rows were priced, a t interval on that
     mean -- sampling uncertainty, not EV. n=1 prints the mean and
     says why there is no band.
+
+    The compact summary is always there. `--by` adds two breakdown
+    grids of the same dimension; `--bet-sizes` / `--by size` adds
+    two size tables; `packs` adds both sides' full stat lists. That
+    is the richer pin -- two filters' breakdowns, not only THIS vs
+    PINNED as six rows.
     """
     where_a, label_a, _ = build(situation_only(argv_a))
     where_b, label_b, _ = build(situation_only(argv_b))
@@ -1534,7 +1577,7 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
         d, lo, hi, pv = difference(sa["hits"], sa["opps"],
                                    sb["hits"], sb["opps"])
         freq_diff = {"d": d, "lo": lo, "hi": hi, "p": pv}
-    return {
+    out = {
         "a": {"name": name_a, "label": label_a, "argv": list(argv_a),
               "summary": sa, "profit": pa, "call_profit": ca,
               "amount_won": wa},
@@ -1543,6 +1586,24 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
               "amount_won": wb},
         "freq_diff": freq_diff,
     }
+    want_sizes = bet_sizes or dim == "size" or packs
+    if want_sizes:
+        out["sizes"] = {
+            "a": bet_sizes_of(con, where_a, argv_a),
+            "b": bet_sizes_of(con, where_b, argv_b),
+        }
+    if dim and dim in DIMENSIONS and dim != "size":
+        cols = list(columns or columns_for(argv_a))
+        out["by"] = {
+            "dim": dim,
+            "a": report_of(con, where_a, dim, cols, argv_a),
+            "b": report_of(con, where_b, dim, cols, argv_b),
+        }
+    if packs:
+        _n_a, rows_a = stats_of(con, where_a)
+        _n_b, rows_b = stats_of(con, where_b)
+        out["packs"] = {"a": rows_a, "b": rows_b}
+    return out
 
 
 def show_compare(got):
@@ -1599,6 +1660,143 @@ def show_compare(got):
           "calls when raise was also legal. A dash is unpriced. "
           "A band next to n is a t interval on the observed mean, "
           "not EV; n=1 has no band. --versus is the Holm table.")
+    if got.get("sizes"):
+        show_compare_sizes(got)
+    if got.get("by"):
+        show_compare_by(got)
+    if got.get("packs"):
+        show_compare_packs(got)
+
+
+def _ap_cell(p):
+    if not p or p.get("bb_per_hand") is None:
+        return "–"
+    return f"{p['bb_per_hand']:+.2f}"
+
+
+def show_compare_sizes(got):
+    """Two Bet Sizes tables, aligned on the same letters."""
+    a = (got.get("sizes") or {}).get("a") or {}
+    b = (got.get("sizes") or {}).get("b") or {}
+    by_a = {r["key"]: r for r in a.get("rows") or []}
+    by_b = {r["key"]: r for r in b.get("rows") or []}
+    keys = [k for k in lines.BUCKETS if k in by_a or k in by_b]
+    if not keys:
+        return
+    print("BET SIZES")
+    print(f"{'':22} {'THIS':^28} {'PINNED':^28}")
+    print(f"{'':22} {'hits/opps':>12} {'freq':>8} {'AP':>7} "
+          f"{'hits/opps':>12} {'freq':>8} {'AP':>7}")
+    for k in keys:
+        ra, rb = by_a.get(k) or {}, by_b.get(k) or {}
+        print(f"{SIZE_NAMES[k]:22} "
+              f"{_hits_cell(ra):>12} {_freq_cell(ra):>8} {_ap_cell(ra.get('profit')):>7} "
+              f"{_hits_cell(rb):>12} {_freq_cell(rb):>8} {_ap_cell(rb.get('profit')):>7}")
+    print()
+    print("  freq is this size of the parent filter. Checks and folds "
+          "have no size, so the column will not sum to 100% there.")
+    print("  AP is Action Profit v1 on those hits. --size LETTER opens "
+          "a row. Later pot on a called bet stays unpriced.")
+    print()
+
+
+def _hits_cell(r):
+    if not r or r.get("opps") is None:
+        return "–"
+    return f"{r.get('hits', 0):,}/{r.get('opps', 0):,}"
+
+
+def _freq_cell(r):
+    if not r or not r.get("opps"):
+        return "–"
+    return f"{r.get('pct', 0):.1f}%"
+
+
+def show_compare_by(got):
+    """Two `--by` grids, one dimension, keys aligned."""
+    blob = got.get("by") or {}
+    ga, gb = blob.get("a") or {}, blob.get("b") or {}
+    dim = blob.get("dim") or ga.get("dim") or "by"
+    cols = ga.get("cols") or gb.get("cols") or []
+    order = DIMENSIONS[dim][1] if dim in DIMENSIONS else str
+    keys = sorted(set(ga.get("keys") or []) | set(gb.get("keys") or []),
+                  key=lambda k: order(k) if k is not None else "")
+    if not keys or not cols:
+        return
+    print(f"BY {dim}")
+    head = f"{'':14}"
+    for side in ("THIS", "PINNED"):
+        head += f" {side:^{(11 * len(cols)) + 8}}"
+    print(head)
+    print(f"{dim[:13]:<14}" + "".join(
+        f"{BY_KEY[c].label[:9]:>11}" for c in cols) + f"{'n':>8}"
+          + "".join(f"{BY_KEY[c].label[:9]:>11}" for c in cols) + f"{'n':>8}")
+    for k in keys:
+        cells = []
+        for grid, counts in ((ga.get("grid") or {}, ga.get("counts") or {}),
+                             (gb.get("grid") or {}, gb.get("counts") or {})):
+            for c in cols:
+                n, kk = grid.get(c, {}).get(k, (0, 0))
+                cells.append(f"{'--':>11}" if not n else f"{100 * kk / n:9.1f}% ")
+            cells.append(f"{counts.get(k, 0):>8,}")
+        print(f"{str(k)[:13]:<14}" + "".join(cells))
+    print()
+    print("  two filters, one split. '?' is not marked here -- n is "
+          "the filter's own decisions in that bucket.")
+    print()
+
+
+def show_compare_packs(got):
+    """Two full stat packs, keys aligned."""
+    pa = {r["key"]: r for r in (got.get("packs") or {}).get("a") or []}
+    pb = {r["key"]: r for r in (got.get("packs") or {}).get("b") or []}
+    keys = []
+    seen = set()
+    for r in ((got.get("packs") or {}).get("a") or []) + \
+             ((got.get("packs") or {}).get("b") or []):
+        if r["key"] not in seen:
+            seen.add(r["key"])
+            keys.append(r["key"])
+    if not keys:
+        return
+    print("STATS")
+    print(f"{'':22} {'THIS':>18} {'PINNED':>18}")
+    last = None
+    for key in keys:
+        a, b = pa.get(key), pb.get(key)
+        group = (a or b or {}).get("group")
+        if group != last:
+            print(f"  [{group}]")
+            last = group
+        label = (a or b)["label"]
+        print(f"{label:22} {_pack_cell(a):>18} {_pack_cell(b):>18}")
+    print()
+
+
+def _pack_cell(r):
+    if not r or not r.get("n"):
+        return "–"
+    return f"{r['pct']:.1f}% n={r['n']:,}"
+
+
+def show_bet_sizes(con, where, label, argv=None, parts=()):
+    """The Bet Sizes pane, for a terminal."""
+    print(f"\nfilter: {label}")
+    print("bet sizes")
+    print("=" * (len(label) + 8))
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    print(f"{n} decisions match")
+    if not n:
+        print("  " + why_empty(con, parts))
+        return
+    blob = bet_sizes_of(con, where, argv)
+    _print_bet_sizes(blob)
+    print("  apply a row with --size LETTER, or click it.")
+    print("  freq is this size of the parent filter. Checks and folds")
+    print("  have no size, so the column will not sum to 100% there.")
+    print("  act bb is Action Profit v1 on those hits -- later pot on")
+    print("  a called bet stays unpriced. A dash is unpriced.")
 
 
 def matching_hands(con, where, limit=None):
@@ -1782,6 +1980,64 @@ def outcomes_of(con, where):
         out.append({"key": key, "label": label, "n": bets, "k": k,
                     "pct": 100 * p, "band": 100 * (hi - lo) / 2})
     return {"n": n, "bets": bets, "rows": out, "flag": "--outcome"}
+
+
+def bet_sizes_of(con, where, argv=None):
+    """
+    Hits/opps, freq, Action Profit by pot-frac bucket.
+
+    The current filter is the opportunities. Each row is the matching
+    decisions whose pot_frac lands in that letter -- the same edges as
+    `--size m` and `lines.bucket`. Checks and folds have no size and
+    are not a row; that is why the freqs will not sum to 100% on a
+    situation that includes them.
+
+    Clicking a row is `--size` of that letter. Action Profit is v1 on
+    those hits -- later pot on a called bet stays unpriced.
+    """
+    argv = situation_only(list(argv or []))
+    opps = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    rows = []
+    for letter in lines.BUCKETS:
+        child = f"({where}) AND ({size_sql(letter)})"
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {child}").fetchone()[0]
+        if not hits:
+            continue
+        p, lo, hi = wilson(hits, opps) if opps else (0.0, 0.0, 0.0)
+        rows.append({
+            "key": letter,
+            "label": SIZE_NAMES[letter],
+            "hits": hits,
+            "opps": opps,
+            "n": opps,
+            "k": hits,
+            "pct": 100 * p,
+            "band": 100 * (hi - lo) / 2,
+            "profit": action_profit_of(con, child),
+            "how": f"--size {letter}",
+            "argv": list(argv) + ["--size", letter],
+        })
+    return {"n": opps, "rows": rows, "flag": "--size"}
+
+
+def report_of(con, where, dim, columns, argv=None):
+    """
+    The `--by` grid as data, so pin can draw two of them.
+
+    Same numbers `show_report` prints: rates per bucket, the filter's
+    own n (not VPIP's), and Won$ when the pack carries it.
+    """
+    expr, order = DIMENSIONS[dim]
+    grid = {c: rates_by(con, BY_KEY[c], expr, where) for c in columns}
+    won_by = (amount_won_by(con, where, expr)
+              if pack_wants_won(argv or []) else {})
+    counts = counts_by(con, expr, where)
+    keys = sorted({k for g in grid.values() for k in g} | set(counts),
+                  key=lambda k: order(k) if k is not None else "")
+    return {"dim": dim, "cols": list(columns), "grid": grid,
+            "counts": counts, "keys": keys, "won_by": won_by}
 
 
 def counts_by(con, expr, where):
@@ -2913,6 +3169,24 @@ def _print_related(related):
     print()
 
 
+def _print_bet_sizes(blob):
+    if not blob or not blob.get("rows"):
+        return
+    print("  [bet sizes]")
+    print(f"  {'':22} {'freq':>7} {'hits/opps':>14} {'act bb':>9}  apply")
+    for r in blob["rows"]:
+        thin = " ?" if r["n"] < 30 else "  "
+        prof = r.get("profit") or {}
+        if prof.get("bb_per_hand") is not None:
+            act = f"{prof['bb_per_hand']:+.2f}"
+        else:
+            act = "   –"
+        print(f"  {r['label']:22} {r['pct']:6.1f}% "
+              f"{'+/-%.0f' % r['band']:>6}{thin}"
+              f"{r['hits']:>5}/{r['opps']:<6} {act:>8}  {r['how']}")
+    print()
+
+
 def _print_chain(title, chain):
     if not chain["rows"]:
         return
@@ -3017,6 +3291,7 @@ def show_stats(con, where, label, parts=(), related=None, argv=None):
                  chain_report(con, where, argv, False))
     _print_chain("next actions  (this player)",
                  chain_report(con, where, argv, True))
+    _print_bet_sizes(bet_sizes_of(con, where, argv))
     last = None
     for r in rows:
         if r["group"] != last:
@@ -3391,22 +3666,22 @@ def show_report(con, where, label, dim, columns, min_n=30, argv=None):
     Cells below `min_n` chances are printed but marked, because dropping
     them would hide that the split ran out of data and leaving them unmarked
     would let a 100% on four hands be read as a tendency.
+
+    `--by size` is the Bet Sizes pane, not VPIP-by-pot-frac: hits/opps,
+    freq and Action Profit per letter. `--show` still adds stat columns
+    after that table when somebody named them.
     """
-    expr, order = DIMENSIONS[dim]
+    if dim == "size":
+        show_bet_sizes(con, where, label, argv)
+        if not (argv and "--show" in argv):
+            return
     print(f"\nfilter: {label}")
     print(f"by {dim}")
     print("=" * (len(label) + 8))
 
-    stats = [BY_KEY[c] for c in columns]
-    grid = {s.key: rates_by(con, s, expr, where) for s in stats}
-    won_by = (amount_won_by(con, where, expr)
-              if pack_wants_won(argv or []) else {})
-    # Decisions the filter selected, per bucket -- not VPIP's n. VPIP's
-    # chance is preflop, so under a flop or river filter that count is
-    # zero and every row looks empty even when the cells have data.
-    counts = counts_by(con, expr, where)
-    keys = sorted({k for g in grid.values() for k in g} | set(counts),
-                  key=lambda k: order(k) if k is not None else "")
+    got = report_of(con, where, dim, columns, argv)
+    grid, counts, keys, won_by = (
+        got["grid"], got["counts"], got["keys"], got["won_by"])
     if not keys:
         print("nothing matches")
         return
@@ -3977,6 +4252,8 @@ def usage():
     print(f"    {'--faced-next':14} Faced Next report (freq, hits/opps, "
           f"action profit) from this filter")
     print(f"    {'--next-actions':14} Next Actions report, same columns")
+    print(f"    {'--bet-sizes':14} Bet Sizes pane: hits/opps, freq, "
+          f"Action Profit by pot-frac bucket (same as --by size)")
     print(f"    {'--from':14} alias for --filter, for --faced-next / "
           f"--next-actions")
     print(f"    {'--branch':14} apply a Faced Next / Next Actions row "
@@ -4008,7 +4285,8 @@ def usage():
     print(f"    {'--filter':14} the same, a --quick key, JSON argv, "
           f"or a FilterDef object")
     print(f"    {'--pin':14} freeze a named report, same person: "
-          f"two-column Hits/Opps / freq / Action Profit / Call Profit")
+          f"compact Hits/Opps / freq / Action Profit, plus two "
+          f"--by grids, two Bet Sizes tables, or two stat packs")
     print(f"    {'--compare':14} two named reports, same columns "
           f"(--compare \"Flop c-bets\" \"Flop vs c-bet\")")
     print(f"    {'--versus':14} Holm table of every stat between "
@@ -4151,6 +4429,40 @@ def check_shape():
         fails.append(f"size s is {size_sql('s')!r}")
     if lines.bucket(0.55) != "m":
         fails.append("size m does not match lines.bucket")
+    if "size" not in DIMENSIONS:
+        fails.append("--by size is not a dimension")
+    if DIMENSIONS["size"][0] != size_expr():
+        fails.append("--by size CASE drifted from size_expr")
+    for letter in lines.BUCKETS:
+        if letter not in SIZE_NAMES:
+            fails.append(f"SIZE_NAMES dropped {letter}")
+        if letter not in size_expr():
+            fails.append(f"size_expr dropped letter {letter}")
+    # The CASE and lines.bucket must agree on every edge, including
+    # the ones that sit exactly on a boundary -- a half-pot bet is
+    # medium, and a 40% bet is small, because bucket is `<= edge`.
+    size_con = sqlite3.connect(":memory:")
+    size_con.execute("CREATE TABLE decisions (pot_frac REAL)")
+    probes = (0.0, 0.4, 0.4000001, 0.55, 0.6, 0.6000001, 0.9, 1.0,
+              1.2, 1.2000001, 2.0)
+    size_con.executemany("INSERT INTO decisions VALUES (?)",
+                         [(x,) for x in probes] + [(None,)])
+    for frac, letter in size_con.execute(
+            f"SELECT pot_frac, {size_expr()} FROM decisions"):
+        want = lines.bucket(frac) or None
+        # lines.bucket(None) is "" ; the CASE is NULL. Same fact.
+        got = letter or None
+        want = want or None
+        if got != want:
+            fails.append(f"size_expr({frac}) is {got!r}, "
+                         f"lines.bucket is {want!r}")
+        if frac is not None and want:
+            n = size_con.execute(
+                f"SELECT COUNT(*) FROM decisions WHERE pot_frac = ? "
+                f"AND ({size_sql(want)})", (frac,)).fetchone()[0]
+            if n != 1:
+                fails.append(f"size_sql({want!r}) missed pot_frac={frac}")
+    size_con.close()
     # The three outcomes partition an aggressive row: a bet that is
     # folded to, called, or raised. Building each must stay exclusive
     # enough that AND-ing two of them is empty SQL, not a crash.
@@ -4322,6 +4634,54 @@ def check_compare():
         fails.append("compare_of dropped the frequency difference")
     if got["a"]["name"] != "first in" or got["b"]["name"] != "last raise":
         fails.append("compare_of dropped a side's name")
+
+    sizes = bet_sizes_of(con, "street = 'flop'")
+    letters = [r["key"] for r in sizes["rows"]]
+    if letters != ["m", "p"]:
+        fails.append(f"flop bet sizes were {letters}, not ['m', 'p']")
+    by_m = {r["key"]: r for r in sizes["rows"]}
+    if (by_m.get("m") or {}).get("hits") != 2 \
+            or (by_m.get("p") or {}).get("hits") != 1:
+        fails.append(f"bet size hits were {by_m}, not m=2 p=1")
+    if (by_m.get("m") or {}).get("opps") != 5:
+        fails.append(f"bet size opps were {(by_m.get('m') or {}).get('opps')}, "
+                     f"not 5 (checks/folds have no size and stay in the parent)")
+    if (by_m.get("m") or {}).get("how") != "--size m":
+        fails.append("bet size row is not a --size click")
+
+    # `--last-raise` is was_agg, and this fixture sets that on the
+    # first-in bets too. The raise row is the one with a pot-sized
+    # pot_frac; comparing first-in to that is two different size
+    # letters, which is the richer pin.
+    rich = compare_of(con, ["--first-in"], ["--where", "action = 'R'"],
+                      "first in", "the raise", dim="size")
+    sa = {r["key"]: r for r in (rich.get("sizes") or {}).get("a", {}).get("rows") or []}
+    sb = {r["key"]: r for r in (rich.get("sizes") or {}).get("b", {}).get("rows") or []}
+    if set(sa) != {"m"}:
+        fails.append(f"pinned first-in sizes were {set(sa)}, not {{m}}")
+    if set(sb) != {"p"}:
+        fails.append(f"pinned raise sizes were {set(sb)}, not {{p}}")
+    if rich.get("by"):
+        fails.append("--by size grew a stat grid -- it is the Bet Sizes pane")
+    if (sa.get("m") or {}).get("hits") != 2 \
+            or (sb.get("p") or {}).get("hits") != 1:
+        fails.append("richer pin size hits drifted from bet_sizes_of")
+
+    by_grid = compare_of(con, ["--first-in"], ["--where", "action = 'R'"],
+                         "first in", "the raise",
+                         dim="street", columns=["overbet"])
+    if not by_grid.get("by"):
+        fails.append("pin --by street dropped the two grids")
+    elif by_grid["by"]["a"]["counts"].get("flop") != 2:
+        fails.append(
+            f"pin --by street THIS n={by_grid['by']['a']['counts']}, "
+            f"not 2 first-in flop rows")
+    elif by_grid["by"]["b"]["counts"].get("flop") != 1:
+        fails.append(
+            f"pin --by street PINNED n={by_grid['by']['b']['counts']}, "
+            f"not 1 raise flop row")
+    if by_grid.get("sizes"):
+        fails.append("--by street also drew Bet Sizes -- that is --by size")
     con.close()
     print(f"pin / side-by-side compare    "
           f"{'yes' if not fails else 'NO'}")
@@ -5376,7 +5736,8 @@ def main(argv):
         argv = argv[:i] + rest[2:]
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart", "--related", "--faced-next", "--next-actions"):
+              "--chart", "--related", "--faced-next", "--next-actions",
+              "--bet-sizes"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -5545,7 +5906,11 @@ def main(argv):
             else:
                 argv_a, argv_b = pin_sides(argv, pinned)
                 name_a, name_b = None, pinned
-            show_compare(compare_of(con, argv_a, argv_b, name_a, name_b))
+            want_sizes = mode == "--bet-sizes" or dim == "size"
+            show_compare(compare_of(
+                con, argv_a, argv_b, name_a, name_b,
+                dim=dim, columns=columns, bet_sizes=want_sizes,
+                packs=not dim and not want_sizes))
         else:
             try:
                 other_argv, named_spot = resolve_filter(other), True
@@ -5568,7 +5933,8 @@ def main(argv):
         # a machine that has not imported yet.
         show_related(neighbours, label)
         return 0
-    if mode in ("--faced-next", "--next-actions") and not Path(DB).exists():
+    if mode in ("--faced-next", "--next-actions", "--bet-sizes") \
+            and not Path(DB).exists():
         raise SystemExit(f"no database at {DB} -- load some hands first")
     con = sqlite3.connect(DB)
     notes.attach(con)
@@ -5596,6 +5962,8 @@ def main(argv):
         show_chain_report(con, where, label, argv, False)
     elif mode == "--next-actions":
         show_chain_report(con, where, label, argv, True)
+    elif mode == "--bet-sizes":
+        show_bet_sizes(con, where, label, argv, _parts)
     elif dim:
         show_report(con, where, label, dim, columns, min_n, argv=argv)
     else:
