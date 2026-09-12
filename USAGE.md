@@ -270,6 +270,11 @@ on a filter:
   c-bet", Action Profit is the priced raises (and folds as 0);
   Call Profit Rate is the priced calls. Sitting next to each
   other is the comparison. Neither is EV.
+
+  Both means print **n priced of n hits**. When two or more rows
+  were priced, a 95% t interval sits on the observed mean --
+  sampling uncertainty, not EV. n=1 prints the mean and says why
+  there is no band. Wilson stays for rates.
 - **This spot** -- fold / check / call / bet / raise of the filtered
   decisions, each with its `n` and a Wilson interval.
 - **Faced next** / **next actions** -- a report, not just a mix. Each
@@ -315,8 +320,11 @@ python query.py --filter "2nd Barrel" --stats
 python query.py --filter "Missed 3rd Barrel" --hero
 ```
 
-Won$ / Won hand% stay out of the pack -- they are spots-sourced and
-blank under a street filter.
+Won$ / Won hand% sit on the Raise C-bet / flop-c-bet / barrel packs
+as a **join extra**, not as a Stat column. A spots-sourced Stat
+blanks under a street filter; this join does not. They are whole-hand
+`net_bb` of the filtered seats, MTT excluded, and the note says so.
+On `--by` they are extra columns after the decision stats.
 
 ```bash
 python query.py --hero --filter "Flop c-bets"
@@ -660,11 +668,24 @@ as well as name, so the situations are narrowed to that site too.
 chooses people and a report describes a situation; save the situation and
 pick the players beside it.
 
+A parked cohort also prints its **preflop range**: hole-card coverage
+by site (Ignition shows every hand including folds; ACR is
+showdown-biased), the top combos, and `--chart` / `--range` for the
+13x13 and the postflop breakdown. A mixed-site cohort is a mixture of
+a full range and a showdown-selected one -- the coverage line is
+there so that cannot be read as "the range".
+
+```bash
+python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --chart
+python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --range
+python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet --stats
+```
+
 Not this, on purpose: nested `Value(Value(...))`; H2N's full stat-name
 catalog and positional `[MP;IP]` suffixes; `VsHeroCases` / `AmountWon` /
-`ActionProfit` as expression atoms; Preflop Range on the pool; Bet Sizes
-as a cohort view; two cohorts side by side (that is `--versus` of two
-populations, already shipped, not a second Multi-Player compare).
+`ActionProfit` as expression atoms; Bet Sizes as a cohort view; two
+cohorts side by side (that is `--versus` of two populations, already
+shipped, not a second Multi-Player compare).
 
 Bear the sample size in mind before reading anything into a small cohort. 85
 ACR players have 100+ hands and eight have 500+, so `--hands ">=500"` is

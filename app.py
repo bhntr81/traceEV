@@ -1085,6 +1085,10 @@ class App(ImportMixin, ttk.Frame):
                 out["summary"] = query.spot_summary(con, where, argv)
                 out["profit"] = query.action_profit_of(con, where)
                 out["call_profit"] = query.call_profit_of(con, where)
+                if query.pack_wants_won(argv):
+                    out["amount_won"] = query.amount_won_of(con, where)
+                if cohort_spec is not None:
+                    out["cohort_range"] = _cohort_range_blob(con, where)
                 out["faced"] = query.chain_report(con, where, argv, False)
                 out["next"] = query.chain_report(con, where, argv, True)
                 out["outcomes"] = query.outcomes_of(con, where)
@@ -1107,8 +1111,10 @@ class App(ImportMixin, ttk.Frame):
                 counts = query.counts_by(con, expr, where)
                 keys = sorted({k for g in grid.values() for k in g} | set(counts),
                               key=lambda k: order(k) if k is not None else "")
+                won_by = (query.amount_won_by(con, where, expr)
+                          if query.pack_wants_won(argv) else {})
                 out.update(dim=dim, cols=cols, grid=grid, counts=counts,
-                           keys=keys)
+                           keys=keys, won_by=won_by)
             elif view == "results":
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
@@ -1279,14 +1285,23 @@ class App(ImportMixin, ttk.Frame):
             pin_ap = (f"{pb['bb_per_hand']:+.2f} bb"
                       if pb.get("bb_per_hand") is not None else "–")
             tv.insert("", "end", values=(
-                "action profit", this_ap, "", pin_ap, ""))
+                "action profit", this_ap, _profit_band(pa), pin_ap, ""))
             ca, cb = a.get("call_profit") or {}, b.get("call_profit") or {}
             this_cp = (f"{ca['bb_per_hand']:+.2f} bb"
                        if ca.get("bb_per_hand") is not None else "–")
             pin_cp = (f"{cb['bb_per_hand']:+.2f} bb"
                       if cb.get("bb_per_hand") is not None else "–")
             tv.insert("", "end", values=(
-                "call profit", this_cp, "", pin_cp, ""))
+                "call profit", this_cp, _profit_band(ca), pin_cp, ""))
+            wa, wb = a.get("amount_won") or {}, b.get("amount_won") or {}
+            if wa.get("hands") or wb.get("hands"):
+                this_w = (f"{wa['bb_per_hand']:+.2f} bb"
+                          if wa.get("bb_per_hand") is not None else "–")
+                pin_w = (f"{wb['bb_per_hand']:+.2f} bb"
+                         if wb.get("bb_per_hand") is not None else "–")
+                tv.insert("", "end", values=(
+                    "Won$", this_w, f"n={wa.get('hands') or 0:,}",
+                    pin_w, ""))
             diff = cmp.get("freq_diff") or {}
             if diff.get("d") is not None:
                 tv.insert("", "end", values=(
@@ -1321,13 +1336,17 @@ class App(ImportMixin, ttk.Frame):
             if prof["bb_per_hand"] is not None:
                 tv.insert("", "end", values=(
                     "action profit", f"{prof['bb_per_hand']:+.2f} bb",
-                    "priced hits", f"{prof['priced']:,} of {prof['n']:,}", ""))
+                    _profit_band(prof),
+                    f"{prof['priced']:,} of {prof['n']:,}", ""))
             else:
                 tv.insert("", "end", values=(
                     "action profit", "unpriced", "", f"{prof['n']:,}", ""),
                     tags=("note",))
             tv.insert("", "end", values=(prof["note"], "", "", "", ""),
                       tags=("note",))
+            if prof.get("interval_note"):
+                tv.insert("", "end", values=(prof["interval_note"], "", "", "", ""),
+                          tags=("note",))
             for edge in prof.get("edges") or []:
                 tv.insert("", "end", values=(edge, "", "", "", ""),
                           tags=("note",))
@@ -1336,7 +1355,8 @@ class App(ImportMixin, ttk.Frame):
             if callp["bb_per_hand"] is not None:
                 tv.insert("", "end", values=(
                     "call profit", f"{callp['bb_per_hand']:+.2f} bb",
-                    "priced calls", f"{callp['priced']:,} of {callp['n']:,}",
+                    _profit_band(callp),
+                    f"{callp['priced']:,} of {callp['n']:,}",
                     ""))
             else:
                 tv.insert("", "end", values=(
@@ -1344,9 +1364,50 @@ class App(ImportMixin, ttk.Frame):
                     tags=("note",))
             tv.insert("", "end", values=(callp["note"], "", "", "", ""),
                       tags=("note",))
+            if callp.get("interval_note"):
+                tv.insert("", "end", values=(
+                    callp["interval_note"], "", "", "", ""), tags=("note",))
             for edge in callp.get("edges") or []:
                 tv.insert("", "end", values=(edge, "", "", "", ""),
                           tags=("note",))
+        won = out.get("amount_won")
+        if won and won.get("hands"):
+            band = (_profit_band(won) if won.get("lo") is not None
+                    else f"±{won['error']:.0f} bb/100")
+            tv.insert("", "end", values=(
+                "Won$", f"{won['bb_per_hand']:+.2f} bb",
+                band, f"{won['hands']:,} hands", ""))
+            wband = (f"[{won['won_lo']:.0f}, {won['won_hi']:.0f}]"
+                     if won.get("won_lo") is not None else "")
+            tv.insert("", "end", values=(
+                "Won hand%", f"{won['won_pct']:.1f}%", wband,
+                f"{won['won_hands']:,} of {won['hands']:,}", ""))
+            tv.insert("", "end", values=(won["note"], "", "", "", ""),
+                      tags=("note",))
+        cr = out.get("cohort_range")
+        if cr:
+            tv.insert("", "end", values=("PREFLOP RANGE -- THIS COHORT",
+                                        "", "", "", ""), tags=("group",))
+            cov = cr.get("coverage") or {}
+            tv.insert("", "end", values=(
+                "hole cards shown",
+                f"{cr.get('seen', 0):,} of {cr.get('total', 0):,}",
+                f"{cov.get('pct', 0):.0f}%", "", ""), tags=("note",))
+            for s in cov.get("sites") or []:
+                tv.insert("", "end", values=(
+                    s.get("site") or "?",
+                    f"{s['seen']:,}/{s['total']:,}",
+                    f"{s['pct']:.0f}%", s.get("note") or "", ""),
+                    tags=("note",))
+            if cov.get("note"):
+                tv.insert("", "end", values=(cov["note"], "", "", "", ""),
+                          tags=("note",))
+            if cr.get("top"):
+                tv.insert("", "end", values=(
+                    "most of it",
+                    ", ".join(f"{t['combo']} {t['pct']:.1f}%"
+                              for t in cr["top"]),
+                    "", "", ""), tags=("note",))
         acts = out.get("actions") or {}
         if acts.get("mix"):
             tv.insert("", "end", values=("THIS SPOT", "", "", "", ""),
@@ -1447,11 +1508,23 @@ class App(ImportMixin, ttk.Frame):
             f"({100 * out['n'] / out['total']:.0f}%) — this is the range that "
             f"was SEEN, and on ACR that is the showdown half",
             "", "", "", ""))
+        cov = out.get("coverage") or {}
+        for s in cov.get("sites") or []:
+            tv.insert("", "end", tags=("note",), values=(
+                f"{s.get('site') or '?'}: {s['seen']:,}/{s['total']:,} "
+                f"({s['pct']:.0f}%) — {s.get('note') or ''}",
+                "", "", "", ""))
+        if cov.get("note"):
+            tv.insert("", "end", tags=("note",), values=(
+                cov["note"], "", "", "", ""))
 
     def _render_report(self, tv, out):
         cols = ["by"] + [BY_KEY[c].label for c in out["cols"]] + ["n"]
-        self._cols(tv, tuple(cols), [130] + [95] * len(out["cols"]) + [80],
-                   {"by": "w"})
+        widths = [130] + [95] * len(out["cols"]) + [80]
+        if out.get("won_by"):
+            cols += ["Won$ bb/100", "Won hand%"]
+            widths += [110, 90]
+        self._cols(tv, tuple(cols), widths, {"by": "w"})
         if not out["keys"]:
             tv.insert("", "end", values=["nothing matches"] + [""] * len(cols[1:]),
                       tags=("neg",))
@@ -1471,7 +1544,21 @@ class App(ImportMixin, ttk.Frame):
             if isinstance(n_here, tuple):
                 n_here = n_here[0]
             row.append(f"{n_here:,}")
+            w = (out.get("won_by") or {}).get(k)
+            if out.get("won_by"):
+                if not w:
+                    row.append("–")
+                    row.append("–")
+                else:
+                    row.append(f"{w['bb100']:+.0f} ±{w['error']:.0f}")
+                    row.append(f"{w['won_pct']:.0f}%")
             tv.insert("", "end", values=row, tags=("thin",) if thin else ())
+        if out.get("won_by"):
+            tv.insert("", "end",
+                      values=["Won$ is whole-hand net_bb of these seats, "
+                              "spots-sourced; MTT out. Not this street."]
+                      + [""] * (len(cols) - 1),
+                      tags=("note",))
 
     def _render_results(self, tv, out):
         self._cols(tv, ("figure", "value"), (320, 220), {"figure": "w"})
@@ -1663,6 +1750,19 @@ class App(ImportMixin, ttk.Frame):
                            + ("" if share > 90 else
                               " -- this is the range that was SEEN, which on "
                               "ACR is the hands that got to showdown"))
+        cov = g.get("coverage") or {}
+        extra = []
+        for s in cov.get("sites") or []:
+            extra.append(f"{s.get('site') or '?'}: {s['seen']:,}/{s['total']:,} "
+                         f"({s['pct']:.0f}%) {s.get('note') or ''}")
+        if extra:
+            c.create_text(left, top + size * 13 + 48, anchor="nw", fill=DIM,
+                          font=(UI, 8),
+                          text="  ·  ".join(extra))
+        if cov.get("note"):
+            c.create_text(left, top + size * 13 + 64, anchor="nw", fill=DIM,
+                          font=(UI, 8),
+                          text=cov["note"])
 
     # ---- the graph, drawn rather than served ---------------------------
     def _draw_graph(self, message=None):
@@ -1744,6 +1844,27 @@ class App(ImportMixin, ttk.Frame):
         if cohort_spec is not None:
             label += ", cohort: " + players.describe_cohort(cohort_spec)
         return "all hands" if label == "everything" else label
+
+
+def _cohort_range_blob(con, where):
+    """Preflop range summary for a parked Multi-Player cohort."""
+    g = query.chart_of(con, where)
+    top = []
+    if g["seen"]:
+        ranked = sorted(g["cells"].items(), key=lambda kv: -kv[1][0])[:8]
+        top = [{"combo": c, "pct": 100.0 * n / g["seen"], "n": n}
+               for c, (n, _k) in ranked]
+    return {"coverage": g.get("coverage"), "seen": g["seen"],
+            "total": g["total"], "top": top}
+
+
+def _profit_band(p):
+    """Interval cell for a mean, or the reason there is none."""
+    if p.get("lo") is not None:
+        return f"[{p['lo']:+.1f}, {p['hi']:+.1f}]"
+    if p.get("priced") == 1:
+        return "n=1, no interval"
+    return p.get("interval_note") or ""
 
 
 def _cohort_expr(conditions):

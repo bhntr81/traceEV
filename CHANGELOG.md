@@ -8,6 +8,73 @@ Newest first.
 
 ---
 
+## Intervals on profit means, Won$ on c-bet packs, cohort preflop range
+
+Three leftovers from the tracking-half arc. No HUD. No solver. No
+invented EV.
+
+### Added — n and a t interval on Action Profit / Call Profit Rate
+
+A bare mean of priced rows was fake precision: +2.40 bb/hand on eight
+hits reads as a finding. The mean still sits where it sat. Next to it:
+how many rows were priced, and when two or more were, a 95% Student-t
+interval on that observed mean (`stats.mean_interval`, from SUM and
+SUM(x²)). n=1 prints the mean and says why there is no band -- one
+observation has no estimated spread.
+
+That interval is **sampling uncertainty, not EV**. Hands in a session
+are not independent and the tails are heavy; the band is still better
+than a point that looks exact. Wilson stays for rates. The same cells
+are on `--stats`, `--pin` / `--compare`, the window, and the page.
+
+### Added — Won$ / Won hand% on Raise C-bet / c-bet packs
+
+They stay **out of `QUICK_PACKS`**. A spots-sourced Stat blanks under
+a street filter, which is the empty-column failure those packs exist
+to stop. The numbers come from a join onto the filtered `(hand, seat)`
+pairs (`amount_won_of` / `amount_won_by`), so a flop filter still has
+them.
+
+Won$ is whole-hand `net_bb`, MTT excluded. Won hand% is the fraction
+of those cash hands with `net_bb > 0`, with a Wilson interval. Won$
+also carries the t interval on the mean and the same `1170/√n` error
+`--results` prints on bb/100. The note says they are spots-sourced
+and limited: the whole pot, not the street.
+
+On `--by` they are extra columns after the eight decision stats, not
+a ninth Stat that would be dropped by the cap.
+
+### Added — Preflop Range on a Multi-Player cohort
+
+`--cohort … --chart` / `--range` already applied the parked players.
+What was missing was saying so, and the hole-card coverage caveat a
+mixed Ignition/ACR cohort hides.
+
+`--stats` under a parked cohort now prints a preflop-range block:
+seen/total by site, the top combos, and `--chart` / `--range` for
+the rest. `coverage_of` asks `sites.revealing()` which rooms show
+every hand including folds; the others are the showdown-selected
+slice. The window's range/chart tabs and the page's new range/chart
+views print the same breakdown.
+
+`--check` holds the interval fixtures (n=3 has a band, n=1 does not),
+Won$ of two cash hands (MTT refused, street filter not blank), and a
+cohort chart that must not include a player the join dropped.
+
+### Not this, on purpose
+
+No HUD. No solver. No Dispersion / EV diff. No richer pin (two full
+`--by` grids). No Bet Sizes pane. No assigning later pot back onto a
+bet that was called -- that stays unpriced on Action Profit.
+
+### What's next
+
+Richer pin, Dispersion / EV diff, Bet Sizes pane, a second `--by`
+pin grid. Live `check.py` on a real `hands.db`. Window `--check`
+needs Tk.
+
+---
+
 ## Call Profit Rate, squeeze as Faced Next, barrel packs
 
 Three leftovers from the reports/filters arc, each where the data

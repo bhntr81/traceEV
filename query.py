@@ -34,6 +34,7 @@ money is summed over the hands those decisions happened in.
     python query.py --cohort --hands ">=500" --vpip ">=28" --pfr "<18" \
         --street flop --stats
     python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet
+    python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --chart
     python query.py --cohort-hands 100 --cohort-vpip 40+ --cohort-pfr <=10 \
         --pos BTN --stats
     python query.py --cohort 'Value(3Bet) < 2 and Opps(3Bet) > 100' --filter 3bet
@@ -68,7 +69,7 @@ import sites
 import stats
 import strength
 from stats import (BY_KEY, STATS, detectable, difference, fmt, holm,
-                   rate, rates as stat_rates, rates_by, wilson)
+                   mean_interval, rate, rates as stat_rates, rates_by, wilson)
 
 DB = Path(__file__).parent / "hands.db"
 
@@ -983,6 +984,16 @@ QUICK_PACKS = {
 }
 
 
+# Won$ / Won hand% belong on these packs. They are NOT Stat keys -- a
+# spots-sourced Stat blanks under a street filter, which is the empty-
+# column failure the pack exists to stop. The numbers come from a join
+# onto the filtered (hand, seat) pairs, so a flop filter still has them.
+CBET_PACKS = frozenset({
+    "cbet_flop", "cbet_flop_not", "raise_cbet",
+    "cbet_turn", "cbet_turn_not", "cbet_river",
+})
+
+
 def _known_columns(keys):
     """Drop names the registry does not have, keep the order, cap at eight."""
     out = []
@@ -1051,6 +1062,18 @@ def columns_for(argv):
             ["fourbet", "fold_to_4bet", "overbet", "faces_overbet",
              "river_agg"])
     return list(DEFAULT_COLUMNS)
+
+
+def pack_wants_won(argv):
+    """
+    True when this filter is a c-bet / raise-cbet / barrel pack.
+
+    Won$ lives here and not in QUICK_PACKS: putting a spots-sourced
+    stat in the column list reprints the blank-column failure those
+    packs were written to stop.
+    """
+    quick = set(flag_values(argv or [], "--quick"))
+    return len(quick) == 1 and next(iter(quick)) in CBET_PACKS
 
 
 # What they DID in the rows the filter already selected. A named stat asks
@@ -1345,20 +1368,29 @@ def action_profit_of(con, where):
         SELECT
           COUNT(*) AS n,
           SUM({expr} IS NOT NULL) AS priced,
-          SUM({expr}) AS profit
+          SUM({expr}) AS profit,
+          SUM(CASE WHEN {expr} IS NOT NULL THEN ({expr})*({expr}) END)
         FROM (SELECT * FROM decisions WHERE {where}) d
         LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
         """
     ).fetchone()
-    n, priced, profit = row[0] or 0, row[1] or 0, row[2]
+    n, priced, profit, sumsq = row[0] or 0, row[1] or 0, row[2], row[3]
+    _mean, lo, hi = mean_interval(profit, sumsq, priced)
     return {
         "n": n, "priced": priced, "unpriced": n - priced,
         "total_bb": profit if profit is not None else 0.0,
         "bb_per_hand": ((profit or 0.0) / priced) if priced else None,
+        "lo": lo, "hi": hi,
         "per": "priced hits",
         "note": ("fold = 0; bet 5 into 10, all fold = +10; "
                  "bet 5, raise, fold = −5. Mean over priced hits, "
                  "not opportunities, not Won$."),
+        "interval_note": (
+            "sampling interval on the observed mean of priced hits, "
+            "not EV" if lo is not None else
+            "no interval -- one priced hit has no estimated spread"
+            if priced == 1 else
+            "no interval -- nothing priced"),
         "edges": list(ACTION_PROFIT_EDGES),
     }
 
@@ -1413,28 +1445,42 @@ def call_profit_of(con, where):
         SELECT
           COUNT(*) AS n,
           SUM({expr} IS NOT NULL) AS priced,
-          SUM({expr}) AS profit
+          SUM({expr}) AS profit,
+          SUM(CASE WHEN {expr} IS NOT NULL THEN ({expr})*({expr}) END)
         FROM (SELECT * FROM decisions WHERE {where}) d
         LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
         """
     ).fetchone()
-    n, priced, profit = row[0] or 0, row[1] or 0, row[2]
+    n, priced, profit, sumsq = row[0] or 0, row[1] or 0, row[2], row[3]
+    _mean, lo, hi = mean_interval(profit, sumsq, priced)
     return {
         "n": n, "priced": priced, "unpriced": n - priced,
         "total_bb": profit if profit is not None else 0.0,
         "bb_per_hand": ((profit or 0.0) / priced) if priced else None,
+        "lo": lo, "hi": hi,
         "per": "priced calls",
         "note": ("call 5, win the pot, no more chips in = +pot_before; "
                  "call 5 and lose = −5. Mean over priced calls, not "
                  "opportunities, not Action Profit, not EV."),
+        "interval_note": (
+            "sampling interval on the observed mean of priced calls, "
+            "not EV" if lo is not None else
+            "no interval -- one priced call has no estimated spread"
+            if priced == 1 else
+            "no interval -- nothing priced"),
         "edges": list(CALL_PROFIT_EDGES),
     }
 
 
 def _profit_cells(p):
-    """One pair of display cells: the mean, and how many were priced."""
+    """One pair of display cells: the mean, and n plus interval if honest."""
     if p.get("bb_per_hand") is not None:
-        return f"{p['bb_per_hand']:+.2f} bb", f"{p['priced']:,} priced"
+        n = f"{p['priced']:,} priced"
+        if p.get("lo") is not None:
+            n += f" [{p['lo']:+.1f}, {p['hi']:+.1f}]"
+        elif p.get("priced") == 1:
+            n += " (n=1, no interval)"
+        return f"{p['bb_per_hand']:+.2f} bb", n
     if p.get("n"):
         return "–", f"{p['n']:,} unpriced"
     return "–", "–"
@@ -1467,9 +1513,10 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
     v1 when priced, and Call Profit Rate when a call with raise
     available is in the filter. The frequency gap is an interval on
     the DIFFERENCE (Newcombe), not whether the two bands overlap.
-    Profit is two means sitting next to each other -- v1 has no
-    interval on a mean of priced hits, and inventing one would look
-    like EV.
+    Profit is two means sitting next to each other. Each carries its
+    n and, when two or more rows were priced, a t interval on that
+    mean -- sampling uncertainty, not EV. n=1 prints the mean and
+    says why there is no band.
     """
     where_a, label_a, _ = build(situation_only(argv_a))
     where_b, label_b, _ = build(situation_only(argv_b))
@@ -1480,6 +1527,8 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
     pb = action_profit_of(con, where_b)
     ca = call_profit_of(con, where_a)
     cb = call_profit_of(con, where_b)
+    wa = amount_won_of(con, where_a) if pack_wants_won(argv_a) else None
+    wb = amount_won_of(con, where_b) if pack_wants_won(argv_b) else None
     freq_diff = None
     if sa.get("opps") and sb.get("opps"):
         d, lo, hi, pv = difference(sa["hits"], sa["opps"],
@@ -1487,9 +1536,11 @@ def compare_of(con, argv_a, argv_b, name_a=None, name_b=None):
         freq_diff = {"d": d, "lo": lo, "hi": hi, "p": pv}
     return {
         "a": {"name": name_a, "label": label_a, "argv": list(argv_a),
-              "summary": sa, "profit": pa, "call_profit": ca},
+              "summary": sa, "profit": pa, "call_profit": ca,
+              "amount_won": wa},
         "b": {"name": name_b, "label": label_b, "argv": list(argv_b),
-              "summary": sb, "profit": pb, "call_profit": cb},
+              "summary": sb, "profit": pb, "call_profit": cb,
+              "amount_won": wb},
         "freq_diff": freq_diff,
     }
 
@@ -1512,7 +1563,15 @@ def show_compare(got):
         per = f"{s['per_1k']:.1f}" if s.get("hands") else "–"
         ap, priced = _profit_cells(p)
         cp, cpriced = _profit_cells(side.get("call_profit") or {})
-        return hits, freq, per, ap, priced, cp, cpriced
+        won = side.get("amount_won") or {}
+        if won.get("bb_per_hand") is not None:
+            wcell = f"{won['bb_per_hand']:+.2f} bb"
+            wn = f"{won['hands']:,} hands"
+            if won.get("won_pct") is not None:
+                wn += f"  won {won['won_pct']:.0f}%"
+        else:
+            wcell, wn = "–", "–"
+        return hits, freq, per, ap, priced, cp, cpriced, wcell, wn
 
     ca, cb = cells(a), cells(b)
     rows = (("hits / opps", ca[0], cb[0]),
@@ -1522,6 +1581,9 @@ def show_compare(got):
             ("", ca[4], cb[4]),
             ("call profit", ca[5], cb[5]),
             ("", ca[6], cb[6]))
+    if a.get("amount_won") or b.get("amount_won"):
+        rows = rows + (("Won$", ca[7], cb[7]),
+                       ("", ca[8], cb[8]))
     print(f"{'':20} {'THIS':>18} {'PINNED':>18}")
     for label, x, y in rows:
         print(f"{label:20} {x:>18} {y:>18}")
@@ -1535,7 +1597,8 @@ def show_compare(got):
     print()
     print("  Action Profit is v1 (priced hits). Call Profit is actual "
           "calls when raise was also legal. A dash is unpriced. "
-          "--versus is the Holm table of every stat.")
+          "A band next to n is a t interval on the observed mean, "
+          "not EV; n=1 has no band. --versus is the Holm table.")
 
 
 def matching_hands(con, where, limit=None):
@@ -2681,7 +2744,8 @@ def range_of(con, where):
 
     return {"rows": rows, "draws": draws, "n": seen, "total": total,
             "weak": 100.0 * weak / seen if seen else 0.0,
-            "strong": 100.0 * (seen - weak) / seen if seen else 0.0}
+            "strong": 100.0 * (seen - weak) / seen if seen else 0.0,
+            "coverage": coverage_of(con, where)}
 
 
 def show_range(con, where, label, parts=()):
@@ -2698,7 +2762,9 @@ def show_range(con, where, label, parts=()):
                 print(why)
         return
     print(f"{out['n']:,} of {out['total']:,} decisions had cards to read "
-          f"({100 * out['n'] / out['total']:.0f}%)\n")
+          f"({100 * out['n'] / out['total']:.0f}%)")
+    _print_coverage(out.get("coverage") or coverage_of(con, where))
+    print()
     for r in out["rows"]:
         bar = "#" * int(round(r["pct"] / 2))
         print(f"  {r['made']:14} {r['pct']:5.1f}%  {r['n']:6,}  "
@@ -2782,7 +2848,8 @@ def chart_of(con, where, stat=None, min_n=3):
     return {"mode": "composition" if stat is None else "rate",
             "stat": None if stat is None else stat.label,
             "cells": cells, "seen": seen, "total": total, "min_n": min_n,
-            "peak": max((n for n, _k in cells.values()), default=0)}
+            "peak": max((n for n, _k in cells.values()), default=0),
+            "coverage": coverage_of(con, where)}
 
 
 def show_chart(con, where, label, stat=None, parts=(), min_n=3):
@@ -2804,6 +2871,7 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3):
     share = 100.0 * g["seen"] / g["total"]
     print(f"{g['seen']:,} of {g['total']:,} player-hands showed cards "
           f"({share:.1f}%)")
+    _print_coverage(g.get("coverage") or coverage_of(con, where))
     if g["mode"] == "composition":
         print("each cell is that combo's share of the range, in percent\n")
     else:
@@ -2912,31 +2980,14 @@ def show_stats(con, where, label, parts=(), related=None, argv=None):
         print(f"  {summ['per_1k']:.1f} hits / 1000 hands"
               f"  (of {summ['hands']:,} player-hands)")
         prof = action_profit_of(con, where)
-        if prof["priced"]:
-            print(f"  action profit  {prof['bb_per_hand']:+.2f} bb/hand"
-                  f"  n={prof['priced']:,} priced of {prof['n']:,} hits"
-                  f"  (not opportunities, not Won$)")
-            print(f"  {prof['note']}")
-            for edge in prof["edges"]:
-                print(f"    unpriced: {edge}")
-        elif prof["n"]:
-            print(f"  action profit  unpriced on {prof['n']:,} hits"
-                  f"  ({prof['note']})")
-            for edge in prof["edges"]:
-                print(f"    unpriced: {edge}")
+        _print_mean_profit("action profit", prof, "hits")
         callp = call_profit_of(con, where)
-        if callp["priced"]:
-            print(f"  call profit    {callp['bb_per_hand']:+.2f} bb/hand"
-                  f"  n={callp['priced']:,} priced calls of {callp['n']:,} hits"
-                  f"  (actual calls, not EV of calling)")
-            print(f"  {callp['note']}")
-            for edge in callp["edges"]:
-                print(f"    unpriced: {edge}")
-        elif callp["n"]:
-            print(f"  call profit    unpriced on {callp['n']:,} hits"
-                  f"  ({callp['note']})")
-            for edge in callp["edges"]:
-                print(f"    unpriced: {edge}")
+        _print_mean_profit("call profit  ", callp, "calls")
+        if pack_wants_won(argv):
+            won = amount_won_of(con, where)
+            _print_amount_won(won)
+        if cohort_loaded(con):
+            _print_cohort_range(con, where)
         print()
     # What they did HERE, before the named stats. A cbet frequency is "of
     # the times they could"; this is "of the decisions you already asked
@@ -3333,7 +3384,7 @@ def show_hand(con, hand_id, seat=None):
         print(f"\nTOTAL POT {d['pot']:.2f}{rake}")
 
 
-def show_report(con, where, label, dim, columns, min_n=30):
+def show_report(con, where, label, dim, columns, min_n=30, argv=None):
     """
     One row per value of the dimension, one column per stat.
 
@@ -3348,6 +3399,8 @@ def show_report(con, where, label, dim, columns, min_n=30):
 
     stats = [BY_KEY[c] for c in columns]
     grid = {s.key: rates_by(con, s, expr, where) for s in stats}
+    won_by = (amount_won_by(con, where, expr)
+              if pack_wants_won(argv or []) else {})
     # Decisions the filter selected, per bucket -- not VPIP's n. VPIP's
     # chance is preflop, so under a flop or river filter that count is
     # zero and every row looks empty even when the cells have data.
@@ -3383,6 +3436,24 @@ def show_report(con, where, label, dim, columns, min_n=30):
         print(f"    {str(k)[:width - 1]:<{width}} n={n}")
     print("\n  '?' marks a cell measured on fewer than "
           f"{min_n} chances -- ignore it.")
+    if won_by:
+        print("\n  Won$ / Won hand% of the hands in each row "
+              "(spots-sourced via the filtered seats; MTT out; "
+              "whole-hand, not this street):")
+        for k in keys:
+            w = won_by.get(k)
+            if not w:
+                print(f"    {str(k)[:width - 1]:<{width}} --")
+                continue
+            band = ""
+            if w.get("lo") is not None:
+                band = f"  [{w['lo']:+.1f}, {w['hi']:+.1f}]"
+            wband = ""
+            if w.get("won_lo") is not None:
+                wband = f" [{w['won_lo']:.0f}, {w['won_hi']:.0f}]"
+            print(f"    {str(k)[:width - 1]:<{width}}"
+                  f"{w['bb100']:+8.1f} bb/100 ±{w['error']:.0f}{band}"
+                  f"  won {w['won_pct']:.0f}%{wband}  n={w['hands']}")
 
 
 def show_results_by(con, where, label, dim):
@@ -3588,6 +3659,213 @@ def show_results(con, where, label, parts=()):
         print(f"  won after flop   {100 * (wwsf or 0) / saw:8.1f}%")
 
 
+def amount_won_of(con, where):
+    """
+    Won$ and Won hand% of the hands this decision filter selected.
+
+    Money is a property of a hand. The filter picks decisions; this
+    collapses to (hand, seat) and reads `spots.net_bb`. That is why a
+    street filter does not blank -- we never ask a spots-sourced Stat
+    whose chance cannot see `street=`. MTT is out (chips are not
+    dollars). The whole pot is credited, not the street.
+
+    Won hand% is a rate, so it gets a Wilson interval. Won$ is a mean
+    of net_bb: t interval when n>=2, plus the same 1170/sqrt(n) error
+    `--results` prints on bb/100, so the two views cannot disagree on
+    what "noise" looks like.
+    """
+    empty = {
+        "hands": 0, "net_bb": 0.0, "bb_per_hand": None, "bb100": None,
+        "error": None, "lo": None, "hi": None,
+        "won_hands": 0, "won_pct": None, "won_lo": None, "won_hi": None,
+        "source": "spots, via the filtered (hand, seat) pairs",
+        "note": ("whole-hand net_bb, not this street. MTT excluded. "
+                 "A spots-sourced Stat would blank here; this join does not."),
+    }
+    pairs = matching_seats(con, where)
+    if not pairs:
+        return empty
+    select_into(con, pairs)
+    row = con.execute(
+        "SELECT COUNT(*), SUM(s.net_bb), SUM(s.net_bb * s.net_bb), "
+        "       SUM(CASE WHEN s.net_bb > 0 THEN 1 ELSE 0 END) "
+        "FROM spots s JOIN _sel ON _sel.hand_id = s.hand_id "
+        "AND _sel.seat = s.seat "
+        "WHERE s.fmt <> 'MTT' AND s.net_bb IS NOT NULL"
+    ).fetchone()
+    n, total, sumsq, won = row[0] or 0, row[1], row[2], row[3] or 0
+    if not n:
+        return empty
+    _mean, lo, hi = mean_interval(total, sumsq, n)
+    p, wlo, whi = wilson(won, n)
+    return {
+        "hands": n,
+        "net_bb": total or 0.0,
+        "bb_per_hand": (total or 0.0) / n,
+        "bb100": 100 * (total or 0.0) / n,
+        "error": 1170 / n ** 0.5,
+        "lo": lo, "hi": hi,
+        "won_hands": won,
+        "won_pct": 100 * p,
+        "won_lo": None if wlo is None else 100 * wlo,
+        "won_hi": None if whi is None else 100 * whi,
+        "source": "spots, via the filtered (hand, seat) pairs",
+        "note": ("whole-hand net_bb, not this street. MTT excluded. "
+                 "A spots-sourced Stat would blank here; this join does not."),
+    }
+
+
+def amount_won_by(con, where, expr):
+    """Won$ / Won hand% per value of a `--by` expression."""
+    rows = con.execute(
+        f"""
+        SELECT g, COUNT(*), SUM(net_bb), SUM(net_bb * net_bb),
+               SUM(won_hand)
+        FROM (
+          SELECT ({expr}) g, d.hand_id, d.seat,
+                 MAX(s.net_bb) AS net_bb,
+                 MAX(CASE WHEN s.net_bb > 0 THEN 1 ELSE 0 END) AS won_hand
+          FROM decisions d
+          JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
+          WHERE ({where}) AND ({expr}) IS NOT NULL
+            AND s.fmt <> 'MTT' AND s.net_bb IS NOT NULL
+          GROUP BY d.hand_id, d.seat
+        )
+        GROUP BY g
+        """
+    )
+    out = {}
+    for g, n, total, sumsq, won in rows:
+        n, won = n or 0, won or 0
+        if not n:
+            continue
+        _mean, lo, hi = mean_interval(total, sumsq, n)
+        p, wlo, whi = wilson(won, n)
+        out[g] = {
+            "hands": n,
+            "net_bb": total or 0.0,
+            "bb_per_hand": (total or 0.0) / n,
+            "bb100": 100 * (total or 0.0) / n,
+            "error": 1170 / n ** 0.5,
+            "lo": lo, "hi": hi,
+            "won_hands": won,
+            "won_pct": 100 * p,
+            "won_lo": None if wlo is None else 100 * wlo,
+            "won_hi": None if whi is None else 100 * whi,
+        }
+    return out
+
+
+def coverage_of(con, where):
+    """
+    Hole-card coverage of the player-hands this filter selected, by site.
+
+    Ignition writes every hand including folds; ACR writes the ones that
+    reached showdown. A cohort mixed across both is a mixture of a full
+    range and a showdown-selected one, and presenting that mixture as
+    "the range" is the H2N showdown-bias failure with a new heading.
+    """
+    rows = list(con.execute(
+        f"""
+        SELECT site, COUNT(*), SUM(combo IS NOT NULL)
+        FROM (SELECT DISTINCT hand_id, seat, site, combo
+              FROM decisions WHERE {where})
+        GROUP BY site
+        """
+    ))
+    sites_out = []
+    seen = total = 0
+    revealing = set(sites.revealing())
+    for site, tot, got in rows:
+        tot, got = tot or 0, got or 0
+        seen += got
+        total += tot
+        reveals = bool(site and site in revealing)
+        sites_out.append({
+            "site": site, "total": tot, "seen": got,
+            "pct": 100.0 * got / tot if tot else 0.0,
+            "reveals": reveals,
+            "note": ("every hand, folds included" if reveals else
+                     "shown hands only -- a stronger slice than the "
+                     "range that arrived"),
+        })
+    return {
+        "seen": seen, "total": total,
+        "pct": 100.0 * seen / total if total else 0.0,
+        "sites": sites_out,
+        "note": ("This is the range that was SEEN. Sites that reveal "
+                 "(Ignition) show every hand including folds; the "
+                 "others show a showdown-selected slice. A mixed "
+                 "cohort is a mixture of the two."),
+    }
+
+
+def _print_coverage(cov):
+    """The seen-fraction, by site, so a mixed cohort cannot hide ACR bias."""
+    if not cov["total"]:
+        return
+    print(f"  hole cards shown  {cov['seen']:,} of {cov['total']:,} "
+          f"player-hands ({cov['pct']:.0f}%)")
+    for s in cov["sites"]:
+        name = s["site"] or "?"
+        print(f"    {name:12} {s['seen']:,}/{s['total']:,} "
+              f"({s['pct']:.0f}%)  -- {s['note']}")
+    print(f"  {cov['note']}")
+
+
+def _print_mean_profit(name, prof, kind):
+    """Action / Call Profit with n and a t interval, or n and why not."""
+    if not prof or not prof["n"]:
+        return
+    if prof["bb_per_hand"] is not None:
+        band = ""
+        if prof.get("lo") is not None:
+            band = f"  [{prof['lo']:+.1f}, {prof['hi']:+.1f}]"
+        print(f"  {name}  {prof['bb_per_hand']:+.2f} bb/hand{band}"
+              f"  n={prof['priced']:,} priced of {prof['n']:,} hits")
+        print(f"  {prof['note']}")
+        print(f"  {prof['interval_note']}")
+    else:
+        print(f"  {name}  unpriced on {prof['n']:,} hits"
+              f"  ({prof['note']})")
+    for edge in prof.get("edges") or []:
+        print(f"    unpriced: {edge}")
+
+
+def _print_amount_won(won):
+    """Won$ / Won hand% on a c-bet pack -- spots-sourced, not blank."""
+    if not won or not won.get("hands"):
+        return
+    band = ""
+    if won.get("lo") is not None:
+        band = f"  [{won['lo']:+.1f}, {won['hi']:+.1f}] bb/hand"
+    print(f"  Won$           {won['bb_per_hand']:+.2f} bb/hand{band}"
+          f"  n={won['hands']:,} cash hands")
+    print(f"                 {won['bb100']:+.1f} bb/100  "
+          f"±{won['error']:.0f}  (1170/√n, same as --results)")
+    wband = ""
+    if won.get("won_lo") is not None:
+        wband = f"  [{won['won_lo']:.0f}, {won['won_hi']:.0f}]"
+    print(f"  Won hand%      {won['won_pct']:.1f}%{wband}"
+          f"  {won['won_hands']:,} of {won['hands']:,}")
+    print(f"  {won['note']}")
+
+
+def _print_cohort_range(con, where):
+    """Preflop range of the parked Multi-Player cohort, with coverage."""
+    print("\n  [preflop range -- this cohort]")
+    cov = coverage_of(con, where)
+    _print_coverage(cov)
+    g = chart_of(con, where)
+    if not g["seen"]:
+        print("  no hole cards in this cohort to draw a range from")
+        return
+    top = sorted(g["cells"].items(), key=lambda kv: -kv[1][0])[:8]
+    print("  most of it: " + ", ".join(
+        f"{c} {100.0 * n / g['seen']:.1f}%" for c, (n, _k) in top))
+    print("  --chart for the 13x13; --range for what the hands became")
+
+
 def show_hands(con, where, label, limit=40, parts=()):
     """The hands themselves, most recent first."""
     print(f"\nfilter: {label}")
@@ -3649,6 +3927,8 @@ def usage():
     print("    --cohort [EXPR]  select players before filtering situations")
     print("                     compact: vpip>=40,pfr<=10,hands>=100")
     print("                     expression: Value(3Bet)<2 and Opps(3Bet)>100")
+    print("                     --chart / --range: the pooled preflop range,")
+    print("                     with hole-card coverage by site")
     print("    --alias NAME      merge a single-person alias as the player")
     print("    --vs-alias NAME   the other seat is in that alias (group or one)")
     print("    --villain-type T  vs_class IN (reg|fish|unknown); also --vs-class")
@@ -3846,6 +4126,26 @@ def check_shape():
         fails.append("--filter did not open 3rd Barrel")
     if "vpip" in columns_for(["--quick", "cbet_flop"]):
         fails.append("cbet pack still leads with VPIP")
+    if not pack_wants_won(["--quick", "raise_cbet"]):
+        fails.append("raise-cbet pack should carry Won$ as a join extra")
+    if not pack_wants_won(["--quick", "cbet_flop"]):
+        fails.append("cbet pack should carry Won$ as a join extra")
+    if pack_wants_won(["--quick", "threebet"]):
+        fails.append("3-bet pack is not a Won$ street pack")
+    if pack_wants_won(["--street", "flop"]):
+        fails.append("a bare street filter is not a Won$ pack")
+    if "wwsf" in columns_for(["--quick", "raise_cbet"]) or \
+            "wsd" in columns_for(["--quick", "raise_cbet"]):
+        fails.append("Won$ leaked into the Stat columns -- that blanks")
+    m, lo, hi = mean_interval(5.0, 125.0, 2)
+    if m is None or abs(m - 2.5) > 1e-9:
+        fails.append(f"mean_interval(10, -5) was {m}, not 2.5")
+    if lo is None or hi is None or hi - lo < 50:
+        fails.append("n=2 must produce a wide t interval, not fake precision")
+    if mean_interval(10.0, 100.0, 1)[1] is not None:
+        fails.append("n=1 invented an interval -- one row has no spread")
+    if mean_interval(0, 0, 0)[0] is not None:
+        fails.append("empty mean_interval was not empty")
     if size_sql("s") != "pot_frac IS NOT NULL AND pot_frac <= 0.4" and \
             "0.40" not in size_sql("s"):
         fails.append(f"size s is {size_sql('s')!r}")
@@ -4133,6 +4433,41 @@ def check_cohort():
     if [r["player"] for r in rows] != ["loose"]:
         fails.append(f"--cohort-hands/--class fish selected "
                      f"{[r['player'] for r in rows]}")
+
+    # Preflop range on the parked cohort: only loose's hole cards.
+    # tight has AA shown; if the chart forgot the join it would draw AA
+    # under a "fish with 100+ hands" heading.
+    con.execute("ALTER TABLE decisions ADD COLUMN combo TEXT")
+    con.execute("ALTER TABLE decisions ADD COLUMN made TEXT")
+    con.execute("ALTER TABLE decisions ADD COLUMN fd TEXT")
+    con.execute("ALTER TABLE decisions ADD COLUMN sd TEXT")
+    con.execute("UPDATE decisions SET combo = 'AKs', made = 'top pair' "
+                "WHERE hand_id = 'h1' AND seat = 1")
+    con.execute("UPDATE decisions SET combo = 'QJs', made = 'middle pair' "
+                "WHERE hand_id = 'h5' AND seat = 1")
+    con.execute("UPDATE decisions SET combo = 'AA', made = 'overpair' "
+                "WHERE player = 'tight'")
+    spec, _argv = players.parse_cohort(
+        ["--cohort", "vpip>=40,pfr<=10,hands>=100"])
+    where, _header, _label = apply_cohort(con, spec, "1=1", "everything")
+    g = chart_of(con, where)
+    if g["seen"] != 2:
+        fails.append(f"cohort chart saw {g['seen']} player-hands, not loose's 2")
+    if "AA" in g["cells"]:
+        fails.append("cohort chart included tight's AA -- the join dropped")
+    if set(g["cells"]) != {"AKs", "QJs"}:
+        fails.append(f"cohort chart cells were {sorted(g['cells'])}, not AKs/QJs")
+    cov = g.get("coverage") or coverage_of(con, where)
+    if cov["seen"] != 2 or cov["total"] != 2:
+        fails.append(f"cohort coverage was {cov['seen']}/{cov['total']}, not 2/2")
+    rng = range_of(con, where)
+    made = {r["made"] for r in rng["rows"]}
+    if "overpair" in made:
+        fails.append("cohort range included tight's overpair")
+    if made != {"top pair", "middle pair"}:
+        fails.append(f"cohort range was {made}, not loose's two hands")
+    if not rng.get("coverage") or rng["coverage"]["seen"] != 2:
+        fails.append("cohort range dropped the hole-card coverage caveat")
     con.close()
     print(f"multi-player cohort           "
           f"{'yes' if not fails else 'NO'}")
@@ -4492,6 +4827,42 @@ def check_fixture():
         fails.append("faced next squeeze on the open was not 1")
     if "call" not in by:
         fails.append("faced next on the open dropped the first-later call")
+
+    # Intervals: the three Action Profit examples are n=3, so a t band
+    # must exist; a single priced row must not invent one.
+    three = action_profit_of(
+        con,
+        "seat=1 AND ((hand_id='h1' AND agg=1) OR "
+        "(hand_id='h5' AND agg=1) OR hand_id='h4')")
+    if three["lo"] is None or three["hi"] is None:
+        fails.append("n=3 action profit dropped its sampling interval")
+    if three["lo"] >= three["bb_per_hand"] or three["hi"] <= three["bb_per_hand"]:
+        fails.append("action profit interval does not contain the mean")
+    one = action_profit_of(con, "hand_id='h1' AND seat=1 AND agg=1")
+    if one["lo"] is not None or one.get("interval_note", "").find("no interval") < 0:
+        fails.append("n=1 action profit invented an interval")
+    two = call_profit_of(
+        con, "seat=1 AND action='C' AND hand_id IN ('h6','h7')")
+    if two["lo"] is None or two["hi"] is None:
+        fails.append("n=2 call profit dropped its sampling interval")
+
+    # Won$ of the two priced Action Profit hands: +10 and −5. MTT h9 stays out.
+    won = amount_won_of(con, "hand_id IN ('h1','h5') AND seat=1 AND agg=1")
+    if won["hands"] != 2:
+        fails.append(f"Won$ counted {won['hands']} hands, not h1 and h5")
+    if abs((won["bb_per_hand"] or 0) - 2.5) > 1e-9:
+        fails.append(f"Won$ mean was {won['bb_per_hand']}, not (10-5)/2")
+    if won["won_hands"] != 1 or abs((won["won_pct"] or 0) - 50) > 1e-9:
+        fails.append(f"Won hand% was {won['won_pct']} on {won['won_hands']}, not 50")
+    if won["lo"] is None:
+        fails.append("Won$ n=2 dropped its sampling interval")
+    mtt_won = amount_won_of(con, "hand_id='h9'")
+    if mtt_won["hands"]:
+        fails.append("Won$ priced an MTT hand -- chips are not dollars")
+    # A street-shaped filter still has Won$ -- that is the blanking we refuse.
+    flop_won = amount_won_of(con, "street='flop' AND seat=1 AND agg=1")
+    if not flop_won["hands"]:
+        fails.append("Won$ blanked under a street filter")
     con.close()
     print(f"outcome/size/action-profit fixture  "
           f"{'yes' if not fails else 'NO'}")
@@ -5226,7 +5597,7 @@ def main(argv):
     elif mode == "--next-actions":
         show_chain_report(con, where, label, argv, True)
     elif dim:
-        show_report(con, where, label, dim, columns, min_n)
+        show_report(con, where, label, dim, columns, min_n, argv=argv)
     else:
         show_stats(con, where, label, _parts, related=neighbours, argv=argv)
     con.close()

@@ -150,6 +150,19 @@ def payload(con, params):
                "outcomes": query.outcomes_of(con, where),
                "related": query.related_spots(argv),
                "why": None if n_dec else nothing()}
+        if query.pack_wants_won(argv):
+            out["amount_won"] = query.amount_won_of(con, where)
+        if spec is not None:
+            g = query.chart_of(con, where)
+            top = []
+            if g["seen"]:
+                ranked = sorted(g["cells"].items(),
+                                key=lambda kv: -kv[1][0])[:8]
+                top = [{"combo": c, "pct": 100.0 * n / g["seen"]}
+                       for c, (n, _k) in ranked]
+            out["cohort_range"] = {
+                "coverage": g.get("coverage"), "seen": g["seen"],
+                "total": g["total"], "top": top}
         pin = (params.get("pin", [""])[0] or "").strip()
         if pin:
             try:
@@ -171,13 +184,17 @@ def payload(con, params):
         counts = query.counts_by(con, expr, where)
         keys = sorted({k for g in grid.values() for k in g} | set(counts),
                       key=lambda k: order(k) if k is not None else "")
+        won_by = (query.amount_won_by(con, where, expr)
+                  if query.pack_wants_won(argv) else {})
         return {
             "label": label, "dim": dim,
             "columns": [{"key": c, "label": BY_KEY[c].label} for c in cols],
+            "won_by": {str(k): won_by[k] for k in won_by},
             "related": query.related_spots(argv),
             "why": None if keys else nothing(),
             "rows": [{
                 "key": str(k), "n": counts.get(k, 0),
+                "won": won_by.get(k),
                 "cells": [
                     None if not grid[c].get(k, (0, 0))[0] else {
                         "pct": 100 * grid[c][k][1] / grid[c][k][0],
@@ -210,6 +227,18 @@ def payload(con, params):
         compact.attach(con, rows, fmt="html")
         return {"label": label, "rows": rows,
                 "why": None if rows else nothing()}
+
+    if view == "range":
+        out = query.range_of(con, where)
+        out["label"] = label
+        out["why"] = None if out["n"] else nothing()
+        return out
+
+    if view == "chart":
+        out = query.chart_of(con, where)
+        out["label"] = label
+        out["why"] = None if out["total"] else nothing()
+        return out
 
     if view == "mark":
         hid = (params.get("id", [""])[0] or "").strip()
@@ -481,6 +510,8 @@ td.compact{text-align:left;font-weight:500}
 <section>
   <nav id="tabs">
     <button data-v="stats" class="on">stats</button>
+    <button data-v="range">range</button>
+    <button data-v="chart">chart</button>
     <button data-v="report">report</button>
     <button data-v="results">results</button>
     <button data-v="graph">graph</button>
@@ -635,7 +666,8 @@ function render(d){
       const sa = A.summary || {}, sb = B.summary || {};
       const pa = A.profit || {}, pb = B.profit || {};
       const ap = p => p.bb_per_hand == null ? '–'
-        : ((p.bb_per_hand>=0?'+':'') + p.bb_per_hand.toFixed(2) + ' bb');
+        : ((p.bb_per_hand>=0?'+':'') + p.bb_per_hand.toFixed(2) + ' bb'
+           + (p.lo == null ? '' : ' ['+p.lo.toFixed(1)+', '+p.hi.toFixed(1)+']'));
       h += `<tr><td class="group">this vs pinned</td>`
         + `<td class="group">${A.name || 'this'}</td><td></td>`
         + `<td class="group">${B.name || 'pinned'}</td></tr>`
@@ -670,23 +702,54 @@ function render(d){
     if (d.pinned && d.pinned.error){
       h += `<tr><td colspan="4" class="n">${d.pinned.error}</td></tr>`;
     }
+    const meanBand = p => {
+      if (p.bb_per_hand == null) return 'unpriced';
+      const m = (p.bb_per_hand>=0?'+':'') + p.bb_per_hand.toFixed(2) + ' bb/hand';
+      if (p.lo != null) return m + ' ['+p.lo.toFixed(1)+', '+p.hi.toFixed(1)+']';
+      if (p.priced === 1) return m + ' (n=1, no interval)';
+      return m;
+    };
     if (d.profit && d.profit.n){
-      const ap = d.profit.bb_per_hand == null ? 'unpriced'
-        : (d.profit.bb_per_hand>=0?'+':'') + d.profit.bb_per_hand.toFixed(2) + ' bb/hand';
-      h += `<tr><td>action profit</td><td>${ap}</td><td class="n">priced hits</td>`
+      h += `<tr><td>action profit</td><td>${meanBand(d.profit)}</td><td class="n">priced hits</td>`
         + `<td class="n">${d.profit.priced.toLocaleString()} of ${d.profit.n.toLocaleString()}</td></tr>`
         + `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
+      if (d.profit.interval_note)
+        h += `<tr><td colspan="4" class="n">${d.profit.interval_note}</td></tr>`;
       for (const edge of (d.profit.edges || []))
         h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
     }
     if (d.call_profit && d.call_profit.n){
-      const cp = d.call_profit.bb_per_hand == null ? 'unpriced'
-        : (d.call_profit.bb_per_hand>=0?'+':'') + d.call_profit.bb_per_hand.toFixed(2) + ' bb/hand';
-      h += `<tr><td>call profit</td><td>${cp}</td><td class="n">priced calls</td>`
+      h += `<tr><td>call profit</td><td>${meanBand(d.call_profit)}</td><td class="n">priced calls</td>`
         + `<td class="n">${d.call_profit.priced.toLocaleString()} of ${d.call_profit.n.toLocaleString()}</td></tr>`
         + `<tr><td colspan="4" class="n">${d.call_profit.note}</td></tr>`;
+      if (d.call_profit.interval_note)
+        h += `<tr><td colspan="4" class="n">${d.call_profit.interval_note}</td></tr>`;
       for (const edge of (d.call_profit.edges || []))
         h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+    }
+    if (d.amount_won && d.amount_won.hands){
+      const w = d.amount_won;
+      const band = w.lo == null ? '' : ' ['+w.lo.toFixed(1)+', '+w.hi.toFixed(1)+']';
+      const wband = w.won_lo == null ? '' : ' ['+w.won_lo.toFixed(0)+', '+w.won_hi.toFixed(0)+']';
+      h += `<tr><td>Won$</td><td>${w.bb_per_hand>=0?'+':''}${w.bb_per_hand.toFixed(2)} bb/hand${band}</td>`
+        + `<td class="n">${w.bb100>=0?'+':''}${w.bb100.toFixed(1)} bb/100 ±${w.error.toFixed(0)}</td>`
+        + `<td class="n">${w.hands.toLocaleString()} cash hands</td></tr>`
+        + `<tr><td>Won hand%</td><td>${w.won_pct.toFixed(1)}%${wband}</td>`
+        + `<td class="n"></td><td class="n">${w.won_hands.toLocaleString()} of ${w.hands.toLocaleString()}</td></tr>`
+        + `<tr><td colspan="4" class="n">${w.note}</td></tr>`;
+    }
+    if (d.cohort_range){
+      const cr = d.cohort_range, cov = cr.coverage || {};
+      h += `<tr><td colspan="4" class="group">preflop range — this cohort</td></tr>`
+        + `<tr><td>hole cards shown</td><td>${(cr.seen||0).toLocaleString()} of ${(cr.total||0).toLocaleString()}</td>`
+        + `<td class="n">${(cov.pct||0).toFixed(0)}%</td><td></td></tr>`;
+      for (const s of (cov.sites || []))
+        h += `<tr><td>${s.site || '?'}</td><td>${s.seen.toLocaleString()}/${s.total.toLocaleString()}</td>`
+          + `<td class="n">${s.pct.toFixed(0)}%</td><td class="n">${s.note||''}</td></tr>`;
+      if (cov.note)
+        h += `<tr><td colspan="4" class="n">${cov.note}</td></tr>`;
+      if (cr.top && cr.top.length)
+        h += `<tr><td>most of it</td><td colspan="3">${cr.top.map(t => t.combo+' '+t.pct.toFixed(1)+'%').join(', ')}</td></tr>`;
     }
     if (d.actions && d.actions.mix && d.actions.mix.length){
       h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
@@ -746,17 +809,72 @@ function render(d){
       };
     });
 
+  } else if (state.view === 'range'){
+    if (!d.n){ out.innerHTML = nope('no hand in this filter was ever shown'); return; }
+    let h = `<p class="n">${d.n.toLocaleString()} of ${d.total.toLocaleString()} decisions had cards to read (${(100*d.n/d.total).toFixed(0)}%)</p><table><tbody>`;
+    for (const r of (d.rows||[]))
+      h += `<tr><td>${r.made}</td><td>${r.pct.toFixed(1)}%</td>`
+        + `<td class="n">${r.n.toLocaleString()}</td>`
+        + `<td class="n">${r.weak?'weak':''}</td></tr>`;
+    h += `<tr><td>WEAK</td><td>${d.weak.toFixed(1)}%</td><td></td><td class="n">cannot call</td></tr>`
+      + `<tr><td>STRONG</td><td>${d.strong.toFixed(1)}%</td><td></td><td></td></tr>`;
+    for (const x of (d.draws||[]))
+      h += `<tr><td>${x.label}</td><td>${x.pct.toFixed(1)}%</td><td class="n">${x.n.toLocaleString()}</td><td></td></tr>`;
+    const cov = d.coverage || {};
+    for (const s of (cov.sites||[]))
+      h += `<tr><td>${s.site||'?'}</td><td>${s.seen.toLocaleString()}/${s.total.toLocaleString()}</td>`
+        + `<td class="n">${s.pct.toFixed(0)}%</td><td class="n">${s.note||''}</td></tr>`;
+    if (cov.note) h += `<tr><td colspan="4" class="n">${cov.note}</td></tr>`;
+    out.innerHTML = h + '</tbody></table>';
+
+  } else if (state.view === 'chart'){
+    if (!d.total){ out.innerHTML = nope(); return; }
+    const RANKS = 'AKQJT98765432';
+    const comboAt = (i,j) => {
+      const hi = RANKS[i], lo = RANKS[j];
+      if (i===j) return hi+hi;
+      return i<j ? hi+lo+'s' : lo+hi+'o';
+    };
+    let h = `<p class="n">${(d.seen||0).toLocaleString()} of ${d.total.toLocaleString()} player-hands showed cards (${d.total? (100*d.seen/d.total).toFixed(1):0}%)</p>`;
+    const cov = d.coverage || {};
+    for (const s of (cov.sites||[]))
+      h += `<p class="n">${s.site||'?'}: ${s.seen.toLocaleString()}/${s.total.toLocaleString()} (${s.pct.toFixed(0)}%) — ${s.note||''}</p>`;
+    if (cov.note) h += `<p class="n">${cov.note}</p>`;
+    h += '<table><thead><tr><th></th>' + RANKS.split('').map(r=>`<th>${r}</th>`).join('') + '</tr></thead><tbody>';
+    for (let i=0;i<13;i++){
+      h += `<tr><th>${RANKS[i]}</th>`;
+      for (let j=0;j<13;j++){
+        const cell = (d.cells||{})[comboAt(i,j)];
+        const n = cell ? cell[0] : 0;
+        h += n ? `<td class="n">${(100*n/d.seen).toFixed(1)}</td>` : '<td class="n">.</td>';
+      }
+      h += '</tr>';
+    }
+    out.innerHTML = h + '</tbody></table>';
+
   } else if (state.view === 'report'){
     if (!d.rows.length){ out.innerHTML = nope(); return; }
+    const hasWon = !!(d.won_by && Object.keys(d.won_by).length);
     let h = '<table><thead><tr><th>'+d.dim+'</th>'
-      + d.columns.map(c=>`<th>${c.label}</th>`).join('') + '<th>n</th></tr></thead><tbody>';
+      + d.columns.map(c=>`<th>${c.label}</th>`).join('') + '<th>n</th>'
+      + (hasWon ? '<th>Won$ bb/100</th><th>Won hand%</th>' : '')
+      + '</tr></thead><tbody>';
     for (const r of d.rows){
       h += `<tr><td>${r.key}</td>` + r.cells.map(c => c === null
         ? '<td class="n">–</td>'
         : `<td class="${c.n<30?'thin':''}" title="n=${c.n}">${c.pct.toFixed(1)}%</td>`
-      ).join('') + `<td class="n">${r.n.toLocaleString()}</td></tr>`;
+      ).join('') + `<td class="n">${r.n.toLocaleString()}</td>`;
+      if (hasWon){
+        const w = r.won;
+        h += w
+          ? `<td class="n">${w.bb100>=0?'+':''}${w.bb100.toFixed(0)} ±${w.error.toFixed(0)}</td>`
+            + `<td class="n">${w.won_pct.toFixed(0)}%</td>`
+          : '<td class="n">–</td><td class="n">–</td>';
+      }
+      h += '</tr>';
     }
-    out.innerHTML = h + '</tbody></table>';
+    out.innerHTML = h + '</tbody></table>'
+      + (hasWon ? '<p class="n">Won$ is whole-hand net_bb of these seats, spots-sourced; MTT out. Not this street.</p>' : '');
 
   } else if (state.view === 'results'){
     if (d.rows){
