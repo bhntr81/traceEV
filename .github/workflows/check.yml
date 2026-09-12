@@ -1,0 +1,35 @@
+# The parts that do not need the user's hands.db.
+#
+# Tag builds still run the short import-only step in build.yml.
+# This is the correctness gate: in-memory --check plus the committed
+# fixture corpus through importer.CHAIN. A derivation that only looks
+# right against a typed table fails here.
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: In-memory --check (no hands.db)
+        run: |
+          python compact.py --check
+          python notes.py --check
+          python sessions.py --check
+          python expr.py --check
+          python aliases.py --check
+          python equity.py --check
+          python query.py --check
+          python build.py --check
+
+      - name: verify-parity (committed fixture corpus)
+        run: python parity.py --check

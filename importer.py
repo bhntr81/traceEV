@@ -294,6 +294,11 @@ def load(paths, db_path=DB, progress=None):
                 if not parsed:
                     continue
                 h = dict(parsed["hand"], site=site.key)
+                # parse_hand sees the basename -- Ignition reads stakes
+                # from it. The row stores the path we loaded from, or
+                # export can only find the file when cwd happens to be
+                # that folder, and a session export writes nothing.
+                h["source"] = str(f.resolve())
                 if h["hand_id"] in known:
                     skipped += 1
                     continue
@@ -449,7 +454,9 @@ def check(db_path=DB):
 
     tested = wrong = 0
     for source, site, _n in known:
-        f = index.get(source)
+        f = index.get(source) or index.get(Path(source).name)
+        if f is None and source and Path(source).exists():
+            f = Path(source)
         if f is None:
             continue
         tested += 1

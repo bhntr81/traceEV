@@ -1333,7 +1333,31 @@ newer commit exists rather than pretending to update.
 ```bash
 python check.py                 # every check, in dependency order
 python check.py --quiet         # just the verdicts
+python parity.py                # A–H on the committed fixture corpus
+python query.py --verify-parity # the same
 ```
+
+`parity.py` loads `fixtures/parity/` through `importer.load` and
+`CHAIN`, then locks the H2N tracking-half invariants: Hits/Opps/freq
+never divide by zero; fold Action Profit is 0 and is not Won$; a
+Quick filter is chance ∧ action and a nest is parent ∧ row;
+`exclude_reg_vs_fish` moves Statistics only; Today uses start-of-day
+and the room timezone; the win-graph red and gray lines add to green;
+heatmap coverage names the showdown bias; export writes the filtered
+set. CI runs this. The corpus is synthetic and tiny -- enough for
+each invariant to move, not a live database.
+
+### Quick Filters are strict; Smart Reports are loose
+
+A `--quick` key is a Stat: `(chance) AND (action)`. `--quick cbet_flop`
+is the bets. A Smart Report of the same name is the *spot*: Flop
+c-bets is `--street flop --pfa --facing check`, the chances, and the
+columns then say how often the bet was taken. Tightening the Smart
+report onto the Quick filter would make every frequency on that
+report 100% and look like a finding. Custom FilterDef modifiers
+(`--first-in`, `--size`, `--stack`) AND onto the parent the same way
+a pane click does (`parent ∧ row`). This is intentional, not a
+missing feature.
 
 ```
   PASS  acr

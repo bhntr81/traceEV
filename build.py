@@ -57,7 +57,8 @@ TARGETS = {
 # first click, which is a much worse way to find out.
 MODULES = ["query", "stats", "equity", "decisions", "spots", "lines",
            "strength", "players", "importer", "sites", "diag",
-           "update"] + PARSERS
+           "update", "sessions", "notes", "aliases", "compact",
+           "expr", "parity"] + PARSERS
 
 
 def target():
@@ -173,7 +174,9 @@ def check():
 # PyInstaller is a build tool and never a dependency of what it builds.
 RUNTIME = ("app", "query", "stats", "spots", "decisions", "lines", "strength",
            "players", "equity", "importer", "sites", "diag",
-           "update", "opponents", "gui") + tuple(PARSERS)
+           "update", "opponents", "gui",
+           "sessions", "notes", "aliases", "compact", "expr",
+           "parity") + tuple(PARSERS)
 
 
 def _third_party():

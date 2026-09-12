@@ -1,0 +1,157 @@
+Hand #900001 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 12:00:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [7c 2d]
+Alice folds
+Bob collected $0.15 from pot
+*** SUMMARY ***
+Total pot $0.15 | Rake $0.00 | JP Fee $0.00
+Seat 2: Bob did not show and won $0.15
+
+Hand #900002 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 12:05:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [Ah Kh]
+Alice raises $0.25 to $0.30
+Bob folds
+Uncalled bet ($0.20) returned to Alice
+Alice collected $0.20 from pot
+*** SUMMARY ***
+Total pot $0.20 | Rake $0.00 | JP Fee $0.00
+Seat 1: Alice did not show and won $0.20
+
+Hand #900003 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 12:10:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [9h 8h]
+Alice raises $0.25 to $0.30
+Bob calls $0.20
+*** FLOP *** [Ac Kd 2s]
+Alice bets $0.30
+Bob folds
+Uncalled bet ($0.30) returned to Alice
+Alice collected $0.60 from pot
+*** SUMMARY ***
+Total pot $0.60 | Rake $0.00 | JP Fee $0.00
+Seat 1: Alice did not show and won $0.60
+
+Hand #900004 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 12:15:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [Ah Kh]
+Alice raises $0.25 to $0.30
+Bob calls $0.20
+*** FLOP *** [Kd 7c 2s]
+Alice bets $0.30
+Bob calls $0.30
+*** TURN *** [Kd 7c 2s] [9s]
+Alice checks
+Bob checks
+*** RIVER *** [Kd 7c 2s 9s] [3c]
+Alice checks
+Bob checks
+*** SHOW DOWN ***
+Alice shows [Ah Kh]
+Bob shows [Qd Jc]
+Alice collected $1.20 from pot
+*** SUMMARY ***
+Total pot $1.20 | Rake $0.00 | JP Fee $0.00
+Seat 1: Alice showed [Ah Kh] and won $1.20
+Seat 2: Bob showed [Qd Jc] and won $0
+
+Hand #900005 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 12:20:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Bob ($10.00)
+Seat 2: Alice ($10.00)
+Bob posts the small blind $0.05
+Alice posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [As Ks]
+Bob raises $0.20 to $0.25
+Alice raises $0.80 to $0.90
+Bob calls $0.65
+*** FLOP *** [2c 7d 9h]
+Alice bets $0.90
+Bob folds
+Uncalled bet ($0.90) returned to Alice
+Alice collected $1.80 from pot
+*** SUMMARY ***
+Total pot $1.80 | Rake $0.00 | JP Fee $0.00
+Seat 2: Alice did not show and won $1.80
+
+Hand #900006 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 12:25:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Carol ($10.00)
+Seat 2: Alice ($10.00)
+Carol posts the small blind $0.05
+Alice posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [Ad Kd]
+Carol raises $0.20 to $0.25
+Alice raises $0.80 to $0.90
+Carol folds
+Uncalled bet ($0.65) returned to Alice
+Alice collected $0.50 from pot
+*** SUMMARY ***
+Total pot $0.50 | Rake $0.00 | JP Fee $0.00
+Seat 2: Alice did not show and won $0.50
+
+Hand #900007 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/02 02:00:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [Tc 3d]
+Alice folds
+Bob collected $0.15 from pot
+*** SUMMARY ***
+Total pot $0.15 | Rake $0.00 | JP Fee $0.00
+Seat 2: Bob did not show and won $0.15
+
+Hand #900008 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/02 10:00:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [5c 4d]
+Alice folds
+Bob collected $0.15 from pot
+*** SUMMARY ***
+Total pot $0.15 | Rake $0.00 | JP Fee $0.00
+Seat 2: Bob did not show and won $0.15
+
+Hand #900009 - Holdem (No Limit) - $0.05/$0.10 - 2026/09/01 15:00:00 UTC
+Parity 2-max Seat #1 is the button
+Seat 1: Alice ($10.00)
+Seat 2: Bob ($10.00)
+Alice posts the small blind $0.05
+Bob posts the big blind $0.10
+*** HOLE CARDS ***
+Dealt to Alice [Qc Qd]
+Alice raises $0.25 to $0.30
+Bob folds
+Uncalled bet ($0.20) returned to Alice
+Alice collected $0.20 from pot
+*** SUMMARY ***
+Total pot $0.20 | Rake $0.00 | JP Fee $0.00
+Seat 1: Alice did not show and won $0.20

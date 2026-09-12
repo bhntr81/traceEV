@@ -60,6 +60,7 @@ money is summed over the hands those decisions happened in.
     python query.py --hand cp-2459218653 --mark --tag leak
     python query.py --where "eff_bb > 150 AND fl_paired=1" --stats
     python query.py --help
+    python query.py --verify-parity
 """
 
 import sqlite3
@@ -1357,13 +1358,31 @@ def spot_summary(con, where, argv):
             f"SELECT COUNT(*) FROM decisions WHERE ({where}) AND agg = 1"
         ).fetchone()[0]
         label = "aggressive"
-    p, lo, hi = wilson(hits, opps) if opps else (0.0, 0.0, 0.0)
+    pct, band = pct_band(hits, opps)
     return {
         "hits": hits, "opps": opps, "hands": hands,
         "per_1k": (1000.0 * hits / hands) if hands else 0.0,
-        "pct": 100 * p, "band": 100 * (hi - lo) / 2,
+        "pct": pct, "band": band,
         "label": label,
     }
+
+
+def pct_band(k, n):
+    """
+    A rate as (percent, half-band), or (0, 0) when there are no
+    opportunities.
+
+    Wilson returns None on n=0. Multiplying that by 100 is a crash
+    that looks like a broken Statistics tab, which is how a sample
+    with no flop ever shown blanked the whole grid instead of
+    printing WTSD 0%.
+    """
+    if not n:
+        return 0.0, 0.0
+    p, lo, hi = wilson(k, n)
+    if p is None:
+        return 0.0, 0.0
+    return 100.0 * p, 100.0 * (hi - lo) / 2
 
 
 # One CASE, used by the aggregate and by each matching hand, so the
@@ -3618,20 +3637,16 @@ def statistics_of(con, where, argv=None, exclude=False):
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             if "spots" not in tables:
                 n = k = 0
-                p = lo = hi = 0.0
             else:
-                n, k, p, lo, hi = rate(con, st, spots_where)
+                n, k, _p, _lo, _hi = rate(con, st, spots_where)
         else:
             n, k = counted.get(key, (0, 0))
-            if not n:
-                p = lo = hi = 0.0
-            else:
-                p, lo, hi = wilson(k, n)
+        pct, band = pct_band(k, n)
         rows.append({
             "key": st.key, "label": st.label, "group": st.group,
             "note": st.note, "source": st.source,
-            "n": n, "k": k, "pct": 100 * p,
-            "band": 100 * (hi - lo) / 2,
+            "n": n, "k": k, "pct": pct,
+            "band": band,
             "has_call": st.source == "d",
         })
     counts = class_counts(con, sample)
@@ -5645,6 +5660,8 @@ def usage():
     print(f"    {'--unit':14} bb (default) or currency / $")
     print(f"    {'--exclude-reg-vs-fish':14} Statistics sample only -- "
           f"Reports / Sessions ignore it")
+    print(f"    {'--verify-parity':14} A–H on the committed fixture "
+          f"corpus (also: python parity.py)")
     print(f"    {'--session':14} one sit-down (id = first hand); "
           f"see sessions.py")
     print(f"    {'--today':14} local Today via start-of-day hour "
@@ -5869,6 +5886,13 @@ def check_shape():
         fails.append("n=1 invented an interval -- one row has no spread")
     if mean_interval(0, 0, 0)[0] is not None:
         fails.append("empty mean_interval was not empty")
+    # Hits/opps/freq on nothing: 0, not a crash. Wilson's None * 100
+    # used to blank Statistics when a sample had no flop.
+    pct, band = pct_band(0, 0)
+    if pct != 0.0 or band != 0.0:
+        fails.append(f"pct_band(0, 0) was {(pct, band)}, not (0, 0)")
+    if pct_band(3, 0) != (0.0, 0.0):
+        fails.append("pct_band with n=0 and k>0 invented a rate")
     if size_sql("s") != "pot_frac IS NOT NULL AND pot_frac <= 0.4" and \
             "0.40" not in size_sql("s"):
         fails.append(f"size s is {size_sql('s')!r}")
@@ -6562,6 +6586,16 @@ def check_statistics():
     ).fetchone()[0]
     if cr_ex != 0:
         fails.append("excluded Call Range still kept the reg-vs-fish call")
+    # Empty sample: every rate is 0, not a crash. spots-sourced
+    # WTSD used to multiply Wilson's None by 100 here.
+    con.execute(
+        "CREATE TABLE spots ("
+        "hand_id TEXT, seat INT, saw_flop INT, wtsd INT, wwsf INT, wsd INT)")
+    empty_grid = statistics_of(con, "1=0")
+    if empty_grid["n"] != 0:
+        fails.append(f"empty statistics_of n was {empty_grid['n']}, not 0")
+    if any(r["pct"] for r in empty_grid["rows"]):
+        fails.append("empty statistics_of invented a non-zero rate")
     con.close()
     if all_n != 5:
         fails.append("fixture WHERE 1=1 was not 5 rows")
@@ -6669,6 +6703,7 @@ def check_fixture():
         [("h1", 1, "RING", 0, 15, 10),
          ("h2", 1, "RING", 1, 0, -6),
          ("h3", 1, "RING", 1, 20, 5),
+         ("h4", 1, "RING", 0, 0, -5),
          ("h5", 1, "RING", 0, 0, -5)])
     con.executemany(
         "INSERT INTO decisions "
@@ -6687,6 +6722,17 @@ def check_fixture():
             fails.append(
                 f"action profit {where} was {got['bb_per_hand']} "
                 f"on {got['priced']} priced, expected {want} on {priced}")
+    # Fold Action Profit is 0; Won$ of that seat is the blinds they
+    # lost. Mixing them is the H2N confusion this fixture exists to
+    # refuse -- a fold that "lost 5bb" is still 0 action profit.
+    fold_ap = action_profit_of(con, "hand_id='h4' AND seat=1")
+    fold_won = amount_won_of(con, "hand_id='h4' AND seat=1")
+    if fold_ap["bb_per_hand"] != 0:
+        fails.append(f"fold action profit was {fold_ap['bb_per_hand']}, not 0")
+    if fold_won.get("bb_per_hand") in (None, 0, fold_ap["bb_per_hand"]):
+        fails.append(
+            f"fold Won$ was {fold_won.get('bb_per_hand')}, which must "
+            "differ from Action Profit 0 (the blinds they lost)")
     called = action_profit_of(con, "hand_id='h2' AND seat=1 AND agg=1")
     if called["priced"] or called["bb_per_hand"] is not None:
         fails.append("a called pot was priced -- that is Call Profit Rate")
@@ -7651,6 +7697,9 @@ def main(argv):
         return 0
     if "--check" in argv:
         return 0 if check() else 1
+    if "--verify-parity" in argv or argv[:1] == ["verify-parity"]:
+        import parity
+        return 0 if parity.check() else 1
     # `graph` / `report graph` are the same verb as `--graph`. Sessions
     # already speaks this way; a second spelling that wrote HTML only
     # would look like the CSV flag did nothing.

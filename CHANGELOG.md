@@ -8,6 +8,56 @@ Newest first.
 
 ---
 
+## Live-corpus correctness (verify-parity)
+
+Lock the already-shipped H2N tracking-half semantics. No HUD, no
+solver, no new UI.
+
+A committed synthetic corpus in `fixtures/parity/` (9 ACR, 3
+Ignition) loads through `importer.load` and `CHAIN`. `parity.py`
+is the CLI (`python parity.py`, `python query.py --verify-parity`);
+`check.py` runs it. CI runs the no-corpus `--check` suite plus
+this. The live `hands.db` is still the user's and is still
+gitignored.
+
+### Invariants
+
+A. Hits/Opps/freq is 0 on an empty sample, never a crash.
+   `statistics_of` used to multiply Wilson's None by 100 when a
+   spots-sourced stat had no opportunities -- a sample with no
+   flop blanked the Statistics grid.
+B. Fold Action Profit is 0, and it is not Won$ of the hand.
+   An uncontested open is +pot_before (AP) and a different
+   whole-hand net (Won$).
+C. `--quick` is chance ∧ action. A nest is parent ∧ row.
+   Smart Reports stay the loose spot (documented).
+D. `exclude_reg_vs_fish` shrinks Statistics only. Reports
+   `--quick` and Sessions sit-downs do not move. The test fails
+   if they do.
+E. Today uses start-of-day and the room timezone on imported
+   stamps. 02:00 room / ACR −3h is in; 10:00 is out.
+F. Win-graph WOS + WSD = Amount Won. No all-in, so yellow
+   equals green -- EV is not invented.
+G. Heatmap coverage names the showdown bias (Ignition 100%,
+   ACR folds hide cards). Histogram Other is last; Weak % is
+   of the bar counts.
+H. Session export writes that sit-down, not the rest of the
+   corpus. `matching_hands` of a filter is that filter.
+   `importer.load` now stores the resolved path, not the
+   basename -- export recovered nothing when cwd was not the
+   folder the file was loaded from.
+
+`build.py` now lists the H2N-era modules (sessions, notes,
+aliases, compact, expr) plus `parity` as runtime / hidden
+imports, so the packaged app and `build.py --check` agree.
+
+### Not this, on purpose
+
+No HUD. No solver. No Detach, rakeback, multi-profile, PLO, or
+new Expression atoms.
+
+---
+
 ## Weak-hand % on postflop histograms
 
 H2N’s “how often they bluff” readout on a betting range. Tracking
