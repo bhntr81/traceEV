@@ -8,6 +8,42 @@ Newest first.
 
 ---
 
+## Statistics — curated grid, Call Range, exclude_reg_vs_fish
+
+The tracking-half Statistics tab. No HUD. No solver.
+
+A curated subset of the registry (VPIP through WTSD/WWSF), not
+the dump of every matching stat -- that is still the `stats` tab.
+Who is the player / cohort / alias already on the bar. Cash | MTT,
+dates, and last N cash sit-downs sit on this tab. Click a stat
+for its 13×13; Call Range is the same chance with a call
+(3bet → Call Open Raise); a cell is that combo; compact hands;
+Open in Reports writes `--quick` / `--call-range` onto study and
+leaves the exclude flag behind.
+
+`exclude_reg_vs_fish` is a Statistics compute flag, not a
+`build()` switch. A regular's decision with a fish still in
+drops out of the Statistics sample; fish-vs-reg and unknown stay.
+Reports and Sessions ignore it, matching H2N. `--villain-type`
+stays the Reports filter it already was.
+
+Who-is-Reg is still `players.classify` (intervals; unknown is an
+answer). A pin in `player_types.json` wins and restamps
+`decisions`, so Statistics exclude and Reports `--class` see the
+same person.
+
+`--fmt cash` is `fmt <> 'MTT'`. Last-N is the sessions table
+(cash sit-downs); MTT last-N is ignored.
+
+### Added -- Statistics path
+
+`query.statistics_of` / `stat_range_of` / `take_stat_drill` /
+`reports_argv`. Window tab, page tab, `--statistics` /
+`--exclude-reg-vs-fish` / `--fmt` / `--last-sessions` /
+`--call-range`. `players.set_type` and the Who is Reg dialog.
+
+---
+
 ## Sessions — sit-downs, not spots
 
 The other primary H2N study surface after the Reports cockpit.

@@ -34,8 +34,11 @@ on the other.
     python players.py            build the table
     python players.py --check    the classes survive being split in half
     python players.py NAME       one player in full
+    python players.py --set NAME --as fish --site acr
+    python players.py --types    the manual Who-is-Reg pins
 """
 
+import json
 import sqlite3
 import sys
 import re
@@ -46,6 +49,12 @@ import sites
 from stats import wilson
 
 DB = Path(__file__).parent / "hands.db"
+# Manual Who-is-Reg labels. The same shape as aliases.json: the user's,
+# gitignored, and applied on top of `classify` so a rebuild does not
+# forget that this screen name is a fish even when the interval still
+# says unknown. H2N colour markers; here, a file.
+TYPES = Path(__file__).parent / "player_types.json"
+KINDS = ("reg", "fish", "unknown")
 
 # Where a class begins, and what each number means in plain terms. They are
 # thresholds on the *interval*, never on the estimate, so a player is only
@@ -166,6 +175,9 @@ def cohort_summary(rows):
         "pfr": pfr,
         "gap": vpip - pfr if vpip is not None and pfr is not None else None,
         "bb100": weighted("bb100"),
+        "regs": sum(1 for row in rows if row["class"] == "reg"),
+        "fish": sum(1 for row in rows if row["class"] == "fish"),
+        "unknown": sum(1 for row in rows if row["class"] == "unknown"),
     }
 
 
@@ -423,6 +435,132 @@ def describe_cohort(spec):
     return ", ".join(said) if said else "every player"
 
 
+def load_types(path=None):
+    """Manual class labels, keyed (site, player). Missing file is none."""
+    src = Path(path or TYPES)
+    if not src.exists() or src.stat().st_size == 0:
+        return {}
+    try:
+        raw = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    if not isinstance(raw, dict):
+        return {}
+    for site, names in raw.items():
+        if not isinstance(names, dict):
+            continue
+        for player, klass in names.items():
+            if klass in KINDS and site and player:
+                out[(str(site), str(player))] = klass
+    return out
+
+
+def save_types(overrides, path=None):
+    """Write the override file. Empty means delete it, so auto stands alone."""
+    dest = Path(path or TYPES)
+    tree = {}
+    for (site, player), klass in sorted(overrides.items()):
+        if klass in KINDS:
+            tree.setdefault(site, {})[player] = klass
+    if not tree:
+        if dest.exists():
+            dest.unlink()
+        return dest
+    dest.write_text(json.dumps(tree, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return dest
+
+
+def override_of(site, player, path=None):
+    return load_types(path).get((site, player))
+
+
+def effective_class(auto, override=None):
+    """Manual label wins. That is H2N's colour-marker rule."""
+    if override in KINDS:
+        return override
+    return auto if auto in KINDS else "unknown"
+
+
+def auto_class_of(hands, vpip_pct, pfr_pct):
+    """
+    `classify` from the percentages the players table stores.
+
+    `classify` takes counts (SUM of flags). The table stores rates, so
+    a Who-is-Reg dialog that forgot to scale would call everyone unknown
+    -- 28% VPIP read as 28 hands out of 400.
+    """
+    n = int(hands or 0)
+    v = (float(vpip_pct or 0) / 100.0) * n
+    p = (float(pfr_pct or 0) / 100.0) * n
+    return classify(n, v, p)
+
+
+def set_type(site, player, klass, path=None, db_path=None):
+    """
+    Pin a person as reg, fish, or unknown, or `auto` to drop the pin.
+
+    Writes the file first, then the `players.class` row and restamps
+    `decisions`, so the next Statistics compute sees the new type
+    without a full rebuild. Reports that filter `--class` / `--reg`
+    see it too -- the override is who they are, not a Statistics-only
+    costume.
+    """
+    site, player = str(site or "").strip(), str(player or "").strip()
+    if not site or not player:
+        raise ValueError("set_type needs a site and a player")
+    want = None if klass in (None, "", "auto") else str(klass).strip().lower()
+    if want is not None and want not in KINDS:
+        raise ValueError(f"class must be reg, fish, unknown, or auto -- "
+                         f"not {klass!r}")
+    overrides = load_types(path)
+    key = (site, player)
+    if want is None:
+        overrides.pop(key, None)
+    else:
+        overrides[key] = want
+    save_types(overrides, path)
+    db = Path(db_path or DB)
+    if db.exists() and db.stat().st_size > 0:
+        apply_types(db, path=path, only=key)
+    return want
+
+
+def apply_types(db_path=DB, path=None, only=None):
+    """
+    Stamp effective class onto `players` and `decisions`.
+
+    `only` is one (site, player) so a single override does not walk
+    the whole table. The rates stay; only the label moves.
+    """
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "players" not in tables:
+        con.close()
+        return 0
+    overrides = load_types(path)
+    rows = con.execute(
+        "SELECT site, player, hands, vpip, pfr, class FROM players"
+        + (" WHERE site = ? AND player = ?" if only else ""),
+        only or ()).fetchall()
+    changed = 0
+    for r in rows:
+        auto = auto_class_of(r["hands"], r["vpip"], r["pfr"])
+        want = effective_class(auto, overrides.get((r["site"], r["player"])))
+        if want != r["class"]:
+            con.execute("UPDATE players SET class = ? WHERE site = ? "
+                        "AND player = ?", (want, r["site"], r["player"]))
+            changed += 1
+    if changed and "decisions" in tables:
+        stamp(con)
+    con.commit()
+    con.close()
+    return changed
+
+
 def classify(hands, vpip, pfr):
     """
     reg, fish, or unknown -- and unknown is the usual answer.
@@ -492,16 +630,19 @@ def build(db_path=DB):
             pct(r["wwsf"], r["flops"]), pct(r["wtsd"], r["flops"]),
             pct(r["wsd"], r["wtsd"]),
             (100.0 * r["net"] / r["money_hands"]) if r["money_hands"] else None,
-            classify(n, r["vpip"], r["pfr"])))
+            effective_class(classify(n, r["vpip"], r["pfr"]),
+                            override_of(r["site"], r["player"]))))
     con.executemany(
         "INSERT INTO players VALUES (" + ",".join("?" * 13) + ")", rows)
 
     stamp(con)
     con.commit()
     named = sum(1 for r in rows if r[2])
+    pinned = sum(1 for r in rows if override_of(r[0], r[1]))
     print(f"{len(rows):,} identities ({named:,} of them people), "
           f"{sum(1 for r in rows if r[12] == 'reg'):,} regs, "
-          f"{sum(1 for r in rows if r[12] == 'fish'):,} fish")
+          f"{sum(1 for r in rows if r[12] == 'fish'):,} fish"
+          + (f", {pinned:,} manual labels" if pinned else ""))
     con.close()
     return len(rows)
 
@@ -861,10 +1002,80 @@ def check_parse():
     print(f"the cohort takes only its own flags  "
           f"{len(splits) - len([f for f in fails if 'parse_cohort' in f])}"
           f"/{len(splits)}")
+
+    # Who-is-Reg: the file wins, auto is still the interval rule, and
+    # a missing file is nobody labelled. No database -- a rebuild that
+    # forgot the file would silently reclassify a pinned fish as
+    # unknown and look like the pool changed.
+    import tempfile
+    store = Path(tempfile.mkdtemp()) / "player_types.json"
+    if load_types(store):
+        fails.append("missing override file was not empty")
+    if effective_class("reg", None) != "reg" or \
+            effective_class("reg", "fish") != "fish" or \
+            effective_class("unknown", "reg") != "reg":
+        fails.append("effective_class did not let the manual label win")
+    if auto_class_of(400, 28.0, 22.0) != classify(400, 112, 88):
+        fails.append("auto_class_of did not scale percentages back to counts")
+    set_type("acr", "Alice", "fish", path=store, db_path=Path("no-such.db"))
+    if override_of("acr", "Alice", store) != "fish":
+        fails.append("set_type did not persist a fish pin")
+    set_type("acr", "Alice", "auto", path=store, db_path=Path("no-such.db"))
+    if override_of("acr", "Alice", store) is not None or store.exists():
+        fails.append("clearing a pin left the override behind")
+    print(f"Who-is-Reg override wins         "
+          f"{'yes' if not [f for f in fails if 'class' in f or 'override' in f or 'pin' in f or 'scale' in f] else 'NO'}")
     return fails
 
 
+def _opt(argv, name, default=None):
+    if name not in argv:
+        return default
+    i = argv.index(name) + 1
+    if i >= len(argv) or str(argv[i]).startswith("--"):
+        raise SystemExit(f"{name} needs a value")
+    return argv[i]
+
+
 def main(argv):
+    if "--set" in argv:
+        name = _opt(argv, "--set")
+        klass = _opt(argv, "--as") or _opt(argv, "--class")
+        site = _opt(argv, "--site")
+        if not name or not klass:
+            raise SystemExit("players.py --set NAME --as reg|fish|unknown|auto "
+                             "[--site acr]")
+        if not site:
+            # One site is the usual case. Two people on two rooms
+            # sharing a screen name must say which, or the pin lands
+            # on the first and the other keeps the auto class.
+            if DB.exists() and DB.stat().st_size > 0:
+                con = sqlite3.connect(DB)
+                sites_found = [r[0] for r in con.execute(
+                    "SELECT DISTINCT site FROM players WHERE player = ?",
+                    (name,))]
+                con.close()
+                if len(sites_found) == 1:
+                    site = sites_found[0]
+                elif len(sites_found) > 1:
+                    raise SystemExit(
+                        f"{name!r} is on {', '.join(sites_found)} -- "
+                        "pass --site")
+            if not site:
+                raise SystemExit("--set needs --site when no players table "
+                                 "can choose it")
+        want = set_type(site, name, klass)
+        print(f"{name} @ {site}: "
+              + ("auto (pin cleared)" if want is None else want))
+        return 0
+    if "--types" in argv:
+        ov = load_types()
+        if not ov:
+            print("no manual player types -- everyone is auto Who-is-Reg")
+            return 0
+        for (site, player), klass in sorted(ov.items()):
+            print(f"  {player:24} {site:10} {klass}")
+        return 0
     if "--cohort" in argv or any(a in COHORT_ALIASES for a in argv):
         spec, _remaining = parse_cohort(argv)
         show_cohort(*spec)

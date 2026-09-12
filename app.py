@@ -591,7 +591,8 @@ class App(ImportMixin, ttk.Frame):
                       "players", "live", "stack", "tag",
                       "alias", "vs_alias", "villain_type",
                       "combo", "action", "result",
-                      "session", "hours", "start_of_day", "tz")}
+                      "session", "hours", "start_of_day", "tz",
+                      "fmt", "last_sessions", "call_range")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
         # Study cockpit: each crumb is a row click (parent ∧ row).
@@ -605,6 +606,16 @@ class App(ImportMixin, ttk.Frame):
         self._study_out = None
         self._session_id = None
         self._sessions_out = None
+        self._statistics_out = None
+        self.stat_fmt = tk.StringVar(value="cash")
+        self.stat_since = tk.StringVar()
+        self.stat_until = tk.StringVar()
+        self.stat_last_n = tk.StringVar()
+        self.stat_exclude = tk.BooleanVar(value=False)
+        self.stat_key = None
+        self.stat_kind = "action"
+        self.stat_combo = None
+        self.stat_cells = {}
         self.session_hidden = set()
         self.session_series = None
         clock = sessions.load_clock()
@@ -781,7 +792,8 @@ class App(ImportMixin, ttk.Frame):
                     "--today")
     WHO_VALS = ("site", "stake", "player", "since", "until",
                 "alias", "vs_alias", "villain_type",
-                "session", "hours", "start_of_day", "tz")
+                "session", "hours", "start_of_day", "tz",
+                "fmt", "last_sessions")
 
     def clear_situation(self, keep_preset=False):
         """Drop the situation filters; keep the player, the site, the cohort."""
@@ -822,10 +834,10 @@ class App(ImportMixin, ttk.Frame):
             self._apply_argv(argv)
         self.refresh()
 
-    def _apply_argv(self, argv):
+    def _apply_argv(self, argv, who=False):
         """Set the widgets from a flag list. The inverse of `argv`."""
         i = 0
-        argv = query.situation_only(list(argv))
+        argv = list(argv) if who else query.situation_only(list(argv))
         while i < len(argv):
             a = argv[i]
             if a in self.flags:
@@ -866,7 +878,10 @@ class App(ImportMixin, ttk.Frame):
                             "--result": "result",
                             "--session": "session", "--hours": "hours",
                             "--start-of-day": "start_of_day",
-                            "--tz": "tz"}.get(a)
+                            "--tz": "tz",
+                            "--fmt": "fmt",
+                            "--last-sessions": "last_sessions",
+                            "--call-range": "call_range"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -930,12 +945,13 @@ class App(ImportMixin, ttk.Frame):
         self.related_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("study", "sessions", "stats", "range", "chart", "report",
-                     "results", "graph", "hands"):
+        for name in ("study", "statistics", "sessions", "stats", "range",
+                     "chart", "report", "results", "graph", "hands"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self._build_sessions(self.tabs["sessions"])
+        self._build_statistics(self.tabs["statistics"])
         self._build_study(self.tabs["study"])
         self.tree = {}
         for name in ("stats", "range", "report", "results", "hands"):
@@ -1066,6 +1082,156 @@ class App(ImportMixin, ttk.Frame):
         self.session_hands.bind("<Double-1>", self._open_hand)
         self.session_hands.bind("<Return>", self._open_hand)
         self.session_hands.bind("<Button-3>", self._hand_menu)
+
+    def _build_statistics(self, parent):
+        """
+        Hand2Note's Statistics tab: curated rates for a subject,
+        then click-stat → range → Call Range → hands → Reports.
+
+        The exclude checkbox is a compute flag on this sample only.
+        It is not written into argv(), so Open in Reports and the
+        Sessions tab cannot inherit it.
+        """
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", padx=8, pady=(8, 2))
+        ttk.Label(bar, text="mode", style="Dim.TLabel").pack(side="left")
+        for lab, val in (("Cash", "cash"), ("MTT", "mtt")):
+            ttk.Radiobutton(bar, text=lab, value=val,
+                            variable=self.stat_fmt,
+                            command=self._stat_context_changed).pack(
+                                side="left", padx=(6, 0))
+        ttk.Label(bar, text="from", style="Dim.TLabel").pack(
+            side="left", padx=(14, 4))
+        ttk.Entry(bar, textvariable=self.stat_since, width=12).pack(
+            side="left")
+        ttk.Label(bar, text="to", style="Dim.TLabel").pack(
+            side="left", padx=(8, 4))
+        ttk.Entry(bar, textvariable=self.stat_until, width=12).pack(
+            side="left")
+        ttk.Label(bar, text="last", style="Dim.TLabel").pack(
+            side="left", padx=(14, 4))
+        ttk.Entry(bar, textvariable=self.stat_last_n, width=4).pack(
+            side="left")
+        ttk.Label(bar, text="sessions", style="Dim.TLabel").pack(
+            side="left", padx=(4, 12))
+        ttk.Checkbutton(bar, text="exclude reg-vs-fish",
+                        variable=self.stat_exclude,
+                        command=self._stat_context_changed).pack(
+                            side="left")
+        ttk.Button(bar, text="Who is Reg",
+                   command=self._who_is_reg).pack(side="left", padx=(12, 0))
+        ttk.Button(bar, text="Apply",
+                   command=self._stat_context_changed).pack(
+                       side="left", padx=(8, 0))
+        self.stat_counts = ttk.Label(parent, text="", style="Dim.TLabel")
+        self.stat_counts.pack(fill="x", padx=8, pady=(0, 4))
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        left = ttk.LabelFrame(body, text="Statistics")
+        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.stat_grid = ttk.Frame(left)
+        self.stat_grid.pack(fill="both", expand=True, padx=4, pady=4)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True)
+        tools = ttk.Frame(right)
+        tools.pack(fill="x", pady=(0, 4))
+        ttk.Button(tools, text="Range",
+                   command=lambda: self._stat_kind("action")).pack(
+                       side="left")
+        ttk.Button(tools, text="Call Range",
+                   command=lambda: self._stat_kind("call")).pack(
+                       side="left", padx=(6, 0))
+        ttk.Button(tools, text="Open in Reports",
+                   command=self._stat_to_reports).pack(
+                       side="left", padx=(12, 0))
+        self.stat_title = ttk.Label(tools, text="", style="Dim.TLabel")
+        self.stat_title.pack(side="left", padx=12)
+        self.stat_canvas = tk.Canvas(right, bg=BG, highlightthickness=0,
+                                     height=280)
+        self.stat_canvas.pack(fill="x")
+        self.stat_canvas.bind("<Configure>",
+                              lambda _e: self._draw_stat_chart())
+        self.stat_canvas.bind("<Button-1>", self._click_stat_cell)
+        hands = ttk.LabelFrame(right, text="Hands")
+        hands.pack(fill="both", expand=True, pady=(6, 0))
+        mark = ttk.Frame(hands)
+        mark.pack(fill="x")
+        ttk.Button(mark, text="Mark",
+                   command=lambda: self._mark_selected(True)).pack(
+                       side="left")
+        ttk.Button(mark, text="Unmark",
+                   command=lambda: self._mark_selected(False)).pack(
+                       side="left", padx=(6, 0))
+        ttk.Label(mark, text="tag", style="Dim.TLabel").pack(
+            side="left", padx=(12, 4))
+        ttk.Entry(mark, textvariable=self.hand_tag, width=12).pack(
+            side="left")
+        ttk.Button(mark, text="Note", command=self._note_selected).pack(
+            side="left", padx=(12, 0))
+        self.stat_hands = self._table(hands)
+        self.stat_hands.bind("<Double-1>", self._open_hand)
+        self.stat_hands.bind("<Return>", self._open_hand)
+        self.stat_hands.bind("<Button-3>", self._hand_menu)
+
+    def _stat_context_changed(self):
+        self.refresh()
+
+    def statistics_argv(self):
+        """
+        Who + cash/MTT + date + last-N. Not the study crumbs, and
+        not the exclude flag -- that is a compute option, not a filter.
+        """
+        argv = query.who_only(self.argv())
+        argv = [a for i, a in enumerate(argv)
+                if a not in ("--fmt", "--last-sessions", "--since", "--until",
+                             "--call-range")
+                and (i == 0 or argv[i - 1] not in (
+                    "--fmt", "--last-sessions", "--since", "--until",
+                    "--call-range"))]
+        fmt = (self.stat_fmt.get() or "cash").strip()
+        argv += ["--fmt", fmt]
+        since = (self.stat_since.get() or "").strip()
+        until = (self.stat_until.get() or "").strip()
+        if since:
+            argv += ["--since", since]
+        if until:
+            argv += ["--until", until]
+        raw_n = (self.stat_last_n.get() or "").strip()
+        if raw_n and fmt != "mtt":
+            argv += ["--last-sessions", raw_n]
+        return argv
+
+    def _stat_kind(self, kind):
+        if not self.stat_key:
+            return
+        self.stat_kind = kind
+        self.stat_combo = None
+        self.refresh()
+
+    def _pick_stat(self, key):
+        self.stat_key = key
+        self.stat_kind = "action"
+        self.stat_combo = None
+        self.refresh()
+
+    def _stat_to_reports(self):
+        """The clicked stat as a Reports filter. Exclude stays behind."""
+        if not self.stat_key:
+            return
+        argv = query.reports_argv(
+            self.statistics_argv(), self.stat_key, self.stat_kind,
+            self.stat_combo)
+        self.clear_situation()
+        # Who/when stay: cash/MTT, dates, last-N. situation_only
+        # would drop them and Reports would open a different subject.
+        self._apply_argv(argv, who=True)
+        self.nb.select(self.tabs["study"])
+        self.refresh()
+
+    def _who_is_reg(self):
+        WhoIsRegDialog(self)
 
     def _sess_clock(self):
         tz = {}
@@ -1326,7 +1492,10 @@ class App(ImportMixin, ttk.Frame):
                            ("session", "--session"),
                            ("hours", "--hours"),
                            ("start_of_day", "--start-of-day"),
-                           ("tz", "--tz")):
+                           ("tz", "--tz"),
+                           ("fmt", "--fmt"),
+                           ("last_sessions", "--last-sessions"),
+                           ("call_range", "--call-range")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1365,7 +1534,7 @@ class App(ImportMixin, ttk.Frame):
             self.of_label.pack_forget()
             self.of.pack_forget()
         try:
-            argv = self.argv()
+            argv = self.statistics_argv() if view == "statistics" else self.argv()
             cohort_spec, query_argv = players.parse_cohort(argv)
             where, label, parts = query.build(query_argv)
         except SystemExit as e:
@@ -1391,10 +1560,14 @@ class App(ImportMixin, ttk.Frame):
                 self.sess_warn.configure(text=str(e))
                 return
             sess = (clock, kind, hours, since, until, self._session_id)
+        stat_ctx = None
+        if view == "statistics":
+            stat_ctx = (bool(self.stat_exclude.get()), self.stat_key,
+                        self.stat_kind, self.stat_combo)
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
                                self.by.get(), cohort_spec, self.chart_stat(),
-                               query_argv, self._pin_name(), sess)
+                               query_argv, self._pin_name(), sess, stat_ctx)
                          ).start()
 
     def _paint_related(self, related):
@@ -1426,7 +1599,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None, argv=None, pin="", sess=None):
+              stat=None, argv=None, pin="", sess=None, stat_ctx=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -1499,6 +1672,37 @@ class App(ImportMixin, ttk.Frame):
                 if sid:
                     detail = sessions.detail_of(con, sid, clock=clock)
                     out["detail"] = detail
+            elif view == "statistics":
+                exclude, key, kind, combo = stat_ctx or (False, None, "action",
+                                                         None)
+                out.update(query.statistics_of(
+                    con, where, argv, exclude=exclude))
+                if cohort_spec is not None:
+                    header = {
+                        "describe": players.describe_cohort(cohort_spec),
+                    }
+                    try:
+                        old_rf = con.row_factory
+                        con.row_factory = sqlite3.Row
+                        try:
+                            header.update(players.cohort_summary(
+                                players.cohort(con, *cohort_spec)))
+                        finally:
+                            con.row_factory = old_rf
+                    except ValueError:
+                        pass
+                    out["cohort"] = header
+                if key:
+                    try:
+                        drill = query.stat_range_of(
+                            con, where, key, kind=kind, exclude=exclude,
+                            combo=combo)
+                        compact.attach(con, drill.get("hands") or [],
+                                       fmt="text")
+                        notes.decorate(con, drill.get("hands") or [])
+                        out["drill"] = drill
+                    except SystemExit as e:
+                        out["drill_error"] = str(e)
             elif view == "study":
                 panes = list(query.DEFAULT_STUDY_PANES) + list(
                     getattr(self, "extra_panes", []) or [])
@@ -1536,7 +1740,9 @@ class App(ImportMixin, ttk.Frame):
                     or out.get("compare")
                     or out.get("hands") or out.get("panes")
                     or (out.get("sizes") or {}).get("rows")
-                    or "clock" in out)
+                    or "clock" in out
+                    or out.get("rows") is not None
+                    or "counts" in out)
 
     def _series(self, con, where):
         pairs = query.matching_seats(con, where)
@@ -1589,6 +1795,9 @@ class App(ImportMixin, ttk.Frame):
             return
         if view == "sessions":
             self._render_sessions(out)
+            return
+        if view == "statistics":
+            self._render_statistics(out)
             return
         if view == "study":
             self._render_study(out)
@@ -1681,6 +1890,120 @@ class App(ImportMixin, ttk.Frame):
             self.session_series = None
             self._draw_session_graph("pick a session")
             self._render_hands(self.session_hands, {"rows": []})
+
+    def _render_statistics(self, out):
+        """Curated grid, then the selected stat's range and hands."""
+        self._statistics_out = out
+        if out.get("error"):
+            self.stat_counts.configure(text=out["error"])
+            return
+        c = out.get("counts") or {}
+        bits = [f"{out.get('n', 0):,} decisions"]
+        if out.get("exclude"):
+            bits.append(f"excluded {out.get('excluded', 0):,} reg-vs-fish "
+                        f"(of {out.get('n_all', 0):,})")
+        bits.append(f"{c.get('players', 0)} identities")
+        bits.append(f"{c.get('reg', 0)} regs / {c.get('fish', 0)} fish / "
+                    f"{c.get('unknown', 0)} unknown")
+        if out.get("cohort"):
+            coh = out["cohort"]
+            bits.append(coh.get("describe") or "cohort")
+            if coh.get("players"):
+                bits.append(
+                    f"cohort {coh['players']} "
+                    f"({coh.get('regs', 0)} regs / "
+                    f"{coh.get('fish', 0)} fish / "
+                    f"{coh.get('unknown', 0)} unknown)")
+        if (self.stat_fmt.get() or "") == "mtt" and (
+                self.stat_last_n.get() or "").strip():
+            bits.append("last-N is cash sit-downs -- ignored in MTT")
+        self.stat_counts.configure(text="  ·  ".join(bits))
+        self._fill_stat_grid(out.get("rows") or [])
+        drill = out.get("drill")
+        if out.get("drill_error"):
+            self.stat_title.configure(text=out["drill_error"])
+            self.stat_chart = None
+            self._draw_stat_chart(out["drill_error"])
+            self._render_hands(self.stat_hands, {"rows": []})
+            return
+        if drill:
+            self.stat_title.configure(text=drill.get("title") or "")
+            self.stat_chart = drill.get("chart")
+            self._draw_stat_chart()
+            self._render_hands(self.stat_hands,
+                               {"rows": drill.get("hands") or []})
+        else:
+            self.stat_title.configure(
+                text="click a stat · Call Range compares the call in "
+                     "the same spot · a cell opens those hands")
+            self.stat_chart = None
+            self._draw_stat_chart()
+            self._render_hands(self.stat_hands, {"rows": []})
+
+    def _fill_stat_grid(self, rows):
+        for kid in self.stat_grid.winfo_children():
+            kid.destroy()
+        by = {}
+        for r in rows:
+            by.setdefault(r.get("group") or "", []).append(r)
+        col = 0
+        for group, items in by.items():
+            box = ttk.LabelFrame(self.stat_grid, text=group or "stats")
+            box.grid(row=0, column=col, sticky="nsew", padx=3, pady=3)
+            self.stat_grid.columnconfigure(col, weight=1)
+            for i, r in enumerate(items):
+                pct = "–" if not r.get("n") else f"{r['pct']:.1f}%"
+                n = "" if not r.get("n") else f"n={r['n']:,}"
+                on = r["key"] == self.stat_key
+                lab = tk.Label(
+                    box,
+                    text=f"{r['label']}\n{pct}  {n}",
+                    bg=ACCENT if on else PANEL, fg=BG if on else INK,
+                    cursor="hand2", font=(UI, 9), padx=8, pady=6,
+                    justify="left", anchor="w")
+                lab.pack(fill="x", pady=1)
+                lab.bind("<Button-1>",
+                         lambda _e, k=r["key"]: self._pick_stat(k))
+            col += 1
+
+    def _draw_stat_chart(self, message=None):
+        """The 13x13 for the selected stat, clickable by combo."""
+        c = getattr(self, "stat_canvas", None)
+        if c is None:
+            return
+        old, old_g = self.chart_canvas, self.chart
+        self.chart_canvas = c
+        self.chart = getattr(self, "stat_chart", None)
+        try:
+            self._draw_chart(message)
+        finally:
+            self.chart_canvas = old
+            self.chart = old_g
+        self._stat_cell_geom(c)
+
+    def _stat_cell_geom(self, canvas):
+        """Remember cell bounds so a click can name a combo."""
+        self.stat_cells = {}
+        w, h = canvas.winfo_width(), canvas.winfo_height()
+        if w < 80 or h < 80:
+            return
+        top, foot = 16, 52
+        size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
+        left = (w - size * 13) / 2.0
+        for i in range(13):
+            for j in range(13):
+                combo = query.combo_at(i, j)
+                x, y = left + j * size, top + i * size
+                self.stat_cells[combo] = (x, y, x + size, y + size)
+
+    def _click_stat_cell(self, event):
+        if not self.stat_key:
+            return
+        for combo, (x0, y0, x1, y1) in self.stat_cells.items():
+            if x0 <= event.x < x1 and y0 <= event.y < y1:
+                self.stat_combo = None if self.stat_combo == combo else combo
+                self.refresh()
+                return
 
     def _render_study(self, out):
         """Chips, breadcrumb, Smart strip, panes, compact hands."""
@@ -2433,6 +2756,7 @@ class App(ImportMixin, ttk.Frame):
     def _selected_hand(self, tv=None):
         trees = [tv, getattr(self, "study_hands", None),
                  getattr(self, "session_hands", None),
+                 getattr(self, "stat_hands", None),
                  (self.tree or {}).get("hands")]
         for t in trees:
             if t is None:
@@ -2847,6 +3171,95 @@ def _cohort_expr(conditions):
         else:
             parts.append(f"{field}={value}")
     return ",".join(parts)
+
+
+class WhoIsRegDialog(tk.Toplevel):
+    """
+    Auto Who-is-Reg plus a manual pin.
+
+    The interval rule is still the default. A pin writes
+    `player_types.json` and restamps `decisions.class`, so Statistics
+    exclude and Reports `--class` see the same person.
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Who is Reg")
+        self.configure(bg=BG)
+        self.geometry("640x420")
+        ttk.Label(self, text="WHO IS REG", style="Title.TLabel").pack(
+            anchor="w", padx=18, pady=(16, 4))
+        ttk.Label(self, text="Auto is the interval rule in players.py. "
+                  "A pin wins, the way H2N colour markers do. "
+                  "Clearing a pin returns them to auto.",
+                  style="Dim.TLabel").pack(anchor="w", padx=18, pady=(0, 8))
+        wrap = ttk.Frame(self)
+        wrap.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+        self.tree = ttk.Treeview(wrap, show="headings", selectmode="browse")
+        vs = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vs.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self.tree["columns"] = ("player", "site", "hands", "auto",
+                                "effective", "pin")
+        for col, w in (("player", 180), ("site", 80), ("hands", 70),
+                       ("auto", 70), ("effective", 80), ("pin", 70)):
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=w, anchor="w")
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=18, pady=(0, 16))
+        ttk.Label(foot, text="pin as", style="Dim.TLabel").pack(side="left")
+        self.pin = ttk.Combobox(foot, values=("auto", "reg", "fish", "unknown"),
+                                state="readonly", width=10)
+        self.pin.set("auto")
+        self.pin.pack(side="left", padx=8)
+        ttk.Button(foot, text="Apply pin",
+                   command=self.apply).pack(side="left")
+        ttk.Button(foot, text="Close", command=self.destroy).pack(
+            side="right")
+        self._rows = {}
+        self.reload()
+
+    def reload(self):
+        self.tree.delete(*self.tree.get_children())
+        self._rows = {}
+        overrides = players.load_types()
+        con = connect_db()
+        con.row_factory = sqlite3.Row
+        try:
+            tables = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "players" not in tables:
+                return
+            rows = con.execute(
+                "SELECT site, player, hands, vpip, pfr, class, durable "
+                "FROM players WHERE durable = 1 "
+                "ORDER BY hands DESC, player LIMIT 200").fetchall()
+        except sqlite3.Error:
+            con.close()
+            return
+        con.close()
+        for r in rows:
+            auto = players.auto_class_of(r["hands"], r["vpip"], r["pfr"])
+            pin = overrides.get((r["site"], r["player"])) or ""
+            iid = self.tree.insert("", "end", values=(
+                r["player"], r["site"], f"{r['hands']:,}", auto,
+                r["class"], pin or "—"))
+            self._rows[iid] = (r["site"], r["player"])
+
+    def apply(self):
+        sel = self.tree.selection()
+        if not sel or sel[0] not in self._rows:
+            return
+        site, player = self._rows[sel[0]]
+        try:
+            players.set_type(site, player, self.pin.get())
+        except ValueError as e:
+            messagebox.showinfo("Who is Reg", str(e))
+            return
+        self.reload()
+        self.app.refresh()
 
 
 class CohortDialog(tk.Toplevel):
@@ -3996,8 +4409,8 @@ def check(db_path=DB):
     # that matches nothing -- which is one click away at all times.
     con = connect_db(db_path)
     broke = []
-    views = ("sessions", "study", "stats", "range", "chart", "report",
-             "results", "hands", "graph")
+    views = ("sessions", "study", "statistics", "stats", "range", "chart",
+             "report", "results", "hands", "graph")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:
@@ -4182,6 +4595,39 @@ def check(db_path=DB):
         fails.append("the window has no Sessions tab")
     print(f"sessions tab                  "
           f"{'yes' if 'sessions' in app.tabs else 'NO'}")
+    if "statistics" not in app.tabs:
+        fails.append("the window has no Statistics tab")
+    print(f"statistics tab                "
+          f"{'yes' if 'statistics' in app.tabs else 'NO'}")
+    app.stat_fmt.set("cash")
+    app.stat_last_n.set("10")
+    app.stat_exclude.set(True)
+    sargv = app.statistics_argv()
+    if "--fmt" not in sargv or "cash" not in sargv:
+        fails.append("Statistics argv dropped cash mode")
+    if "--last-sessions" not in sargv or "10" not in sargv:
+        fails.append("Statistics argv dropped last-N sessions")
+    if "--exclude-reg-vs-fish" in sargv or "--exclude-reg-vs-fish" in app.argv():
+        fails.append("exclude_reg_vs_fish leaked into argv -- Reports "
+                     "would change with the Statistics toggle")
+    print(f"exclude stays off Reports     "
+          f"{'yes' if '--exclude-reg-vs-fish' not in app.argv() else 'NO'}")
+    app.stat_key = "threebet"
+    app.stat_kind = "action"
+    app.stat_combo = None
+    opened = query.reports_argv(app.statistics_argv(), "threebet", "action")
+    app.clear_situation()
+    app._apply_argv(opened, who=True)
+    if "--quick" not in app.argv() or "threebet" not in app.argv():
+        fails.append("Open in Reports did not apply --quick threebet")
+    if "--exclude-reg-vs-fish" in app.argv():
+        fails.append("Open in Reports applied the exclude flag")
+    if "--fmt" not in app.argv() or "cash" not in app.argv():
+        fails.append("Open in Reports dropped cash mode")
+    if "--last-sessions" not in app.argv() or "10" not in app.argv():
+        fails.append("Open in Reports dropped last-N sessions")
+    print(f"Open in Reports is --quick     "
+          f"{'yes' if '--quick' in app.argv() else 'NO'}")
     app.vals["session"].set("h1")
     if "--session" not in app.argv() or "h1" not in app.argv():
         fails.append("Open-in-Reports session chip did not reach argv")

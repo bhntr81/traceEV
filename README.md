@@ -63,8 +63,8 @@ players.py      who each player is: reg, fish, unknown  --check
         v
 stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
-app.py          desktop Reports study cockpit        --check
-gui.py          the same cockpit as a local page     --check
+app.py          desktop study / Statistics / Sessions  --check
+gui.py          the same three surfaces as a page    --check
 expr.py         Value/Cases/Opps over plain stats    --check
 aliases.py      named (username, room) groups        --check
 notes.py        player notes, marks, tags            --check
@@ -82,6 +82,7 @@ python query.py --hero --board mono --results
 python query.py --player dblj32 --pos BTN --hands
 python query.py --pot 3bet --ip --street river --define river_barrel3 --do bet
 python query.py --site ignition --quick threebet --chart
+python query.py --statistics --fmt cash --exclude-reg-vs-fish
 ```
 
 ## The database, as it stands

@@ -228,8 +228,56 @@ every suited ace; `22+`, `pairs`, `broadways` are the same idea.
 The page (`python gui.py`) has the same study view as its default
 tab. Pin, Mark, and Add to Note hit the same backends.
 
-Not in this cockpit: a Statistics grid, Detach, a Reg-Fish
-stats-exclusion toggle. Sessions is the neighbouring tab.
+Not in this cockpit: Detach, multi-profile Save/Open, a board
+editor, weak%. Sessions is the neighbouring tab. Statistics is
+the one after study.
+
+### Statistics
+
+Hand2Note's other primary study surface: a curated grid of rates
+for one subject, then click a stat to see the range that produced
+it. No HUD. No solver.
+
+```bash
+python query.py --statistics --fmt cash --last-sessions 10
+python query.py --statistics --exclude-reg-vs-fish --hit threebet
+python query.py --call-range threebet --hero --hands
+python players.py --set NAME --as fish --site acr
+python players.py --types
+```
+
+The window's **statistics** tab is the same loop. Who is the
+player / cohort / alias already on the filter bar. Cash | MTT,
+a date range, and last N sessions sit on this tab (last-N is
+cash sit-downs; MTT has none and the box is ignored). Cohort
+counts -- how many regs / fish / unknown -- sit above the grid.
+
+Click **3bet** → the 13×13 of those raises. **Call Range** is the
+sibling: same chance, a call instead (Call Open Raise). A cell
+narrows to that combo. Compact hands under the chart; double-click
+replays. **Open in Reports** writes `--quick threebet` (or
+`--call-range threebet`) onto the study tab and keeps who / cash
+/ dates / last-N. It does not take the exclude flag with it.
+
+**exclude reg-vs-fish** is a Statistics compute flag, not a
+filter. H2N's rebuild toggle: a regular's decision with a fish
+still in drops out of the Statistics sample. Fish-vs-reg stays --
+that is how a fish plays against regs. Unknown stays. Reports and
+Sessions never see it; `query.build` skips the flag so a Reports
+command that happens to carry it is a no-op. `--villain-type`
+stays a Reports filter and is not this toggle.
+
+Player type is auto Who-is-Reg (`players.classify`: intervals,
+unknown is an answer) plus a manual pin in `player_types.json`
+(gitignored, the same shape as `aliases.json`). A pin wins. The
+**Who is Reg** dialog writes the file and restamps `decisions`,
+so Statistics exclude and Reports `--class` / `--reg` see the
+same person.
+
+`--fmt cash` is everything that is not a tournament (`fmt <>
+'MTT'`). `fmt='RING'` is not a pool; ACR ring is in cash too.
+
+Not this: multi-profile Save/Open, weak%, a board editor, Detach.
 
 ### Sessions
 
@@ -268,10 +316,10 @@ comparisons, so a saved filter does not move when the clock prefs
 do.
 
 MTT is out (chips are not dollars). Opponent class is ignored --
-sessions are not affected by `--reg` / `--fish` or a future
-Reg-vs-Fish stats-rebuild exclusion. Ignition is one hero stream
-per site; the seat identity would split a real sit-down. Export
-needs the original HH files still at `hands.source`.
+sessions are not affected by `--reg` / `--fish` or by
+`exclude_reg_vs_fish` on the Statistics tab. Ignition is one hero
+stream per site; the seat identity would split a real sit-down.
+Export needs the original HH files still at `hands.source`.
 
 Not this: Chip EV, rakeback overlay, live-table VPIP sort,
 merge/split.

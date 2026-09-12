@@ -958,9 +958,9 @@ inventing EV.
 **Result:** `query.study_of` / `drill_child` is the payload both
 front ends draw. Default panes Results / Stack Sizes / Positions /
 Next Action; breadcrumb capped at 3; `--action`, `--result`, combo
-families. Documented gaps: Sessions (shipped next), Statistics
-grid, graphs in the cockpit, Detach, Reg-Fish stats exclusion,
-live `hands.db`, window `--check` (needs Tk).
+families. Documented gaps: Sessions (shipped), Statistics
+(shipped next), graphs in the cockpit, Detach, live
+`hands.db`, window `--check` (needs Tk).
 
 ## Run — Sessions (H2N study surface)
 
@@ -979,3 +979,22 @@ Export is the original HH text or a counted miss. `--facing` is a
 chip so a related-spot click rebuilds the same filter the CLI
 would. Remaining: Chip EV, rakeback, merge/split, live
 `hands.db`. Window `--check` needs Tk.
+
+## Run — Statistics + Reg-vs-Fish exclusion
+
+**Goal:** H2N Statistics tab and the rebuild flag that drops
+reg-vs-fish from Statistics aggregates only. Cohort / player /
+alias subject; Cash|MTT; date; last N sessions; click-stat →
+range → Call Range → cell → compact hands → Open in Reports.
+No HUD, no solver, `--check` without inventing EV.
+
+**Result:** `query.statistics_of` is the grid both front ends
+draw. Curated keys from the existing registry. Call Range is
+the same chance with `action IN ('C','A') AND agg = 0`.
+`exclude_reg_vs_fish` is in `OPTIONS` so `build()` skips it;
+only the Statistics path AND-s `NOT (player_class='reg' AND
+n_fish>0)`. Reports / Sessions unchanged. `--villain-type`
+stays a Reports filter. Who-is-Reg is `players.classify` plus
+`player_types.json`; a pin restamps `decisions`. Last-N is
+cash sit-downs (`sessions.last_n_sql`). Deferred: multi-profile
+Save/Open, weak%, board editor, Detach, graph polish.
