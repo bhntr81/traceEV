@@ -47,6 +47,7 @@ import json
 import shlex
 import tempfile
 
+import games
 import lines
 import players
 import sites
@@ -70,6 +71,11 @@ FACINGS = ("unopened", "open", "3bet", "4bet", "5bet+",
 # A value flag takes an argument; a switch does not.
 VALUE_FLAGS = {
     "--site": "site = {v}",
+    # HOLDEM / OMAHA / OMAHA5. The words `--game` takes live in
+    # `games.ALIASES` (`plo`, `holdem`, `plo5`, ...). Absent, the filter
+    # is Hold'em -- mixing the two VPIPs is the same class of error as
+    # mixing two sites under fmt='RING'. `--game all` opts in to mixing.
+    "--game": None,
     "--player": "player = {v}",
     # The other seat, by name. Only meaningful while one opponent is left --
     # in a three-way pot there is no "the other player" -- so this selects
@@ -187,6 +193,7 @@ DIMENSIONS = {
         if k in ("UTG", "HJ", "CO", "BTN", "SB", "BB") else 99)),
     "stake": ("bb", lambda k: float(k or 0)),
     "site": ("site", str),
+    "game": ("game", str),
     "player": ("player", str),
     "month": ("substr(played_at, 1, 7)", str),
     "day": ("substr(played_at, 1, 10)", str),
@@ -544,6 +551,7 @@ def build(argv):
     be read as though it covered everything.
     """
     parts, described = [], []
+    named_game = False
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -596,6 +604,18 @@ def build(argv):
                     parts.append("(" + RUNOUT[name].format(p=pre) + ")")
                 described.append(f"{a.lstrip('-')} {v}")
                 continue
+            if a == "--game":
+                try:
+                    clause = games.sql(v)
+                except KeyError as e:
+                    raise SystemExit(str(e)) from None
+                named_game = True
+                if clause != "1=1":
+                    parts.append(clause)
+                    described.append("game " + v)
+                else:
+                    described.append("all games")
+                continue
             if a == "--board":
                 for name in v.split(","):
                     if name not in BOARDS:
@@ -616,6 +636,13 @@ def build(argv):
             described.append(f"{a.lstrip('-')} {v}")
             continue
         raise SystemExit(f"unknown option {a!r} -- try --help")
+    # Default Hold'em. A report that does not name a game is a Hold'em
+    # report, because that is what every number in this project was
+    # until Omaha arrived, and averaging the two is how a 22% VPIP
+    # becomes a number that describes neither.
+    if not named_game:
+        parts.append(games.HOLD)
+        described.append("holdem")
     return (" AND ".join(parts) if parts else "1=1",
             ", ".join(described) if described else "everything",
             list(zip(described, parts)))
@@ -1375,7 +1402,8 @@ def hand_detail(con, hand_id, seat=None):
     con.row_factory = None
     return {
         "hand_id": hand_id, "site": h["site"], "played_at": h["played_at"],
-        "table": h["table_id"], "fmt": h["fmt"], "sb": h["sb"], "bb": h["bb"],
+        "table": h["table_id"], "fmt": h["fmt"], "game": h["game"],
+        "sb": h["sb"], "bb": h["bb"],
         "n_players": h["n_players"], "board": h["board"], "pot": h["pot"],
         "rake": (h["rake"] if "rake" in h.keys() else None),
         "focus": seat,
@@ -1394,14 +1422,14 @@ def show_hand(con, hand_id, seat=None):
         print(f"no hand {hand_id!r}")
         return
     stake = f"${d['sb']}/${d['bb']}" if d["bb"] else "-"
-    print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {stake}  "
-          f"{d['played_at']}  ({d['table']})")
+    print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {d.get('game') or ''}  "
+          f"{stake}  {d['played_at']}  ({d['table']})")
     print("=" * 78)
     for s in d["seats"]:
         mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
         net = (s["won"] or 0) - s["put_in"]
         print(f" {mark} {s['position'] or '?':4} {(s['name'] or '')[:16]:16} "
-              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>7}  "
+              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>14}  "
               f"{net:+8.2f}")
     for st in d["streets"]:
         head = st["street"].upper()
@@ -1639,6 +1667,7 @@ def usage():
     for k, v in VALUE_FLAGS.items():
         if v:
             print(f"    {k:14} {v}")
+    print(f"    {'--game':14} holdem (default), plo, plo5, all")
     print(f"    {'--board':14} one of: {', '.join(BOARDS)}")
     print(f"    {'--quick':14} named filters: "
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
@@ -1757,6 +1786,15 @@ def check(db_path=DB):
     cases.append(("--player", ["--player", con.execute(
         "SELECT player FROM decisions WHERE player IS NOT NULL LIMIT 1"
     ).fetchone()[0]]))
+    # `--game plo` selects nothing on a Hold'em-only database, which is
+    # a fault in the test rather than the filter. Only asked when that
+    # game is actually present -- the same reason the date is taken
+    # from the corpus.
+    present = {r[0] for r in con.execute("SELECT DISTINCT game FROM decisions")}
+    if "OMAHA" in present:
+        cases.append(("--game plo", ["--game", "plo"]))
+    if "OMAHA5" in present:
+        cases.append(("--game plo5", ["--game", "plo5"]))
 
     for name, argv in cases:
         where, _, _p = build(argv)

@@ -132,11 +132,12 @@ def stats(db_path=DB):
         print("no database yet -- `python importer.py <folder>` first")
         return
     con = sqlite3.connect(db_path)
-    print("hands by site and format:")
-    for site, fmt, bb, n in con.execute(
-            "SELECT site, fmt, bb, COUNT(*) FROM hands "
-            "GROUP BY 1, 2, 3 ORDER BY 1, COUNT(*) DESC"):
-        print(f"  {site:10} {fmt:6} {('$%.2f' % bb) if bb else '-':>7}  {n:6d}")
+    print("hands by site, game and format:")
+    for site, fmt, game, bb, n in con.execute(
+            "SELECT site, fmt, game, bb, COUNT(*) FROM hands "
+            "GROUP BY 1, 2, 3, 4 ORDER BY 1, 3, COUNT(*) DESC"):
+        print(f"  {site:10} {fmt:6} {(game or '?'):7} "
+              f"{('$%.2f' % bb) if bb else '-':>7}  {n:6d}")
 
     print("\ncoverage of what each site actually shows:")
     for key in KEYS:

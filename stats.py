@@ -39,6 +39,7 @@ import tempfile
 from math import erfc, sqrt
 from pathlib import Path
 
+import games
 import sites
 
 DB = Path(__file__).parent / "hands.db"
@@ -711,7 +712,8 @@ def by_position(con, keys, where, title):
         print("  " + pos.ljust(6) + "".join(cells))
 
 
-POOL = f"is_hero=0 AND {sites.CASH} AND n_players>=5 AND standard=1"
+POOL = (f"is_hero=0 AND {sites.CASH} AND n_players>=5 AND standard=1 "
+        f"AND {games.HOLD}")
 
 
 def check(db_path=DB):

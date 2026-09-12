@@ -123,6 +123,14 @@ Never write a parser from memory of a format. Without sample files there
 is nothing to run the checks against, and a parser that has not been
 checked is one that is dropping lines quietly.
 
+**Adding a game** — the same idea one axis over. HOLDEM, OMAHA and
+OMAHA5 live in `games.py`. A parser asks `games.of(header)` and writes
+that value; it does not decide what "plo" means a second time. The
+default pool is Hold'em (`games.HOLD`). Strength, the 13x13 and all-in
+equity assume two hole cards and must refuse four, not classify them
+as Hold'em. `--check` fixtures for a new variant are a real hand whose
+money adds up, not an invented equity.
+
 ---
 
 ## Rules for any number that gets reported

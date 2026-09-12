@@ -55,7 +55,7 @@ SWITCH_FIELDS = {
     "vs_hero": "--vs-hero", "vs_pool": "--vs-pool",
 }
 VALUE_FIELDS = {
-    "site": "--site", "player": "--player", "pos": "--pos",
+    "site": "--site", "game": "--game", "player": "--player", "pos": "--pos",
     "street": "--street", "pot": "--pot", "facing": "--facing",
     "vs": "--vs", "opener": "--opener",
     "combo": "--combo", "stake": "--stake", "deep": "--deep",

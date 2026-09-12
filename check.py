@@ -25,6 +25,10 @@ HERE = Path(__file__).parent
 # In dependency order, so the first failure is the earliest cause rather
 # than the loudest symptom.
 CHECKS = [
+    ("games", "the variant registry: headers, --game words, hole counts"),
+    ("acr", "WPN parser: PLO4/PLO5 fixtures, and Hold'em still loads"),
+    ("ignition", "Ignition parser: Omaha tagged, four and five hole cards kept"),
+    ("pokerstars", "PokerStars: NLHE still loads; Omaha skip is the extension point"),
     ("sites", "each site's import: money, positions, blinds, and names where it has them"),
     ("spots", "the per-hand derivation: figures with a known shape"),
     ("decisions", "the per-decision derivation, against spots exactly"),

@@ -4,8 +4,10 @@ A poker tracker built from scratch, over our own hand histories from
 **ACR** and **Ignition**.
 
 Import hands, build a database, and ask it anything about any player or the
-pool, filtered any way you like. It never tells you what is *correct*. It
-tells you what people **do**.
+pool, filtered any way you like. Hold'em and Omaha (PLO4 / PLO5) both
+load; pool stats default to Hold'em so the two VPIPs cannot mix by
+accident. It never tells you what is *correct*. It tells you what people
+**do**.
 
 ## Scope, decided rather than drifted into
 
@@ -51,6 +53,7 @@ that already exists — is using the first as the prior for the second.
 
 ```
 sites.py        what each site is, decided once      --check
+games.py        HOLDEM / OMAHA / OMAHA5, decided once  --check
 acr.py, ignition.py, pokerstars.py   the parsers, one per format
 importer.py     find, identify and load hand histories   --check
         v
@@ -76,6 +79,7 @@ python query.py --hero --board mono --results
 python query.py --player dblj32 --pos BTN --hands
 python query.py --pot 3bet --ip --street river --define river_barrel3 --do bet
 python query.py --site ignition --quick threebet --chart
+python query.py --game plo --hero --stats
 ```
 
 ## The database, as it stands
