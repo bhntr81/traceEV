@@ -247,10 +247,27 @@ on a filter:
   - uncalled extra chips come back; v1 credits `+pot_before` only
 - **This spot** -- fold / check / call / bet / raise of the filtered
   decisions, each with its `n` and a Wilson interval.
-- **Faced next** / **next actions** -- what the other seat did after
-  this decision, and what this player did the next time they acted.
-  `--after fold` and `--then bet` open those as filters; in the window
-  a double-click does the same.
+- **Faced next** / **next actions** -- a report, not just a mix. Each
+  row is what the other seat did next, or what this player did next,
+  with frequency, hits/opps (branch / parent), and Action Profit v1
+  on the parent action given that continuation. `--after fold` and
+  `--then bet` open a row; `--after none` is "nothing further".
+  `--after fold-out` and `--after 3bet` are aliases for fold and
+  raise (an open's 3-bet is a raise). Squeeze is not its own verb --
+  it is `--live 3` plus `--after raise`.
+
+```bash
+python query.py --from "Flop c-bets" --faced-next
+python query.py --from "Flop c-bets" --next-actions
+python query.py --from "Flop c-bets" --branch fold
+python query.py --from "Flop c-bets" --after fold --stats
+python query.py --hit cbet_flop --stats
+```
+
+  `--from` is `--filter`. `--branch fold` applies `--after fold`
+  (or `--then` under `--next-actions`). `--hit` is `--quick`: click-
+  stat on the command line. In the window, double-click a row; on
+  the page, click it.
 - **Outcome** -- what the pot did with this bet, which is a different
   question from Faced Next. Faced Next is the first later action;
   outcome is fold-out / call / raise-back over everybody still in.

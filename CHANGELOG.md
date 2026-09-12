@@ -109,11 +109,18 @@ only). The note sits next to Hits/Opps.
 ### Added — Faced Next / Next Actions, and click-to-filter
 
 `--after fold` is the first later action by another seat; `--then bet`
-is the first later action by this player. `--stats` prints both
-breakdowns as filters you can open. The window double-clicks a stat
-row into `--quick` and a Faced Next row into `--after`; the page does
-the same with a click. That is Hand2Note's drill-down without a second
-filter language.
+is the first later action by this player. Each row now carries
+frequency, hits/opps (branch / parent), and Action Profit v1 on the
+parent action given that continuation -- "I cbet and they folded" is
++pot, not Won$. `--faced-next` / `--next-actions` print that table
+as its own report; `--from` is `--filter`; `--branch fold` applies
+the row (`--after` or `--then`). `--after none` is nothing further;
+`fold-out` / `3bet` alias fold / raise. Squeeze is `--live` plus
+`--after raise`, not a third verb.
+
+`--hit` is `--quick`: click-stat on the command line. The window
+double-clicks a stat row into `--quick` and a Faced Next row into
+`--after`; the page does the same with a click.
 
 ### Added — outcome block, StatPacks, custom builder, pin
 
@@ -158,6 +165,8 @@ untouched.
   call or a solver.
 - **Multi-Player compare** as its own view. `--versus` already compares
   two populations; a window for it is not this PR.
+- **Squeeze as its own Faced Next verb.** A squeeze is a raise with
+  callers already in; v1 keeps it as `--live` + `--after raise`.
 - **Missed 2nd/3rd Barrel, Won$, Won hand%** in the Raise C-bet pack.
   The core subset (hits/opps/freq + outcomes + Action Profit + the
   related decision stats) is what ships; those extras are either

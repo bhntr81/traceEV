@@ -152,7 +152,7 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            # a Smart Report, a --quick key, or a JSON argv list. `--pin`
            # is --versus pointed at another report, same person. Both
            # expand in `main` before `build` sees the line.
-           "--filter", "--pin",
+           "--filter", "--pin", "--from", "--branch",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -1150,6 +1150,44 @@ def chain_of(con, where, same_seat=False):
             "flag": "--then" if same_seat else "--after"}
 
 
+def chain_report(con, where, argv=None, same_seat=False):
+    """
+    Faced Next / Next Actions as a report, not just a mix.
+
+    Each row is a child filter (`--after fold`, `--then bet`,
+    `--after none`). Hits are the branch, opportunities are the
+    parent spot, and Action Profit is v1 on the parent actions that
+    took this branch -- "I cbet and they folded" is +pot, not Won$
+    of the hand. Clicking a row is applying that flag.
+    """
+    blob = chain_of(con, where, same_seat)
+    flag = blob["flag"]
+    opps = blob["n"]
+    argv = situation_only(list(argv or []))
+    for r in blob["rows"]:
+        key = r["key"] or "none"
+        extra = (_ended_sql(same_seat) if key == "none"
+                 else _next_sql(same_seat, AFTER[key]))
+        child_where = f"({where}) AND ({extra})"
+        r["hits"] = r["k"]
+        r["opps"] = opps
+        r["key"] = key
+        r["how"] = f"{flag} {key}"
+        r["profit"] = action_profit_of(con, child_where)
+        r["argv"] = list(argv) + [flag, key]
+    return blob
+
+
+def _ended_sql(same_seat):
+    """No later action by the other seat, or by this player."""
+    cmp = "=" if same_seat else "<>"
+    return (
+        "NOT EXISTS (SELECT 1 FROM decisions x "
+        "WHERE x.hand_id = decisions.hand_id AND x.n > decisions.n "
+        f"AND x.seat {cmp} decisions.seat)"
+    )
+
+
 def outcomes_of(con, where):
     """
     What the table did with this bet: fold out / call / raise-back.
@@ -1358,6 +1396,15 @@ AFTER = {
     "bet": "agg = 1 AND to_call = 0",
     "raise": "agg = 1 AND to_call > 0",
     "continue": "action <> 'F'",
+}
+# Names a person types after an open. They are the same first-later
+# action -- a 3-bet is a raise -- so they share SQL and stay one
+# filter language. Squeeze is not here: it needs callers already in,
+# which is `--live` plus `--after raise`, not a third verb.
+AFTER_ALIAS = {
+    "fold-out": "fold", "fold_out": "fold", "foldout": "fold",
+    "3bet": "raise", "3-bet": "raise",
+    "none": "none", "end": "none",
 }
 
 
@@ -1580,12 +1627,17 @@ def build(argv):
                 same = a == "--then"
                 words = []
                 for name in v.split(","):
-                    if name not in AFTER:
+                    key = AFTER_ALIAS.get(name, name)
+                    if key == "none":
+                        parts.append(_ended_sql(same))
+                        words.append("none")
+                        continue
+                    if key not in AFTER:
                         raise SystemExit(
                             f"unknown next action {name!r} -- one of: "
-                            f"{', '.join(AFTER)}")
-                    parts.append(_next_sql(same, AFTER[name]))
-                    words.append(name)
+                            f"{', '.join(list(AFTER) + ['none'])}")
+                    parts.append(_next_sql(same, AFTER[key]))
+                    words.append(key)
                 described.append(
                     ("then " if same else "after ") + ", ".join(words))
                 continue
@@ -2123,13 +2175,44 @@ def _print_chain(title, chain):
     if not chain["rows"]:
         return
     print(f"  [{title}]")
+    print(f"  {'':22} {'freq':>7} {'hits/opps':>14} {'act bb':>9}  apply")
     for r in chain["rows"]:
         thin = " ?" if r["n"] < 30 else "  "
-        how = (f"{chain['flag']} {r['key']}" if r["key"]
-               else "  (hand ended)")
+        how = r.get("how") or (
+            f"{chain['flag']} {r['key']}" if r.get("key")
+            else "  (hand ended)")
+        hits = r.get("hits", r["k"])
+        opps = r.get("opps", r["n"])
+        prof = r.get("profit") or {}
+        if prof.get("bb_per_hand") is not None:
+            act = f"{prof['bb_per_hand']:+.2f}"
+        elif prof.get("n"):
+            act = "   –"
+        else:
+            act = "   –"
         print(f"  {r['label']:22} {r['pct']:6.1f}% "
-              f"{'+/-%.0f' % r['band']:>7}{thin} n={r['k']:<6d}  {how}")
+              f"{'+/-%.0f' % r['band']:>6}{thin}"
+              f"{hits:>5}/{opps:<6} {act:>8}  {how}")
     print()
+
+
+def show_chain_report(con, where, label, argv, same_seat=False):
+    """The Faced Next or Next Actions table as its own report."""
+    title = ("next actions  (this player)" if same_seat
+             else "faced next  (the other seat)")
+    print(f"\nfilter: {label}")
+    print("=" * (len(label) + 8))
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    print(f"{n} decisions match")
+    if not n:
+        print("  " + why_empty(con, []))
+        return
+    blob = chain_report(con, where, argv, same_seat)
+    _print_chain(title, blob)
+    print("  apply a row with --after / --then / --branch, or click it.")
+    print("  act bb is Action Profit v1 on the parent action given this")
+    print("  continuation -- not Won$, not EV. A dash is unpriced.")
 
 
 def show_stats(con, where, label, parts=(), related=None, argv=None):
@@ -2190,8 +2273,10 @@ def show_stats(con, where, label, parts=(), related=None, argv=None):
                   f"{'+/-%.0f' % r['band']:>7}{thin} n={r['k']:<6d}  "
                   f"--outcome {r['key']}")
         print()
-    _print_chain("faced next  (the other seat)", chain_of(con, where, False))
-    _print_chain("next actions  (this player)", chain_of(con, where, True))
+    _print_chain("faced next  (the other seat)",
+                 chain_report(con, where, argv, False))
+    _print_chain("next actions  (this player)",
+                 chain_report(con, where, argv, True))
     last = None
     for r in rows:
         if r["group"] != last:
@@ -2805,9 +2890,18 @@ def usage():
     print(f"    {'--related':14} neighbouring spots from this filter "
           f"(also printed under --stats)")
     print(f"    {'--after':14} first later action by another seat: "
-          f"{', '.join(AFTER)}")
+          f"{', '.join(list(AFTER) + ['none'])} (fold-out/3bet alias fold/raise)")
     print(f"    {'--then':14} first later action by this player: "
-          f"{', '.join(AFTER)}")
+          f"{', '.join(list(AFTER) + ['none'])}")
+    print(f"    {'--faced-next':14} Faced Next report (freq, hits/opps, "
+          f"action profit) from this filter")
+    print(f"    {'--next-actions':14} Next Actions report, same columns")
+    print(f"    {'--from':14} alias for --filter, for --faced-next / "
+          f"--next-actions")
+    print(f"    {'--branch':14} apply a Faced Next / Next Actions row "
+          f"(--after or --then)")
+    print(f"    {'--hit':14} alias for --quick: narrow to hands that "
+          f"hit that stat")
     print(f"    {'--size':14} this action's pot fraction: "
           f"{', '.join(lines.BUCKETS)} (small/medium/large/pot/overbet)")
     print(f"    {'--outcome':14} what the pot did with this bet: "
@@ -2856,6 +2950,9 @@ SCAN_OK = {
         "Next Actions is the same shape for the same seat: a correlated "
         "look at n+1, not a column we can index without writing a second "
         "copy of every decision",
+    "--after none":
+        "the hand ended after this decision: NOT EXISTS on n+1, same "
+        "shape as --after fold",
     "--outcome fold-out":
         "the pot's answer after this bet is an EXISTS over later rows "
         "of the same hand, the same shape as --after and for the same "
@@ -2883,6 +2980,9 @@ def check_shape():
             (["--last-raise"], "was_agg = 1"),
             (["--size", "m"], "pot_frac > 0.4"),
             (["--outcome", "fold-out"], "agg = 1"),
+            (["--after", "none"], "NOT EXISTS"),
+            (["--after", "fold-out"], "action = 'F'"),
+            (["--after", "3bet"], "agg = 1"),
             (["--players", "6"], "n_players = 6"),
             (["--live", "2"], "n_live = 2")):
         where, _label, _p = build(argv)
@@ -3029,6 +3129,29 @@ def check_fixture():
     if len(per) != 1 or per[0]["act"] != -5:
         fails.append(
             f"per-hand action profit was {per}, not -5 on the bet-fold")
+    faced = chain_report(con, "seat=1 AND agg=1", None, False)
+    by = {r["key"]: r for r in faced["rows"]}
+    if "fold" not in by or "call" not in by or "raise" not in by:
+        fails.append(f"faced next missed a verb: {sorted(by)}")
+    fold_p = (by.get("fold") or {}).get("profit") or {}
+    if fold_p.get("bb_per_hand") != 10:
+        fails.append(
+            f"faced-next fold action profit was {fold_p.get('bb_per_hand')}, "
+            f"not +10")
+    raise_p = (by.get("raise") or {}).get("profit") or {}
+    if raise_p.get("bb_per_hand") != -5:
+        fails.append(
+            f"faced-next raise action profit was {raise_p.get('bb_per_hand')}, "
+            f"not -5 (the bet that was raised and folded)")
+    none_w, _, _ = build(["--after", "none"])
+    none_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {none_w}").fetchone()[0]
+    # h3 seat 2 raise and h4 fold have no later other-seat action? 
+    # h4 is a fold by seat 1, no later other. h3 raise by seat 2, no later other.
+    # Also h5 fold by seat 1. Several rows. Just assert it narrows.
+    total = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    if none_n == 0 or none_n == total:
+        fails.append(f"--after none selected {none_n} of {total}")
     con.close()
     print(f"outcome/size/action-profit fixture  "
           f"{'yes' if not fails else 'NO'}")
@@ -3102,6 +3225,7 @@ def check(db_path=DB):
               for f in quick_filters()]
     cases += [("--after fold", ["--after", "fold"]),
               ("--then bet", ["--then", "bet"]),
+              ("--after none", ["--after", "none"]),
               ("--size m", ["--size", "m"]),
               ("--outcome fold-out", ["--outcome", "fold-out"])]
     cases += [(f"--preset {name}", list(flags))
@@ -3470,9 +3594,14 @@ def main(argv):
     if "--check" in argv:
         return 0 if check() else 1
     cohort_spec, argv = players.parse_cohort(argv)
+    # `--hit` is click-stat on the command line: the same flag as
+    # `--quick`, named the way the research brief names the click.
+    argv = ["--quick" if a == "--hit" else a for a in argv]
+    if "--from" in argv and "--filter" not in argv:
+        argv[argv.index("--from")] = "--filter"
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart", "--related"):
+              "--chart", "--related", "--faced-next", "--next-actions"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -3493,6 +3622,12 @@ def main(argv):
         argv = resolve_filter(named) + argv
         if preset is None:
             preset = named
+    # A Faced Next / Next Actions row, applied. `--branch fold` is
+    # `--after fold` unless this report is Next Actions.
+    if "--branch" in argv:
+        verb = opt("--branch")
+        flag = "--then" if mode == "--next-actions" else "--after"
+        argv += [flag, verb]
 
     # Naming a stat and asking a question are different verbs, so both of
     # these return rather than falling through into a report. Printing a
@@ -3611,6 +3746,8 @@ def main(argv):
         # a machine that has not imported yet.
         show_related(neighbours, label)
         return 0
+    if mode in ("--faced-next", "--next-actions") and not Path(DB).exists():
+        raise SystemExit(f"no database at {DB} -- load some hands first")
     con = sqlite3.connect(DB)
     if cohort_spec is not None:
         count = select_cohort(con, cohort_spec)
@@ -3636,6 +3773,10 @@ def main(argv):
             show_results_by(con, where, label, dim)
         else:
             show_results(con, where, label, _parts)
+    elif mode == "--faced-next":
+        show_chain_report(con, where, label, argv, False)
+    elif mode == "--next-actions":
+        show_chain_report(con, where, label, argv, True)
     elif dim:
         show_report(con, where, label, dim, columns, min_n)
     else:

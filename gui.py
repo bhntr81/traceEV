@@ -109,8 +109,8 @@ def payload(con, params):
                "actions": query.actions_of(con, where),
                "summary": query.spot_summary(con, where, argv),
                "profit": query.action_profit_of(con, where),
-               "faced": query.chain_of(con, where, False),
-               "next": query.chain_of(con, where, True),
+                "faced": query.chain_report(con, where, argv, False),
+                "next": query.chain_report(con, where, argv, True),
                "outcomes": query.outcomes_of(con, where),
                "related": query.related_spots(argv),
                "why": None if n_dec else nothing()}
@@ -587,12 +587,18 @@ function render(d){
         ['next actions (this player)', 'then', d.next]]){
       if (!blob || !blob.rows || !blob.rows.length) continue;
       h += `<tr><td colspan="4" class="group">${title}</td></tr>`;
-      for (const r of blob.rows)
+      for (const r of blob.rows){
+        const ap = r.profit || {};
+        const act = ap.bb_per_hand == null ? '–'
+          : ((ap.bb_per_hand>=0?'+':'') + ap.bb_per_hand.toFixed(2));
+        const hits = r.hits != null ? r.hits : r.k;
+        const opps = r.opps != null ? r.opps : r.n;
         h += `<tr class="drill" data-flag="${flag}" data-key="${r.key}">`
           + `<td>${r.label}</td>`
           + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
-          + `<td class="n">±${r.band.toFixed(0)}</td>`
-          + `<td class="n">n=${r.k.toLocaleString()}</td></tr>`;
+          + `<td class="n">${hits.toLocaleString()} / ${opps.toLocaleString()}</td>`
+          + `<td class="n">${act}</td></tr>`;
+      }
     }
     for (const r of d.rows){
       if (r.group !== g){ g = r.group;
@@ -754,7 +760,7 @@ async function load(){
   chips('board', OPT.boards, 'board');
   for (const id of ['after','then']){
     $('#'+id).innerHTML = '<option value="">any</option>'
-      + ['fold','check','call','bet','raise','continue']
+      + ['fold','check','call','bet','raise','continue','none','fold-out','3bet']
           .map(v=>`<option>${v}</option>`).join('');
   }
   if (OPT.reports){
@@ -846,6 +852,8 @@ def check(db_path=DB):
          ["--first-in", "--size", "m", "--outcome", "fold-out"]),
         ({"players": ["6"], "live": ["2"]},
          ["--players", "6", "--live", "2"]),
+        ({"after": ["none"]}, ["--after", "none"]),
+        ({"after": ["3bet"]}, ["--after", "3bet"]),
     ]
     for form, argv in cases:
         a, _label_a, _pa = query.build(argv_from(form))

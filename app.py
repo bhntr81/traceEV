@@ -1052,8 +1052,8 @@ class App(ImportMixin, ttk.Frame):
                 out["actions"] = query.actions_of(con, where)
                 out["summary"] = query.spot_summary(con, where, argv)
                 out["profit"] = query.action_profit_of(con, where)
-                out["faced"] = query.chain_of(con, where, False)
-                out["next"] = query.chain_of(con, where, True)
+                out["faced"] = query.chain_report(con, where, argv, False)
+                out["next"] = query.chain_report(con, where, argv, True)
                 out["outcomes"] = query.outcomes_of(con, where)
                 if pin:
                     try:
@@ -1215,77 +1215,78 @@ class App(ImportMixin, ttk.Frame):
             self.refresh()
 
     def _render_stats(self, tv, out):
-        self._cols(tv, ("stat", "value", "±", "n"), (230, 90, 70, 100),
+        self._cols(tv, ("stat", "value", "±", "n", "act bb"),
+                   (220, 80, 60, 100, 80),
                    {"stat": "w"})
         self._stat_iids = {}
         summ = out.get("summary")
         if summ and summ["opps"]:
-            tv.insert("", "end", values=("HITS / OPPORTUNITIES", "", "", ""),
+            tv.insert("", "end", values=("HITS / OPPORTUNITIES", "", "", "", ""),
                       tags=("group",))
             tv.insert("", "end", values=(
                 f"hits  ({summ['label']})", f"{summ['hits']:,}", "",
-                f"{summ['opps']:,} opps"))
+                f"{summ['opps']:,} opps", ""))
             tv.insert("", "end", values=(
                 "hits / 1000 hands", f"{summ['per_1k']:.1f}",
                 f"±{summ['band']:.1f}" if summ["band"] < 1
                 else f"±{summ['band']:.0f}",
-                f"{summ['hands']:,} hands"))
+                f"{summ['hands']:,} hands", ""))
             tv.insert("", "end", values=(
                 f"{summ['label']}", f"{summ['pct']:.1f}%",
                 f"±{summ['band']:.1f}" if summ["band"] < 1
                 else f"±{summ['band']:.0f}",
-                f"{summ['opps']:,}"))
+                f"{summ['opps']:,}", ""))
         pinned = out.get("pinned")
         if pinned and not pinned.get("error"):
             tv.insert("", "end", values=("PINNED  " + pinned["name"],
-                                         "", "", ""), tags=("group",))
+                                         "", "", "", ""), tags=("group",))
             ps = pinned.get("summary") or {}
             if ps.get("opps"):
                 tv.insert("", "end", values=(
                     f"pin hits  ({ps['label']})", f"{ps['hits']:,}",
-                    f"{ps['pct']:.1f}%", f"{ps['opps']:,} opps"))
+                    f"{ps['pct']:.1f}%", f"{ps['opps']:,} opps", ""))
             pp = pinned.get("profit") or {}
             if pp.get("bb_per_hand") is not None:
                 tv.insert("", "end", values=(
                     "pin action profit", f"{pp['bb_per_hand']:+.2f} bb",
-                    "", f"{pp['priced']:,} priced"))
+                    "", f"{pp['priced']:,} priced", ""))
         elif pinned and pinned.get("error"):
-            tv.insert("", "end", values=(pinned["error"], "", "", ""),
+            tv.insert("", "end", values=(pinned["error"], "", "", "", ""),
                       tags=("note",))
         prof = out.get("profit")
         if prof and prof["n"]:
             if prof["bb_per_hand"] is not None:
                 tv.insert("", "end", values=(
                     "action profit", f"{prof['bb_per_hand']:+.2f} bb",
-                    "priced hits", f"{prof['priced']:,} of {prof['n']:,}"))
+                    "priced hits", f"{prof['priced']:,} of {prof['n']:,}", ""))
             else:
                 tv.insert("", "end", values=(
-                    "action profit", "unpriced", "", f"{prof['n']:,}"),
+                    "action profit", "unpriced", "", f"{prof['n']:,}", ""),
                     tags=("note",))
-            tv.insert("", "end", values=(prof["note"], "", "", ""),
+            tv.insert("", "end", values=(prof["note"], "", "", "", ""),
                       tags=("note",))
             for edge in prof.get("edges") or []:
-                tv.insert("", "end", values=(edge, "", "", ""),
+                tv.insert("", "end", values=(edge, "", "", "", ""),
                           tags=("note",))
         acts = out.get("actions") or {}
         if acts.get("mix"):
-            tv.insert("", "end", values=("THIS SPOT", "", "", ""),
+            tv.insert("", "end", values=("THIS SPOT", "", "", "", ""),
                       tags=("group",))
             for r in acts["mix"]:
                 tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
                           values=(r["label"], f"{r['pct']:.1f}%",
                                   f"±{r['band']:.1f}" if r["band"] < 1
                                   else f"±{r['band']:.0f}",
-                                  f"{r['n']:,}"))
+                                  f"{r['n']:,}", ""))
             for r in acts.get("extra") or []:
                 tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
                           values=(r["label"], f"{r['pct']:.1f}%",
                                   f"±{r['band']:.1f}" if r["band"] < 1
                                   else f"±{r['band']:.0f}",
-                                  f"{r['n']:,}"))
+                                  f"{r['n']:,}", ""))
         outs = out.get("outcomes") or {}
         if outs.get("rows"):
-            tv.insert("", "end", values=("OUTCOME", "", "", ""),
+            tv.insert("", "end", values=("OUTCOME", "", "", "", ""),
                       tags=("group",))
             for r in outs["rows"]:
                 tv.insert("", "end", iid=f"outcome:{r['key']}",
@@ -1293,26 +1294,30 @@ class App(ImportMixin, ttk.Frame):
                           values=(r["label"], f"{r['pct']:.1f}%",
                                   f"±{r['band']:.1f}" if r["band"] < 1
                                   else f"±{r['band']:.0f}",
-                                  f"{r['k']:,}"))
+                                  f"{r['k']:,}", ""))
         for title, key, blob in (
                 ("FACED NEXT  (the other seat)", "after", out.get("faced")),
                 ("NEXT ACTIONS  (this player)", "then", out.get("next"))):
             if not (blob and blob.get("rows")):
                 continue
-            tv.insert("", "end", values=(title, "", "", ""), tags=("group",))
+            tv.insert("", "end", values=(title, "", "", "", ""), tags=("group",))
             for r in blob["rows"]:
-                iid = f"{key}:{r['key']}" if r["key"] else ""
+                iid = f"{key}:{r['key']}" if r.get("key") else ""
+                ap = (r.get("profit") or {})
+                act = (f"{ap['bb_per_hand']:+.2f}" if ap.get("bb_per_hand")
+                       is not None else "–")
                 tv.insert("", "end", iid=iid or None,
                           tags=("thin",) if r["n"] < 30 else (),
                           values=(r["label"], f"{r['pct']:.1f}%",
                                   f"±{r['band']:.1f}" if r["band"] < 1
                                   else f"±{r['band']:.0f}",
-                                  f"{r['k']:,}"))
+                                  f"{r.get('hits', r['k']):,} / {r.get('opps', r['n']):,}",
+                                  act))
         group = None
         for r in out["rows"]:
             if r["group"] != group:
                 group = r["group"]
-                tv.insert("", "end", values=(group.upper(), "", "", ""),
+                tv.insert("", "end", values=(group.upper(), "", "", "", ""),
                           tags=("group",))
             tv.insert("", "end", iid=f"stat:{r['key']}",
                       tags=("thin",) if r["n"] < 30 else (),
@@ -1321,7 +1326,7 @@ class App(ImportMixin, ttk.Frame):
                               # "±0" reads as a number that failed to print.
                               f"±{r['band']:.1f}" if r["band"] < 1
                               else f"±{r['band']:.0f}",
-                              f"{r['n']:,}"))
+                              f"{r['n']:,}", ""))
 
     def _render_range(self, tv, out):
         """
@@ -2254,11 +2259,11 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "faced next  (the other seat then)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._val_item("after", v)))
-            for v in query.AFTER])
+            for v in list(query.AFTER) + ["none"]])
         self._heading(page, "next actions  (this player then)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._val_item("then", v)))
-            for v in query.AFTER])
+            for v in list(query.AFTER) + ["none"]])
         self._heading(page, "outcome of this bet")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, query.OUTCOMES[v][1], *self._val_item("outcome", v)))
