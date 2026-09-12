@@ -119,6 +119,13 @@ VALUE_FLAGS = {
     # at the next row, not at a string.
     "--after": None,
     "--then": None,
+    # Hand2Note's custom action builder, over columns `decisions` already
+    # has. `--players` / `--live` name how many sat and how many are left;
+    # these name the raise and the size. A line pattern can say the same
+    # thing (`--flop XBmC`) but only as a string; a first-in 2/3-pot bet
+    # is a checkbox and a letter, which is what the builder is for.
+    "--size": None,
+    "--outcome": None,
 }
 
 # Which columns each line flag can read: the actions alone, or the actions
@@ -141,6 +148,11 @@ LINE_FLAGS = {
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            "--preset",
+           # `--filter` is the research-brief name for opening a spot:
+           # a Smart Report, a --quick key, or a JSON argv list. `--pin`
+           # is --versus pointed at another report, same person. Both
+           # expand in `main` before `build` sees the line.
+           "--filter", "--pin",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -161,6 +173,12 @@ SWITCHES = {
     "--vs-hero": "vs_hero = 1",
     "--vs-pool": "vs_hero = 0",
     "--standard": "standard = 1",
+    # First to put chips in on this street, and the last to raise before
+    # this decision. The custom builder asks for these by name; they have
+    # been columns since `decisions` was written, and until now the only
+    # way to say them was `--where first_in=1`.
+    "--first-in": "first_in = 1",
+    "--last-raise": "was_agg = 1",
     # Who is playing, which is the distortion this whole tracker averaged
     # over until now: people isolate wider and value-bet thinner against a
     # recreational player, so a pool number that mixes the two describes
@@ -522,6 +540,55 @@ WHO_VALUES = ("--player", "--vs-player", "--site", "--stake",
               "--since", "--until")
 
 
+def resolve_filter(name, path=None):
+    """
+    A filter by the name a person would type.
+
+    The research brief wrote `report --filter <name|json>`. That is a
+    Smart Report or a saved one, then a --quick key, then a JSON argv
+    list -- the three namespaces this file already has, not a fourth
+    language. `--preset` still works; this is the same door with a
+    wider lock.
+    """
+    name = str(name).strip()
+    known = reports(path)
+    if name in known:
+        return list(known[name])
+    if name in quick_by_key():
+        return ["--quick", name]
+    if name.startswith("["):
+        try:
+            argv = json.loads(name)
+        except ValueError as e:
+            raise SystemExit(f"--filter {name!r} is not JSON: {e}")
+        if not isinstance(argv, list):
+            raise SystemExit("--filter JSON must be a list of flags")
+        return [str(x) for x in argv]
+    raise SystemExit(
+        f"unknown filter {name!r} -- a name from --presets, a key from "
+        f"--quick-list, or a JSON argv list")
+
+
+def who_only(argv):
+    """The person flags alone -- the other half of `without_who`."""
+    out = []
+    i = 0
+    argv = situation_only(list(argv))
+    while i < len(argv):
+        a = argv[i]
+        if a in WHO_SWITCHES:
+            out.append(a)
+            i += 1
+        elif a in WHO_VALUES:
+            out += argv[i:i + 2]
+            i += 2
+        elif a in VALUE_FLAGS or a in OPTIONS:
+            i += 2
+        else:
+            i += 1
+    return out
+
+
 def without_who(argv):
     """The situation flags alone, with the person taken off."""
     out = []
@@ -573,7 +640,8 @@ def _canonical(argv):
         if a in VALUE_FLAGS and i + 1 < len(argv):
             v = str(argv[i + 1])
             if "{list}" in (VALUE_FLAGS[a] or "") or a in (
-                    "--quick", "--board", "--turn-card", "--river-card"):
+                    "--quick", "--board", "--turn-card", "--river-card",
+                    "--size", "--outcome"):
                 v = ",".join(sorted(x.strip() for x in v.split(",") if x.strip()))
             parts.append((a, v))
             i += 2
@@ -618,6 +686,45 @@ _STREET_COLUMNS = {
               "small_bet", "faces_overbet"],
 }
 
+# A Quick Filter is a spot, and applying it should swap the columns to
+# the stats that spot is about -- not leave VPIP sitting there. Decision-
+# sourced only: a spots-sourced stat (WTSD, W$SD) cannot see a street
+# filter, and putting one here would blank the report tab the same way
+# VPIP blanks a river filter.
+QUICK_PACKS = {
+    "cbet_flop": ["cbet_flop", "fold_to_cbet", "raise_cbet", "cbet_turn",
+                  "donk_flop", "flop_agg"],
+    "cbet_flop_not": ["cbet_flop", "delayed_cbet", "cbet_turn", "flop_agg",
+                      "donk_flop"],
+    "raise_cbet": ["raise_cbet", "fold_to_cbet", "cbet_flop",
+                   "checkraise_flop", "flop_agg", "fold_to_turn_bet"],
+    "fold_to_cbet": ["fold_to_cbet", "raise_cbet", "cbet_flop",
+                     "checkraise_flop", "float_turn", "fold_to_turn_bet"],
+    "donk_flop": ["donk_flop", "fold_to_donk", "cbet_flop", "flop_agg",
+                  "checkraise_flop"],
+    "checkraise_flop": ["checkraise_flop", "fold_to_cbet", "raise_cbet",
+                        "donk_flop", "flop_agg"],
+    "cbet_turn": ["cbet_turn", "fold_to_turn_bet", "delayed_cbet",
+                  "cbet_flop", "cbet_river", "probe_turn"],
+    "cbet_turn_not": ["cbet_turn", "delayed_cbet", "cbet_river",
+                      "fold_to_turn_bet"],
+    "fold_to_turn_bet": ["fold_to_turn_bet", "cbet_turn", "float_turn",
+                         "probe_turn", "cbet_river"],
+    "cbet_river": ["cbet_river", "fold_to_river_bet", "cbet_turn",
+                   "river_agg", "overbet"],
+    "fold_to_river_bet": ["fold_to_river_bet", "cbet_river", "river_agg",
+                          "overbet", "faces_overbet"],
+    "threebet": ["threebet", "fold_to_3bet", "fourbet", "coldcall",
+                 "squeeze"],
+    "fold_to_3bet": ["fold_to_3bet", "fourbet", "threebet", "fold_to_4bet"],
+    "fourbet": ["fourbet", "fold_to_4bet", "threebet", "fold_to_3bet"],
+    "steal": ["steal", "fold_to_steal", "bb_defend", "rfi", "threebet"],
+    "fold_to_steal": ["fold_to_steal", "steal", "bb_defend", "threebet"],
+    "bb_defend": ["bb_defend", "fold_to_steal", "steal", "threebet",
+                  "squeeze"],
+    "squeeze": ["squeeze", "threebet", "coldcall", "fold_to_3bet"],
+}
+
 
 def _known_columns(keys):
     """Drop names the registry does not have, keep the order, cap at eight."""
@@ -646,6 +753,10 @@ def columns_for(argv):
     pots = set(flag_values(argv, "--pot"))
     facing = set(flag_values(argv, "--facing"))
     quick = set(flag_values(argv, "--quick"))
+    if len(quick) == 1:
+        only = next(iter(quick))
+        if only in QUICK_PACKS:
+            return _known_columns(QUICK_PACKS[only])
     # A line flag is a street even when `--street` was not said.
     for flag, street in (("--pre", "preflop"), ("--flop", "flop"),
                          ("--turn", "turn"), ("--river", "river")):
@@ -820,6 +931,20 @@ def spot_summary(con, where, argv):
         opps = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
         label = "this chain"
+    elif "--outcome" in argv:
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+        parent, _, _ = build(drop_flag(argv, "--outcome"))
+        opps = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
+        label = "this outcome"
+    elif "--size" in argv:
+        hits = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+        parent, _, _ = build(drop_flag(argv, "--size"))
+        opps = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {parent}").fetchone()[0]
+        label = "this size"
     elif "--aggressive" in argv or "--allin" in argv:
         hits = con.execute(
             f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
@@ -978,6 +1103,36 @@ def chain_of(con, where, same_seat=False):
                     "pct": 100 * p, "band": 100 * (hi - lo) / 2})
     return {"n": total, "rows": out,
             "flag": "--then" if same_seat else "--after"}
+
+
+def outcomes_of(con, where):
+    """
+    What the table did with this bet: fold out / call / raise-back.
+
+    Hand2Note's outcome block, and a different question from Faced Next.
+    Faced Next is the first later action by another seat. This is the
+    pot's answer: did every remaining player fold, did someone call
+    without raising, or did someone raise. A check after the bet sits
+    with call -- they continued passively. Only aggressive rows have
+    an outcome; a fold you already made has none.
+    """
+    bits = ", ".join(
+        f'SUM({sql}) AS "{key}"' for key, _label, sql in OUTCOME_MIX)
+    row = con.execute(
+        f"SELECT COUNT(*) AS n, SUM(agg = 1) AS bets, {bits} "
+        f"FROM decisions WHERE {where}").fetchone()
+    n, bets = row[0] or 0, row[1] or 0
+    out = []
+    if not bets:
+        return {"n": n, "bets": 0, "rows": out}
+    for i, (key, label, _sql) in enumerate(OUTCOME_MIX):
+        k = row[i + 2] or 0
+        if not k:
+            continue
+        p, lo, hi = wilson(k, bets)
+        out.append({"key": key, "label": label, "n": bets, "k": k,
+                    "pct": 100 * p, "band": 100 * (hi - lo) / 2})
+    return {"n": n, "bets": bets, "rows": out, "flag": "--outcome"}
 
 
 def counts_by(con, expr, where):
@@ -1161,6 +1316,67 @@ AFTER = {
 }
 
 
+def _later_other(pred):
+    """Somebody else acted after this row, matching pred."""
+    return (
+        "EXISTS (SELECT 1 FROM decisions x "
+        "WHERE x.hand_id = decisions.hand_id AND x.n > decisions.n "
+        f"AND x.seat <> decisions.seat AND ({pred}))"
+    )
+
+
+# What the pot did with this bet, not the first later action. Fold-out
+# is every remaining player folding (or nobody acting). Call is a
+# passive continue and no raise. Raise-back is any later aggression.
+# The three partition aggressive rows: a leftover verb would shrink
+# every percentage the way a missing action-mix verb does.
+OUTCOMES = {
+    "fold-out": (
+        "agg = 1 AND NOT " + _later_other("x.action <> 'F'"),
+        "All Villains Fold"),
+    "call": (
+        "agg = 1 AND " + _later_other("x.action <> 'F' AND x.agg = 0")
+        + " AND NOT " + _later_other("x.agg = 1"),
+        "One Villain Call"),
+    "raise-back": (
+        "agg = 1 AND " + _later_other("x.agg = 1"),
+        "Villain Raise"),
+}
+OUTCOME_ALIAS = {
+    "fold-out": "fold-out", "fold_out": "fold-out", "foldout": "fold-out",
+    "fold": "fold-out",
+    "call": "call", "called": "call",
+    "raise-back": "raise-back", "raise_back": "raise-back",
+    "raise": "raise-back", "reraise": "raise-back", "3bet": "raise-back",
+}
+OUTCOME_MIX = tuple(
+    (key, OUTCOMES[key][1], OUTCOMES[key][0])
+    for key in ("fold-out", "call", "raise-back"))
+
+
+def size_sql(letter):
+    """pot_frac bounds for one of lines.BUCKETS, matching lines.bucket."""
+    prev = None
+    for edge, name in lines.SIZES:
+        if name == letter:
+            if prev is None:
+                return f"pot_frac IS NOT NULL AND pot_frac <= {edge}"
+            return f"pot_frac > {prev} AND pot_frac <= {edge}"
+        prev = edge
+    if letter == lines.OVERBET:
+        return f"pot_frac > {lines.SIZES[-1][0]}"
+    raise ValueError(letter)
+
+
+SIZE_ALIAS = {
+    "s": "s", "small": "s",
+    "m": "m", "medium": "m", "half": "m",
+    "l": "l", "large": "l",
+    "p": "p", "pot": "p", "pot+": "p",
+    "o": "o", "overbet": "o", "over": "o",
+}
+
+
 def _next_sql(same_seat, pred):
     """The first later decision on this hand, by this seat or another."""
     cmp = "=" if same_seat else "<>"
@@ -1228,7 +1444,8 @@ def quick_by_key():
 # The switches that say what the player DID rather than what they could have
 # done. A filter is a situation; these are outcomes, and a stat defined over
 # one of them is 100% by construction -- see `define_stat`.
-ACTION_FLAGS = ("--aggressive", "--allin", "--quick")
+ACTION_FLAGS = ("--aggressive", "--allin", "--quick",
+                "--size", "--outcome")
 
 
 def define_stat(argv, key, label=None, do="aggressive", per="decision",
@@ -1326,6 +1543,31 @@ def build(argv):
                     words.append(name)
                 described.append(
                     ("then " if same else "after ") + ", ".join(words))
+                continue
+            if a == "--size":
+                letters = []
+                for name in v.split(","):
+                    letter = SIZE_ALIAS.get(name.strip().lower())
+                    if letter is None:
+                        raise SystemExit(
+                            f"unknown size {name!r} -- one of: "
+                            f"{', '.join(lines.BUCKETS)} "
+                            f"(small/medium/large/pot/overbet)")
+                    parts.append("(" + size_sql(letter) + ")")
+                    letters.append(letter)
+                described.append("size " + ",".join(letters))
+                continue
+            if a == "--outcome":
+                keys = []
+                for name in v.split(","):
+                    key = OUTCOME_ALIAS.get(name.strip().lower())
+                    if key is None:
+                        raise SystemExit(
+                            f"unknown outcome {name!r} -- one of: "
+                            f"fold-out, call, raise-back")
+                    parts.append("(" + OUTCOMES[key][0] + ")")
+                    keys.append(key)
+                described.append("outcome " + ", ".join(keys))
                 continue
             if a in LINE_FLAGS:
                 # Normalised rather than taken as typed, because the columns
@@ -1888,6 +2130,15 @@ def show_stats(con, where, label, parts=(), related=None, argv=None):
             thin = " ?" if r["n"] < 30 else "  "
             print(f"  {r['label']:22} {r['pct']:6.1f}% "
                   f"{'+/-%.0f' % r['band']:>7}{thin} n={r['n']:<6d}")
+        print()
+    outs = outcomes_of(con, where)
+    if outs["rows"]:
+        print("  [outcome]")
+        for r in outs["rows"]:
+            thin = " ?" if r["n"] < 30 else "  "
+            print(f"  {r['label']:22} {r['pct']:6.1f}% "
+                  f"{'+/-%.0f' % r['band']:>7}{thin} n={r['k']:<6d}  "
+                  f"--outcome {r['key']}")
         print()
     _print_chain("faced next  (the other seat)", chain_of(con, where, False))
     _print_chain("next actions  (this player)", chain_of(con, where, True))
@@ -2507,6 +2758,12 @@ def usage():
           f"{', '.join(AFTER)}")
     print(f"    {'--then':14} first later action by this player: "
           f"{', '.join(AFTER)}")
+    print(f"    {'--size':14} this action's pot fraction: "
+          f"{', '.join(lines.BUCKETS)} (small/medium/large/pot/overbet)")
+    print(f"    {'--outcome':14} what the pot did with this bet: "
+          f"fold-out, call, raise-back")
+    print(f"    {'--first-in':14} first to put chips in on this street")
+    print(f"    {'--last-raise':14} this player was the last to raise")
     print("\n  saving the filter as a stat of its own:")
     print(f"    {'--define':14} a key to save this filter under, so it can "
           f"be a column")
@@ -2519,6 +2776,9 @@ def usage():
     print(f"    {'--save':14} a name to keep this filter under")
     print(f"    {'--preset':14} open a saved or built-in report: "
           f"{', '.join(list(reports())[:3])}, ... (see --presets)")
+    print(f"    {'--filter':14} the same, or a --quick key, or JSON argv")
+    print(f"    {'--pin':14} compare this filter to another report "
+          f"(--versus with a name)")
     print("\n  positions: " + ", ".join(POSITIONS))
     print("  streets:   " + ", ".join(STREETS))
     print("  pot types: " + ", ".join(POT_TYPES))
@@ -2546,7 +2806,136 @@ SCAN_OK = {
         "Next Actions is the same shape for the same seat: a correlated "
         "look at n+1, not a column we can index without writing a second "
         "copy of every decision",
+    "--outcome fold-out":
+        "the pot's answer after this bet is an EXISTS over later rows "
+        "of the same hand, the same shape as --after and for the same "
+        "reason: there is no column for 'everybody folded after'",
+    "--first-in":
+        "first-to-act on a street is a large slice of the table, and "
+        "first_in is not in dec_flags -- adding it was not measured",
+    "--last-raise":
+        "was_agg is the same shape as first_in: half the interesting "
+        "rows, and not a prefix of an index we have",
 }
+
+
+def check_shape():
+    """
+    Filters that do not need a corpus: they build, they name, they pack.
+
+    The live check below needs `hands.db`. This one does not, and is
+    what a machine without a database can still fail -- a typo in
+    `--outcome` or a StatPack that leads with VPIP.
+    """
+    fails = []
+    for argv, needle in (
+            (["--first-in"], "first_in = 1"),
+            (["--last-raise"], "was_agg = 1"),
+            (["--size", "m"], "pot_frac > 0.4"),
+            (["--outcome", "fold-out"], "agg = 1"),
+            (["--players", "6"], "n_players = 6"),
+            (["--live", "2"], "n_live = 2")):
+        where, _label, _p = build(argv)
+        if needle not in where.replace("0.40", "0.4"):
+            fails.append(f"{argv} built {where!r}, expected {needle!r}")
+    if resolve_filter("Flop c-bets") != list(SMART_REPORTS["Flop c-bets"]):
+        fails.append("--filter did not open a Smart Report")
+    if resolve_filter("cbet_flop") != ["--quick", "cbet_flop"]:
+        fails.append("--filter did not open a quick key")
+    if resolve_filter('["--ip","--pot","3bet"]') != ["--ip", "--pot", "3bet"]:
+        fails.append("--filter JSON argv did not expand")
+    if columns_for(["--quick", "raise_cbet"])[0] != "raise_cbet":
+        fails.append("raise-cbet pack does not lead with raise_cbet")
+    if "vpip" in columns_for(["--quick", "cbet_flop"]):
+        fails.append("cbet pack still leads with VPIP")
+    if size_sql("s") != "pot_frac IS NOT NULL AND pot_frac <= 0.4" and \
+            "0.40" not in size_sql("s"):
+        fails.append(f"size s is {size_sql('s')!r}")
+    if lines.bucket(0.55) != "m":
+        fails.append("size m does not match lines.bucket")
+    # The three outcomes partition an aggressive row: a bet that is
+    # folded to, called, or raised. Building each must stay exclusive
+    # enough that AND-ing two of them is empty SQL, not a crash.
+    for a, b in (("fold-out", "call"), ("fold-out", "raise-back"),
+                 ("call", "raise-back")):
+        where, _, _ = build(["--outcome", a, "--outcome", b])
+        if "agg = 1" not in where:
+            fails.append(f"--outcome {a}+{b} dropped agg")
+    print(f"filter shape (no database)    "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
+def check_fixture():
+    """
+    Outcome / size / first-in against a hand-built table.
+
+    The live corpus is gitignored. These three hands are enough to
+    prove the partition and the size letter, and they do not need
+    anyone's database.
+    """
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, n INT, seat INT, action TEXT, agg INT, "
+        "to_call REAL, amount REAL, pot_before REAL, bb REAL, "
+        "first_in INT, was_agg INT, pot_frac REAL, street TEXT)")
+    # Three bets by seat 1, then what seat 2 did: fold, call, raise.
+    rows = [
+        ("h1", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
+        ("h1", 2, 2, "F", 0, 5, 0, 15, 1, 0, 0, None, "flop"),
+        ("h2", 1, 1, "B", 1, 0, 6, 10, 1, 1, 1, 0.60, "flop"),
+        ("h2", 2, 2, "C", 0, 6, 6, 16, 1, 0, 0, 0.60, "flop"),
+        ("h3", 1, 1, "B", 1, 0, 8, 10, 1, 1, 1, 0.80, "flop"),
+        ("h3", 2, 2, "R", 1, 8, 20, 18, 1, 0, 1, 1.11, "flop"),
+        ("h4", 1, 1, "F", 0, 5, 0, 10, 1, 0, 0, None, "flop"),
+    ]
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    fails = []
+    bets = "seat = 1 AND agg = 1"
+    outs = outcomes_of(con, bets)
+    by = {r["key"]: r["k"] for r in outs["rows"]}
+    if by.get("fold-out") != 1 or by.get("call") != 1 or by.get("raise-back") != 1:
+        fails.append(f"outcome partition was {by}, not one of each")
+    if outs["bets"] != 3 or sum(by.values()) != 3:
+        fails.append(f"outcomes covered {sum(by.values())} of {outs['bets']}")
+    fold_w, _, _ = build(["--outcome", "fold-out"])
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {fold_w}").fetchone()[0]
+    # The h1 bet (villain folded) and the h3 raise (nobody acted after).
+    if n != 2:
+        fails.append(f"--outcome fold-out selected {n}, not both uncontested")
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE ({fold_w}) AND seat = 1"
+    ).fetchone()[0]
+    if n != 1:
+        fails.append(f"seat-1 fold-out selected {n}, not the one bet")
+    size_w, _, _ = build(["--size", "m"])
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {size_w}").fetchone()[0]
+    # h1 bet 0.50 and h2 bet 0.60 are medium (0.40 < x <= 0.60);
+    # the call on h2 is also 0.60. Three medium rows.
+    if n != 3:
+        fails.append(f"--size m selected {n}, expected 3")
+    first_w, _, _ = build(["--first-in"])
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {first_w}").fetchone()[0]
+    if n != 3:
+        fails.append(f"--first-in selected {n}, expected 3")
+    last_w, _, _ = build(["--last-raise"])
+    n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {last_w}").fetchone()[0]
+    if n != 4:
+        fails.append(f"--last-raise selected {n}, expected 4")
+    con.close()
+    print(f"outcome/size fixture          "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
 
 
 def check(db_path=DB):
@@ -2561,9 +2950,17 @@ def check(db_path=DB):
     different population than its heading claims. So each filter must both
     run and select strictly fewer rows than no filter at all.
     """
+    fails = []
+    fails.extend(check_shape())
+    fails.extend(check_fixture())
+    if not Path(db_path).exists():
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- shape and fixture only)")
+        return not fails
     con = sqlite3.connect(db_path)
     total = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
-    fails, checked = [], 0
+    checked = 0
 
     # A representative value for each value-taking flag, chosen to be one
     # that really occurs, so "selects nothing" means the predicate is wrong
@@ -2605,7 +3002,9 @@ def check(db_path=DB):
     cases += [("--quick " + f["key"], ["--quick", f["key"]])
               for f in quick_filters()]
     cases += [("--after fold", ["--after", "fold"]),
-              ("--then bet", ["--then", "bet"])]
+              ("--then bet", ["--then", "bet"]),
+              ("--size m", ["--size", "m"]),
+              ("--outcome fold-out", ["--outcome", "fold-out"])]
     cases += [(f"--preset {name}", list(flags))
               for name, flags in SMART_REPORTS.items()]
     cases.append(("--player", ["--player", con.execute(
@@ -2788,7 +3187,13 @@ def check(db_path=DB):
         col_fails.append("a flop c-bet filter dropped cbet_flop")
     if "vpip" in flop_cols:
         col_fails.append("a flop filter still leads with VPIP")
-    for cols in (river_cols, flop_cols, columns_for(["--pot", "3bet"])):
+    raise_cols = columns_for(["--quick", "raise_cbet"])
+    if "raise_cbet" not in raise_cols:
+        col_fails.append("raise-cbet pack dropped raise_cbet")
+    if "vpip" in raise_cols:
+        col_fails.append("raise-cbet pack still leads with VPIP")
+    for cols in (river_cols, flop_cols, columns_for(["--pot", "3bet"]),
+                 raise_cols):
         for c in cols:
             if c not in BY_KEY:
                 col_fails.append(f"columns_for named unknown stat {c}")
@@ -2844,6 +3249,26 @@ def check(db_path=DB):
     total = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
     if after_n == 0 or after_n == total:
         fails.append("--after fold did not narrow")
+    outs = outcomes_of(con, "1=1")
+    if outs["bets"]:
+        covered = sum(r["k"] for r in outs["rows"])
+        if covered != outs["bets"]:
+            fails.append(
+                f"outcome block counted {covered} of {outs['bets']} bets")
+        fold_w, _, _ = build(["--outcome", "fold-out"])
+        fold_n = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {fold_w}").fetchone()[0]
+        if fold_n == 0 or fold_n == total:
+            fails.append("--outcome fold-out did not narrow")
+    first_w, _, _ = build(["--first-in"])
+    last_w, _, _ = build(["--last-raise"])
+    size_w, _, _ = build(["--size", "m"])
+    for name, w in (("--first-in", first_w), ("--last-raise", last_w),
+                    ("--size m", size_w)):
+        n = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {w}").fetchone()[0]
+        if n == 0 or n == total:
+            fails.append(f"{name} did not narrow")
     print(f"hits/opps and action profit     "
           f"{'yes' if not [f for f in fails if 'hits' in f or 'profit' in f or 'after fold' in f or 'faced next' in f] else 'NO'}")
 
@@ -2922,7 +3347,7 @@ def main(argv):
     if not argv or "--help" in argv or "-h" in argv:
         usage()
         return 0
-    if "--presets" in argv:
+    if "--presets" in argv or "--filters" in argv:
         for family, names in reports_by_family():
             print(f"\n[{family}]")
             known = reports()
@@ -2964,6 +3389,11 @@ def main(argv):
     preset = opt("--preset") if "--preset" in argv else None
     if preset:
         argv = preset_argv(preset) + argv
+    named = opt("--filter") if "--filter" in argv else None
+    if named:
+        argv = resolve_filter(named) + argv
+        if preset is None:
+            preset = named
 
     # Naming a stat and asking a question are different verbs, so both of
     # these return rather than falling through into a report. Printing a
@@ -3047,9 +3477,27 @@ def main(argv):
         return 0
 
     other = opt("--versus")
-    if other is not None:
+    pinned = opt("--pin")
+    if pinned and other is not None:
+        raise SystemExit("--pin and --versus both compare two filters -- "
+                         "use one")
+    if pinned or other is not None:
+        text = pinned or other
+        try:
+            other_argv, named_spot = resolve_filter(text), True
+        except SystemExit:
+            if pinned:
+                raise
+            other_argv, named_spot = shlex.split(text), False
+        if named_spot:
+            # A pinned report is another situation, same person. Leaving
+            # `--hero` off B would compare hero's flop c-bets to the
+            # whole pool's vs-c-bet and call the gap a finding.
+            other_argv = who_only(argv) + without_who(other_argv)
+        if not Path(DB).exists():
+            raise SystemExit(f"no database at {DB} -- load some hands first")
         con = sqlite3.connect(DB)
-        show_versus(con, argv, shlex.split(other), min_n,
+        show_versus(con, argv, other_argv, min_n,
                      only=set(columns) if opt("--show") else None)
         con.close()
         return 0

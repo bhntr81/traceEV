@@ -55,6 +55,7 @@ SWITCH_FIELDS = {
     "multiway": "--multiway", "headsup": "--headsup",
     "vs_pfa": "--vs-pfa", "standard": "--standard", "allin": "--allin",
     "vs_hero": "--vs-hero", "vs_pool": "--vs-pool",
+    "first_in": "--first-in", "last_raise": "--last-raise",
 }
 VALUE_FIELDS = {
     "site": "--site", "player": "--player", "pos": "--pos",
@@ -65,6 +66,8 @@ VALUE_FIELDS = {
     "until": "--until", "where": "--where",
     "after": "--after", "then": "--then",
     "quick": "--quick",
+    "size": "--size", "outcome": "--outcome",
+    "players": "--players", "live": "--live",
 }
 
 
@@ -102,14 +105,29 @@ def payload(con, params):
         return query.why_empty(con, parts)
     if view == "stats":
         n_dec, rows = query.stats_of(con, where)
-        return {"label": label, "decisions": n_dec, "rows": rows,
-                "actions": query.actions_of(con, where),
-                "summary": query.spot_summary(con, where, argv),
-                "profit": query.action_profit_of(con, where),
-                "faced": query.chain_of(con, where, False),
-                "next": query.chain_of(con, where, True),
-                "related": query.related_spots(argv),
-                "why": None if n_dec else nothing()}
+        out = {"label": label, "decisions": n_dec, "rows": rows,
+               "actions": query.actions_of(con, where),
+               "summary": query.spot_summary(con, where, argv),
+               "profit": query.action_profit_of(con, where),
+               "faced": query.chain_of(con, where, False),
+               "next": query.chain_of(con, where, True),
+               "outcomes": query.outcomes_of(con, where),
+               "related": query.related_spots(argv),
+               "why": None if n_dec else nothing()}
+        pin = (params.get("pin", [""])[0] or "").strip()
+        if pin:
+            try:
+                pin_argv = (query.who_only(argv)
+                            + query.without_who(query.resolve_filter(pin)))
+                pin_where, pin_label, _ = query.build(pin_argv)
+                out["pinned"] = {
+                    "name": pin, "label": pin_label,
+                    "summary": query.spot_summary(con, pin_where, pin_argv),
+                    "profit": query.action_profit_of(con, pin_where),
+                }
+            except SystemExit as e:
+                out["pinned"] = {"name": pin, "error": str(e)}
+        return out
 
     if view == "report":
         dim = params.get("by", ["position"])[0]
@@ -289,6 +307,8 @@ tr.click{cursor:pointer}
 <aside>
   <fieldset><legend>smart reports</legend>
     <label><select id="preset"><option value="">no report</option></select></label>
+    <label>pin / compare
+      <select id="pin"><option value="">none</option></select></label>
   </fieldset>
   <fieldset><legend>who</legend>
     <div class="chips" id="who">
@@ -324,6 +344,8 @@ tr.click{cursor:pointer}
       <span class="chip" data-f="pfa">was the raiser</span>
       <span class="chip" data-f="not_pfa">was not the raiser</span>
       <span class="chip" data-f="vs_pfa">facing the raiser</span>
+      <span class="chip" data-f="first_in">first in</span>
+      <span class="chip" data-f="last_raise">last raise</span>
       <span class="chip" data-f="multiway">multiway</span>
       <span class="chip" data-f="headsup">heads up</span>
     </div>
@@ -344,6 +366,24 @@ tr.click{cursor:pointer}
       <select id="after"><option value="">any</option></select></label>
     <label>this player then
       <select id="then"><option value="">any</option></select></label>
+  </fieldset>
+  <fieldset><legend>custom action</legend>
+    <label>outcome of this bet
+      <select id="outcome"><option value="">any</option>
+        <option value="fold-out">all villains fold</option>
+        <option value="call">one villain call</option>
+        <option value="raise-back">villain raise</option>
+      </select></label>
+    <label>bet size
+      <select id="size"><option value="">any</option>
+        <option value="s">small</option>
+        <option value="m">medium</option>
+        <option value="l">large</option>
+        <option value="p">pot+</option>
+        <option value="o">overbet</option>
+      </select></label>
+    <label>players at the table <input id="players" type="number" min="2" max="10"></label>
+    <label>still in the pot <input id="live" type="number" min="2" max="10"></label>
   </fieldset>
   <fieldset><legend>raw sql over decisions</legend>
     <label><input id="where" placeholder="eff_bb > 150 AND fl_paired=1"></label>
@@ -414,17 +454,20 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','after','then']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
       state.preset = $('#preset').value;
       state.spot = '';
       // Opening a report replaces leftover situation chips.
-      ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin'].forEach(f => {
+      ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin','first_in','last_raise'].forEach(f => {
         state.flags[f] = false;
       });
       ['pos','vs','street','pot','board'].forEach(g => { state.multi[g] = []; });
+      ['after','then','size','outcome','players','live'].forEach(fid => {
+        const el = $('#'+fid); if (el) el.value = '';
+      });
       paintChips();
     }
     load();
@@ -440,7 +483,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','pin']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -506,6 +549,21 @@ function render(d){
         + `<td class="n">±${d.summary.band.toFixed(0)}</td>`
         + `<td class="n">n=${d.summary.opps.toLocaleString()}</td></tr>`;
     }
+    if (d.pinned && !d.pinned.error){
+      h += `<tr><td colspan="4" class="group">pinned · ${d.pinned.name}</td></tr>`;
+      const ps = d.pinned.summary || {};
+      if (ps.opps)
+        h += `<tr><td>pin hits (${ps.label})</td><td>${ps.hits.toLocaleString()}</td>`
+          + `<td class="n">${ps.pct.toFixed(1)}%</td>`
+          + `<td class="n">${ps.opps.toLocaleString()} opps</td></tr>`;
+      const pp = d.pinned.profit || {};
+      if (pp.bb_per_hand != null)
+        h += `<tr><td>pin action profit</td>`
+          + `<td>${(pp.bb_per_hand>=0?'+':'')+pp.bb_per_hand.toFixed(2)} bb</td>`
+          + `<td class="n"></td><td class="n">${pp.priced.toLocaleString()} priced</td></tr>`;
+    } else if (d.pinned && d.pinned.error){
+      h += `<tr><td colspan="4" class="n">${d.pinned.error}</td></tr>`;
+    }
     if (d.profit && d.profit.n){
       const ap = d.profit.bb_per_hand == null ? 'unpriced'
         : (d.profit.bb_per_hand>=0?'+':'') + d.profit.bb_per_hand.toFixed(2) + ' bb/hand';
@@ -520,6 +578,15 @@ function render(d){
           + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
           + `<td class="n">±${r.band.toFixed(0)}</td>`
           + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
+    }
+    if (d.outcomes && d.outcomes.rows && d.outcomes.rows.length){
+      h += `<tr><td colspan="4" class="group">outcome</td></tr>`;
+      for (const r of d.outcomes.rows)
+        h += `<tr class="drill" data-flag="outcome" data-key="${r.key}">`
+          + `<td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.k.toLocaleString()}</td></tr>`;
     }
     for (const [title, flag, blob] of [
         ['faced next (the other seat)', 'after', d.faced],
@@ -707,6 +774,7 @@ async function load(){
     }
     if (fam) html += '</optgroup>';
     $('#preset').innerHTML = html;
+    $('#pin').innerHTML = html.replace('>no report<', '>none<');
   }
   $('#sub').textContent = OPT.sites.join(' · ');
   paintChips();
@@ -779,6 +847,10 @@ def check(db_path=DB):
         ({"where": ["eff_bb > 150"]}, ["--where", "eff_bb > 150"]),
         ({}, []),
         ({"preset": ["3-bet pots"]}, list(query.SMART_REPORTS["3-bet pots"])),
+        ({"first_in": ["1"], "size": ["m"], "outcome": ["fold-out"]},
+         ["--first-in", "--size", "m", "--outcome", "fold-out"]),
+        ({"players": ["6"], "live": ["2"]},
+         ["--players", "6", "--live", "2"]),
     ]
     for form, argv in cases:
         a, _label_a, _pa = query.build(argv_from(form))

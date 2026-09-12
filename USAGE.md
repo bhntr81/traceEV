@@ -232,6 +232,36 @@ on a filter:
   this decision, and what this player did the next time they acted.
   `--after fold` and `--then bet` open those as filters; in the window
   a double-click does the same.
+- **Outcome** -- what the pot did with this bet, which is a different
+  question from Faced Next. Faced Next is the first later action;
+  outcome is fold-out / call / raise-back over everybody still in.
+  `--outcome fold-out` opens that row; a click does the same.
+
+A Quick Filter also **swaps the report columns** to the pack for that
+spot. `--quick raise_cbet` leads with raise c-bet, not VPIP.
+
+```bash
+python query.py --hero --filter "Flop c-bets"
+python query.py --hero --filter raise_cbet --by position
+python query.py --filter "Flop c-bets" --pin "Flop vs c-bet"
+python query.py --presets                 # also --filters
+```
+
+`--filter` is `--preset` with a wider lock: a Smart Report, a `--quick`
+key, or a JSON argv list. `--pin` is `--versus` pointed at another
+report, same person -- hero's flop c-bets against hero's vs-c-bet, not
+against the pool.
+
+The custom action builder is flags, not a second language:
+
+```bash
+python query.py --street flop --first-in --size m --outcome fold-out
+python query.py --players 6 --live 2 --last-raise --aggressive
+```
+
+`--first-in` / `--last-raise` are columns `decisions` already had.
+`--size` is `pot_frac` in the same buckets `lines.bucket` writes
+(`s m l p o`). `--players` / `--live` were already there.
 
 Then the named stats that can still occur inside the filter. Asking for
 a preflop stat inside `--street flop` gives nothing, which is correct

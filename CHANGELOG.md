@@ -106,11 +106,54 @@ row into `--quick` and a Faced Next row into `--after`; the page does
 the same with a click. That is Hand2Note's drill-down without a second
 filter language.
 
+### Added — outcome block, StatPacks, custom builder, pin
+
+A filter is the spot. Applying it now also:
+
+- prints **All Villains Fold / One Villain Call / Villain Raise** of
+  the aggressive rows (`--outcome fold-out|call|raise-back`). That is
+  the pot's answer, not Faced Next's first later action. The three
+  partition bets; `--check` asserts the counts sum.
+- swaps `--by` columns to a **StatPack** when the filter is a top
+  `--quick` key. Raise C-bet leads with raise_cbet, not VPIP. Showdown
+  stats stay out of the pack -- they cannot see a street filter.
+- accepts the custom builder flags the research brief named:
+  `--first-in`, `--last-raise`, `--size s|m|l|p|o`, `--players`,
+  `--live`. Size letters are `lines.bucket`, so `--flop XBmC` and
+  `--size m` agree.
+- opens a spot as `--filter <name|json>` (report, then quick key,
+  then JSON argv) and compares two as `--pin "Flop vs c-bet"`.
+  `--pin` keeps who is being measured; `--versus` still takes raw
+  flags when the other side is a different population.
+
+The window and the page grew the same controls: first-in / last-raise
+chips, size and outcome picks, player-count boxes, a pin combobox
+next to the report box. Clicking an outcome row is `--outcome`.
+
+`query.py --check` runs the shape and a three-hand fixture without
+`hands.db`, then the live corpus when it is there.
+
 ### Not this, on purpose
 
 No HUD. No solver. No second filter language -- every new report is
 argv `build` already understands. Custom stats and saved reports are
 untouched.
+
+### What's next
+
+- **Richer pin.** The window shows the pinned spot's hits and action
+  profit above this one. A true side-by-side report tab (two column
+  packs, same `--by`) is still `--versus` on the command line.
+- **Call Profit Rate, Dispersion, EV diff.** The last needs a solver,
+  which is a different product. The first two want a priced call, and
+  action-profit v1 leaves called-and-played-on unpriced on purpose.
+- **Multi-Player compare** as its own view. `--versus` already compares
+  two populations; a window for it is not this PR.
+- **Missed 2nd/3rd Barrel, Won$, Won hand%** in the Raise C-bet pack.
+  The core subset (hits/opps/freq + outcomes + Action Profit + the
+  related decision stats) is what ships; those extras are either
+  already a `--quick` key or a spots-sourced stat that blanks under
+  a street filter.
 
 ---
 

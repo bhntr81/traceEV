@@ -135,6 +135,8 @@ WHO = [("--reg", "the player is a reg"), ("--fish", "the player is a fish"),
 SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
               ("--pfa", "was the raiser"), ("--not-pfa", "was not the raiser"),
               ("--vs-pfa", "facing the raiser"),
+              ("--first-in", "first in on this street"),
+              ("--last-raise", "was the last raise"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
 # Turning one of these on turns its opposite off, or the filter selects
@@ -557,7 +559,8 @@ class App(ImportMixin, ttk.Frame):
                      ("site", "stake", "player", "deep", "short",
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
-                      "after", "then")}
+                      "after", "then", "size", "outcome",
+                      "players", "live")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -676,6 +679,16 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box.pack(side="left")
         self.preset_box.bind("<<ComboboxSelected>>",
                              lambda _e: self._on_preset())
+        ttk.Label(bar, text="pin", style="Dim.TLabel").pack(
+            side="left", padx=(14, 6))
+        self.pin = tk.StringVar(value="")
+        self.pin_box = ttk.Combobox(
+            bar, textvariable=self.pin,
+            values=[""] + list(query.reports()), state="readonly",
+            width=22)
+        self.pin_box.pack(side="left")
+        self.pin_box.bind("<<ComboboxSelected>>",
+                          lambda _e: self.refresh())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
@@ -698,6 +711,7 @@ class App(ImportMixin, ttk.Frame):
         self.cohort_spec = None
         self.cohort_btn.configure(text="Players")
         self.preset.set("")
+        self.pin.set("")
         self.refresh()
 
     # Who is being measured, as opposed to the situation they are in. A
@@ -779,7 +793,9 @@ class App(ImportMixin, ttk.Frame):
                             "--line": "line", "--node": "node",
                             "--pre": "pre", "--flop": "flop",
                             "--turn": "turn", "--river": "river",
-                            "--after": "after", "--then": "then"}.get(a)
+                            "--after": "after", "--then": "then",
+                            "--size": "size", "--outcome": "outcome",
+                            "--players": "players", "--live": "live"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -801,8 +817,11 @@ class App(ImportMixin, ttk.Frame):
         """
         keep = self.preset.get()
         known = list(query.reports())
-        self.preset_box.configure(values=["" ] + known)
+        self.preset_box.configure(values=[""] + known)
         self.preset.set(keep if keep in known else "")
+        pinned = self.pin.get()
+        self.pin_box.configure(values=[""] + known)
+        self.pin.set(pinned if pinned in known else "")
 
 
     def _views(self, right):
@@ -923,7 +942,9 @@ class App(ImportMixin, ttk.Frame):
                            ("line", "--line"), ("node", "--node"),
                            ("pre", "--pre"), ("flop", "--flop"),
                            ("turn", "--turn"), ("river", "--river"),
-                           ("after", "--after"), ("then", "--then")):
+                           ("after", "--after"), ("then", "--then"),
+                           ("size", "--size"), ("outcome", "--outcome"),
+                           ("players", "--players"), ("live", "--live")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -972,7 +993,7 @@ class App(ImportMixin, ttk.Frame):
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
                                self.by.get(), cohort_spec, self.chart_stat(),
-                               query_argv)
+                               query_argv, self.pin.get())
                          ).start()
 
     def _paint_related(self, related):
@@ -1004,7 +1025,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None, argv=None):
+              stat=None, argv=None, pin=""):
         """
         Every query runs here, never on the interface thread.
 
@@ -1033,6 +1054,21 @@ class App(ImportMixin, ttk.Frame):
                 out["profit"] = query.action_profit_of(con, where)
                 out["faced"] = query.chain_of(con, where, False)
                 out["next"] = query.chain_of(con, where, True)
+                out["outcomes"] = query.outcomes_of(con, where)
+                if pin:
+                    try:
+                        pin_argv = (query.who_only(argv)
+                                    + query.without_who(query.resolve_filter(pin)))
+                        pin_where, pin_label, _ = query.build(pin_argv)
+                    except SystemExit as e:
+                        out["pinned"] = {"error": str(e), "name": pin}
+                    else:
+                        out["pinned"] = {
+                            "name": pin, "label": pin_label,
+                            "summary": query.spot_summary(
+                                con, pin_where, pin_argv),
+                            "profit": query.action_profit_of(con, pin_where),
+                        }
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "chart":
@@ -1180,6 +1216,9 @@ class App(ImportMixin, ttk.Frame):
         elif kind == "then":
             self.vals["then"].set(key)
             self.refresh()
+        elif kind == "outcome":
+            self.vals["outcome"].set(key)
+            self.refresh()
 
     def _render_stats(self, tv, out):
         self._cols(tv, ("stat", "value", "±", "n"), (230, 90, 70, 100),
@@ -1202,6 +1241,23 @@ class App(ImportMixin, ttk.Frame):
                 f"±{summ['band']:.1f}" if summ["band"] < 1
                 else f"±{summ['band']:.0f}",
                 f"{summ['opps']:,}"))
+        pinned = out.get("pinned")
+        if pinned and not pinned.get("error"):
+            tv.insert("", "end", values=("PINNED  " + pinned["name"],
+                                         "", "", ""), tags=("group",))
+            ps = pinned.get("summary") or {}
+            if ps.get("opps"):
+                tv.insert("", "end", values=(
+                    f"pin hits  ({ps['label']})", f"{ps['hits']:,}",
+                    f"{ps['pct']:.1f}%", f"{ps['opps']:,} opps"))
+            pp = pinned.get("profit") or {}
+            if pp.get("bb_per_hand") is not None:
+                tv.insert("", "end", values=(
+                    "pin action profit", f"{pp['bb_per_hand']:+.2f} bb",
+                    "", f"{pp['priced']:,} priced"))
+        elif pinned and pinned.get("error"):
+            tv.insert("", "end", values=(pinned["error"], "", "", ""),
+                      tags=("note",))
         prof = out.get("profit")
         if prof and prof["n"]:
             if prof["bb_per_hand"] is not None:
@@ -1230,6 +1286,17 @@ class App(ImportMixin, ttk.Frame):
                                   f"±{r['band']:.1f}" if r["band"] < 1
                                   else f"±{r['band']:.0f}",
                                   f"{r['n']:,}"))
+        outs = out.get("outcomes") or {}
+        if outs.get("rows"):
+            tv.insert("", "end", values=("OUTCOME", "", "", ""),
+                      tags=("group",))
+            for r in outs["rows"]:
+                tv.insert("", "end", iid=f"outcome:{r['key']}",
+                          tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['k']:,}"))
         for title, key, blob in (
                 ("FACED NEXT  (the other seat)", "after", out.get("faced")),
                 ("NEXT ACTIONS  (this player)", "then", out.get("next"))):
@@ -2190,6 +2257,15 @@ class FilterDialog(tk.Toplevel):
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._val_item("then", v)))
             for v in query.AFTER])
+        self._heading(page, "outcome of this bet")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, query.OUTCOMES[v][1], *self._val_item("outcome", v)))
+            for v in ("fold-out", "call", "raise-back")])
+        self._heading(page, "bet size  (fraction of the pot)")
+        self._grid(page, [(lambda parent, v=v, t=t: self._pick(
+            parent, t, *self._val_item("size", v)))
+            for v, t in (("s", "small"), ("m", "medium"), ("l", "large"),
+                         ("p", "pot+"), ("o", "overbet"))])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -2325,6 +2401,15 @@ class FilterDialog(tk.Toplevel):
             if not self.app.vals[name].get():
                 self.app.vals[name].set(blank)
             box.pack(side="left", padx=(0, 14))
+
+        self._heading(page, "how many sat, how many are left")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("players", "players at the table"),
+                           ("live", "still in the pot")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=6).pack(
+                side="left", padx=(6, 18))
 
         self._heading(page, "stack depth, in big blinds")
         row = ttk.Frame(page)
@@ -2675,6 +2760,16 @@ def check(db_path=DB):
           f"{'yes' if same and not leftover else 'NO'}")
     if leftover or not same:
         fails.append("opening a Smart Report left the previous situation on")
+
+    app.clear_situation()
+    app._apply_argv(["--first-in", "--size", "m", "--outcome", "fold-out"])
+    built, _, _ = query.build(app.argv())
+    want, _, _ = query.build(["--first-in", "--size", "m",
+                              "--outcome", "fold-out"])
+    print(f"custom builder flags round-trip  "
+          f"{'yes' if built == want else 'NO -- ' + built}")
+    if built != want:
+        fails.append("first-in / size / outcome did not survive apply_argv")
 
     theme = ttk.Style(root).theme_use()
     print(f"theme in use                   {theme}")
