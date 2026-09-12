@@ -997,4 +997,20 @@ n_fish>0)`. Reports / Sessions unchanged. `--villain-type`
 stays a Reports filter. Who-is-Reg is `players.classify` plus
 `player_types.json`; a pin restamps `decisions`. Last-N is
 cash sit-downs (`sessions.last_n_sql`). Deferred: multi-profile
-Save/Open, weak%, board editor, Detach, graph polish.
+Save/Open, weak%, board editor, Detach.
+
+## Run — Win Graph polish
+
+**Goal:** the official H2N four-line win chart on Reports and
+Sessions. Amount Won / All-in EV / Won without Showdown / Won
+at Showdown, cumulative in hand order, bb|$ , shared widget,
+legend toggles + tooltips, filter/drill/session reactivity,
+CLI CSV. No HUD, no solver, no rakeback / Chip EV / Detach.
+`--check` without inventing EV.
+
+**Result:** `query.graph_of` is the one series both front ends
+and both CLIs draw. Extractors `won` / `all_in_ev` / `won_wos`
+/ `won_wsd`. Showdown line is gray. `WinGraph` on the graph
+tab, the study strip, and Sessions detail. `--graph --csv` /
+`sessions graph --csv`. Remaining: rakeback overlay, Chip EV,
+Detach, live `hands.db`.

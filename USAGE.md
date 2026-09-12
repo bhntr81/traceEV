@@ -294,15 +294,18 @@ python sessions.py --start-of-day 6 --tz acr=-5
 python sessions.py show FIRST_HAND_ID      # same as --show: summary + hands
 python sessions.py --show FIRST_HAND_ID
 python sessions.py graph FIRST_HAND_ID
+python sessions.py graph FIRST_HAND_ID --csv --out session-graph.csv
 python sessions.py export-hands FIRST_HAND_ID --out session.txt
 python query.py --session FIRST_HAND_ID --stats
 ```
 
 The window's **sessions** tab is the same loop: date bar → list
-(Won / Won bb) → click a row for the four-line graph and compact
-hands → **Export session hands** → **Open in Reports** (a
-`--session` chip on the study tab). Mark / Unmark / Note on a
-compact row, the same store as the hands tab.
+(Won / Won bb) → click a row for the official four-line win
+graph (Amount Won, All-in EV, Won without Showdown, Won at
+Showdown) and compact hands → **Export session hands** →
+**Open in Reports** (a `--session` chip on the study tab).
+bb / $ on the graph, click a name to hide a line. Mark /
+Unmark / Note on a compact row, the same store as the hands tab.
 
 **Today is a footgun.** It is the most recent start-of-day hour in
 *your* clock, not the date stamped on the hand. Rooms write their
@@ -929,6 +932,31 @@ hands it is ±141bb/100, which is wider than the +445 it is qualifying.
 **Win rates need thousands of hands. Frequencies need hundreds.** Filter
 hard and you will be looking at frequencies, which is the right thing to
 look at anyway.
+
+**`--graph`** is the official Hand2Note four-line win chart over the
+hands the filter selected, in play order. Amount Won (green),
+All-in EV (yellow), Won without Showdown / the red line, Won at
+Showdown (gray). Red + gray = green at every hand. A rising red
+line is taking pots without a showdown; a falling one is letting
+them go. `--unit currency` is dollars; the default is bb. `--csv`
+(or `--out file.csv`) is the per-hand extractors and their
+running totals -- the last `cum_won` is the Won summary
+`--results` prints.
+
+```bash
+python query.py --hero --graph
+python query.py --hero --pot 3bet --graph --csv --out win.csv
+python query.py report graph --hero --unit currency --out win.csv
+python sessions.py graph FIRST_HAND --csv
+```
+
+The same widget sits on the window's **graph** tab, on the
+Reports study strip (it reshapes when you drill), and on a
+session's detail. Click a line name to hide it; hover names the
+hand. All-in EV is only priced for the clean two-way case with
+cards to come -- nothing is invented. MTT is out.
+
+Not this: rakeback overlay, Chip EV, Detach.
 
 **`--hands`** lists the hands themselves, newest first, with the board and
 what each one made. Under each row is a **compact hand** -- the same
