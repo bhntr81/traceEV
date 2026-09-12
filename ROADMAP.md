@@ -932,5 +932,17 @@ cohort, with the Ignition-vs-ACR coverage caveat. No HUD, no solver,
 
 **Result:** `stats.mean_interval` for priced means; `amount_won_of`
 as a spots join (not a Stat column); `coverage_of` on chart/range
-and on `--stats` under a parked cohort. Remaining: Dispersion / EV
-diff, Bet Sizes pane, richer second `--by` pin grid.
+and on `--stats` under a parked cohort.
+
+## Run — Bet Sizes pane and a richer pin
+
+**Goal:** Action Profit / hits / opps / freq by pot-frac bucket on
+the current filter, and a pin that can show two `--by` breakdowns
+(or two stat packs), not only the compact THIS vs PINNED summary.
+No HUD, no solver, skip Dispersion / EV diff. `--check` without a
+corpus.
+
+**Result:** `size_expr` matching `lines.bucket`; `--bet-sizes` /
+`--by size`; richer `--pin` (`--by`, Bet Sizes, or two packs).
+Remaining: Dispersion / EV diff, Action Profit later-pot-on-called-bet,
+live `check.py` on a real `hands.db`. Window `--check` needs Tk.

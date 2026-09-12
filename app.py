@@ -912,6 +912,7 @@ class App(ImportMixin, ttk.Frame):
         # how Hand2Note walks from a frequency to the hands that made it,
         # without going back through the dialog.
         self.tree["stats"].bind("<Double-1>", self._drill_stat)
+        self.tree["report"].bind("<Double-1>", self._drill_stat)
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -1092,11 +1093,12 @@ class App(ImportMixin, ttk.Frame):
                 out["faced"] = query.chain_report(con, where, argv, False)
                 out["next"] = query.chain_report(con, where, argv, True)
                 out["outcomes"] = query.outcomes_of(con, where)
+                out["sizes"] = query.bet_sizes_of(con, where, argv)
                 if pin:
                     try:
                         argv_a, argv_b = query.pin_sides(argv, pin)
                         out["compare"] = query.compare_of(
-                            con, argv_a, argv_b, None, pin)
+                            con, argv_a, argv_b, None, pin, packs=True)
                     except SystemExit as e:
                         out["pinned"] = {"error": str(e), "name": pin}
             elif view == "range":
@@ -1104,17 +1106,25 @@ class App(ImportMixin, ttk.Frame):
             elif view == "chart":
                 out.update(query.chart_of(con, where, stat))
             elif view == "report":
-                expr, order = query.DIMENSIONS[dim]
+                dim = dim if dim in query.DIMENSIONS else "position"
                 cols = query.columns_for(argv)
-                grid = {c: query.rates_by(con, BY_KEY[c], expr, where)
-                        for c in cols}
-                counts = query.counts_by(con, expr, where)
-                keys = sorted({k for g in grid.values() for k in g} | set(counts),
-                              key=lambda k: order(k) if k is not None else "")
-                won_by = (query.amount_won_by(con, where, expr)
-                          if query.pack_wants_won(argv) else {})
-                out.update(dim=dim, cols=cols, grid=grid, counts=counts,
-                           keys=keys, won_by=won_by)
+                if pin:
+                    try:
+                        argv_a, argv_b = query.pin_sides(argv, pin)
+                        out["compare"] = query.compare_of(
+                            con, argv_a, argv_b, None, pin,
+                            dim=dim, columns=cols,
+                            bet_sizes=(dim == "size"))
+                    except SystemExit as e:
+                        out["pinned"] = {"error": str(e), "name": pin}
+                if dim == "size":
+                    out["sizes"] = query.bet_sizes_of(con, where, argv)
+                    out.update(dim=dim, cols=[], grid={}, counts={},
+                               keys=[r["key"] for r in out["sizes"]["rows"]],
+                               won_by={})
+                else:
+                    got = query.report_of(con, where, dim, cols, argv)
+                    out.update(got)
             elif view == "results":
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
@@ -1143,7 +1153,9 @@ class App(ImportMixin, ttk.Frame):
     def _any(out):
         return bool(out.get("n") or out.get("rows") or out.get("totals")
                     or out.get("keys") or out.get("series")
-                    or out.get("cells"))
+                    or out.get("cells")
+                    or out.get("compare")
+                    or (out.get("sizes") or {}).get("rows"))
 
     def _series(self, con, where):
         pairs = query.matching_seats(con, where)
@@ -1231,7 +1243,7 @@ class App(ImportMixin, ttk.Frame):
 
     def _drill_stat(self, _event):
         """Open the clicked stat or next-action as a filter on this spot."""
-        tv = self.tree["stats"]
+        tv = _event.widget
         iid = tv.focus()
         if not iid or ":" not in iid:
             return
@@ -1249,6 +1261,9 @@ class App(ImportMixin, ttk.Frame):
             self.refresh()
         elif kind == "outcome":
             self.vals["outcome"].set(key)
+            self.refresh()
+        elif kind == "size":
+            self.vals["size"].set(key)
             self.refresh()
 
     def _render_stats(self, tv, out):
@@ -1309,6 +1324,8 @@ class App(ImportMixin, ttk.Frame):
                     f"{100 * diff['d']:+.1f} pts",
                     f"[{100 * diff['lo']:+.1f}, {100 * diff['hi']:+.1f}]",
                     "", ""), tags=("note",))
+            _render_compare_sizes(tv, cmp)
+            _render_compare_packs(tv, cmp)
         else:
             summ = out.get("summary")
             if summ and summ["opps"]:
@@ -1453,6 +1470,22 @@ class App(ImportMixin, ttk.Frame):
                                   else f"±{r['band']:.0f}",
                                   f"{r.get('hits', r['k']):,} / {r.get('opps', r['n']):,}",
                                   act))
+        if not (out.get("compare") or {}).get("sizes"):
+            sizes = out.get("sizes") or {}
+            if sizes.get("rows"):
+                tv.insert("", "end", values=("BET SIZES", "", "", "", ""),
+                          tags=("group",))
+                for r in sizes["rows"]:
+                    ap = r.get("profit") or {}
+                    act = (f"{ap['bb_per_hand']:+.2f}"
+                           if ap.get("bb_per_hand") is not None else "–")
+                    tv.insert("", "end", iid=f"size:{r['key']}",
+                              tags=("thin",) if r["n"] < 30 else (),
+                              values=(r["label"], f"{r['pct']:.1f}%",
+                                      f"±{r['band']:.1f}" if r["band"] < 1
+                                      else f"±{r['band']:.0f}",
+                                      f"{r['hits']:,} / {r['opps']:,}",
+                                      act))
         group = None
         for r in out["rows"]:
             if r["group"] != group:
@@ -1519,6 +1552,13 @@ class App(ImportMixin, ttk.Frame):
                 cov["note"], "", "", "", ""))
 
     def _render_report(self, tv, out):
+        cmp = out.get("compare")
+        if cmp and (cmp.get("sizes") or cmp.get("by")):
+            self._render_report_compare(tv, out, cmp)
+            return
+        if out.get("dim") == "size" or out.get("sizes"):
+            self._render_report_sizes(tv, out.get("sizes") or {})
+            return
         cols = ["by"] + [BY_KEY[c].label for c in out["cols"]] + ["n"]
         widths = [130] + [95] * len(out["cols"]) + [80]
         if out.get("won_by"):
@@ -1559,6 +1599,77 @@ class App(ImportMixin, ttk.Frame):
                               "spots-sourced; MTT out. Not this street."]
                       + [""] * (len(cols) - 1),
                       tags=("note",))
+
+    def _render_report_sizes(self, tv, sizes):
+        """The Bet Sizes pane in the report tab."""
+        self._cols(tv, ("size", "freq", "hits / opps", "act bb"),
+                   (160, 80, 110, 80), {"size": "w"})
+        rows = sizes.get("rows") or []
+        if not rows:
+            tv.insert("", "end", values=("no sized action in this filter",
+                                         "", "", ""), tags=("note",))
+            return
+        for r in rows:
+            ap = r.get("profit") or {}
+            act = (f"{ap['bb_per_hand']:+.2f}"
+                   if ap.get("bb_per_hand") is not None else "–")
+            tv.insert("", "end", iid=f"size:{r['key']}",
+                      tags=("thin",) if r["n"] < 30 else (),
+                      values=(r["label"], f"{r['pct']:.1f}%",
+                              f"{r['hits']:,} / {r['opps']:,}", act))
+        tv.insert("", "end", values=(
+            "freq is this size of the parent filter. Checks and folds "
+            "have no size. act bb is Action Profit v1; later pot on a "
+            "called bet stays unpriced.", "", "", ""), tags=("note",))
+
+    def _render_report_compare(self, tv, out, cmp):
+        """Two `--by` grids or two Bet Sizes tables, THIS vs PINNED."""
+        if cmp.get("sizes"):
+            self._cols(tv, ("size", "this hits/freq", "this AP",
+                            "pin hits/freq", "pin AP"),
+                       (160, 140, 80, 140, 80), {"size": "w"})
+            tv.insert("", "end", values=(
+                "THIS vs PINNED",
+                (cmp["a"].get("name") or "this")[:22], "",
+                (cmp["b"].get("name") or "pinned")[:22], ""),
+                      tags=("group",))
+            _render_compare_sizes(tv, cmp)
+            return
+        blob = cmp.get("by") or {}
+        ga, gb = blob.get("a") or {}, blob.get("b") or {}
+        dim = blob.get("dim") or out.get("dim") or "by"
+        cols = ga.get("cols") or gb.get("cols") or out.get("cols") or []
+        order = query.DIMENSIONS[dim][1] if dim in query.DIMENSIONS else str
+        keys = sorted(set(ga.get("keys") or []) | set(gb.get("keys") or []),
+                      key=lambda k: order(k) if k is not None else "")
+        headers = ["by"]
+        widths = [120]
+        for side in ("this", "pin"):
+            for c in cols:
+                headers.append(f"{side} {BY_KEY[c].label[:8]}")
+                widths.append(90)
+            headers.append(f"{side} n")
+            widths.append(70)
+        self._cols(tv, tuple(headers), widths, {"by": "w"})
+        tv.insert("", "end",
+                  values=[f"THIS vs PINNED  by {dim}"] + [""] * (len(headers) - 1),
+                  tags=("group",))
+        if not keys:
+            tv.insert("", "end",
+                      values=["nothing matches"] + [""] * (len(headers) - 1),
+                      tags=("neg",))
+            return
+        for k in keys:
+            row = [str(k)]
+            thin = False
+            for grid, counts in ((ga.get("grid") or {}, ga.get("counts") or {}),
+                                 (gb.get("grid") or {}, gb.get("counts") or {})):
+                for c in cols:
+                    n, kk = grid.get(c, {}).get(k, (0, 0))
+                    row.append("–" if not n else f"{100 * kk / n:.1f}%")
+                    thin = thin or (0 < n < 30)
+                row.append(f"{counts.get(k, 0):,}")
+            tv.insert("", "end", values=row, tags=("thin",) if thin else ())
 
     def _render_results(self, tv, out):
         self._cols(tv, ("figure", "value"), (320, 220), {"figure": "w"})
@@ -1856,6 +1967,67 @@ def _cohort_range_blob(con, where):
                for c, (n, _k) in ranked]
     return {"coverage": g.get("coverage"), "seen": g["seen"],
             "total": g["total"], "top": top}
+
+
+def _render_compare_sizes(tv, cmp):
+    """Two Bet Sizes tables on a pin, aligned by letter."""
+    sizes = cmp.get("sizes") or {}
+    by_a = {r["key"]: r for r in (sizes.get("a") or {}).get("rows") or []}
+    by_b = {r["key"]: r for r in (sizes.get("b") or {}).get("rows") or []}
+    keys = [k for k in query.lines.BUCKETS if k in by_a or k in by_b]
+    if not keys:
+        return
+    tv.insert("", "end", values=("BET SIZES", "", "", "", ""),
+              tags=("group",))
+    for k in keys:
+        ra, rb = by_a.get(k) or {}, by_b.get(k) or {}
+        pa, pb = ra.get("profit") or {}, rb.get("profit") or {}
+        this = (f"{ra.get('hits', 0):,}/{ra.get('opps', 0):,}"
+                if ra.get("opps") else "–")
+        pin = (f"{rb.get('hits', 0):,}/{rb.get('opps', 0):,}"
+               if rb.get("opps") else "–")
+        this_ap = (f"{pa['bb_per_hand']:+.2f}"
+                   if pa.get("bb_per_hand") is not None else "–")
+        pin_ap = (f"{pb['bb_per_hand']:+.2f}"
+                  if pb.get("bb_per_hand") is not None else "–")
+        tv.insert("", "end", iid=f"size:{k}",
+                  values=(query.SIZE_NAMES[k],
+                          f"{this}  {ra.get('pct', 0):.1f}%"
+                          if ra.get("opps") else "–",
+                          this_ap,
+                          f"{pin}  {rb.get('pct', 0):.1f}%"
+                          if rb.get("opps") else "–",
+                          pin_ap))
+
+
+def _render_compare_packs(tv, cmp):
+    """Two stat packs on a pin, one row per stat that either side has."""
+    packs = cmp.get("packs") or {}
+    pa = {r["key"]: r for r in packs.get("a") or []}
+    pb = {r["key"]: r for r in packs.get("b") or []}
+    keys, seen = [], set()
+    for r in (packs.get("a") or []) + (packs.get("b") or []):
+        if r["key"] not in seen:
+            seen.add(r["key"])
+            keys.append(r["key"])
+    if not keys:
+        return
+    tv.insert("", "end", values=("THIS vs PINNED  (every stat)", "", "", "", ""),
+              tags=("group",))
+    last = None
+    for key in keys:
+        a, b = pa.get(key), pb.get(key)
+        group = (a or b or {}).get("group")
+        if group != last:
+            tv.insert("", "end", values=(group.upper(), "", "", "", ""),
+                      tags=("group",))
+            last = group
+        tv.insert("", "end", iid=f"stat:{key}",
+                  values=((a or b)["label"],
+                          f"{a['pct']:.1f}%" if a else "–",
+                          f"n={a['n']:,}" if a else "",
+                          f"{b['pct']:.1f}%" if b else "–",
+                          f"n={b['n']:,}" if b else ""))
 
 
 def _profit_band(p):

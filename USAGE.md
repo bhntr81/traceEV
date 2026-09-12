@@ -307,6 +307,13 @@ python query.py --hit cbet_flop --stats
   question from Faced Next. Faced Next is the first later action;
   outcome is fold-out / call / raise-back over everybody still in.
   `--outcome fold-out` opens that row; a click does the same.
+- **Bet sizes** -- Action Profit, hits/opps and freq by pot-frac
+  bucket (`s m l p o`, the same edges as `--size m` and
+  `lines.bucket`). The current filter is the opportunities. Checks
+  and folds have no size and are not a row, so the freqs will not
+  sum to 100% on a situation that includes them. `--bet-sizes` and
+  `--by size` print the pane; `--size m` opens a row. Action Profit
+  is still v1 -- later pot on a called bet stays unpriced.
 
 A Quick Filter also **swaps the report columns** to the pack for that
 spot. `--quick raise_cbet` leads with raise c-bet, not VPIP, and the
@@ -331,6 +338,9 @@ python query.py --hero --filter "Flop c-bets"
 python query.py --hero --filter raise_cbet --by position
 python query.py --filter "Flop c-bets" --pin "Flop vs c-bet"
 python query.py --hero --compare "Flop c-bets" "Flop vs c-bet"
+python query.py --hero --filter "Flop c-bets" --pin "Flop vs c-bet" --by position
+python query.py --hero --street flop --bet-sizes
+python query.py --hero --street flop --by size
 python query.py --presets                 # also --filters
 ```
 
@@ -345,14 +355,19 @@ on the difference. Changing the filter leaves the pin where it is --
 that is the point. In the window and on the page the pin box does
 the same thing above the rest of this report.
 
+With `--by position` (or any other split) the pin also draws **two
+`--by` grids**, keys aligned. `--by size` / `--bet-sizes` draws two
+Bet Sizes tables. Without a split it draws two full stat packs
+under the compact summary. That is the richer pin -- two filters'
+breakdowns, not only THIS vs PINNED as six rows.
+
 **`--compare A B`** is the same table with both sides named. Who-flags
 (`--hero`) apply to both.
 
 **`--versus`** is the other verb: every stat, Holm-corrected, for when
 the question is "is this gap real?" not "what did each spot do?"
 
-v1 does not draw two full `--by` grids. Pin the spot summary; `--versus`
-is still the test. No Multi-Player pane.
+No Multi-Player pane. No Dispersion / EV diff.
 
 The custom action builder is flags, not a second language.
 `FilterDef` is those flags as a value -- line patterns plus the
@@ -683,9 +698,10 @@ python query.py --cohort 'vpip>=40,pfr<=10,hands>=100' --filter 3bet --stats
 
 Not this, on purpose: nested `Value(Value(...))`; H2N's full stat-name
 catalog and positional `[MP;IP]` suffixes; `VsHeroCases` / `AmountWon` /
-`ActionProfit` as expression atoms; Bet Sizes as a cohort view; two
+`ActionProfit` as expression atoms; Bet Sizes as a *cohort* view (the
+pane is on the current filter, not a second Multi-Player compare); two
 cohorts side by side (that is `--versus` of two populations, already
-shipped, not a second Multi-Player compare).
+shipped).
 
 Bear the sample size in mind before reading anything into a small cohort. 85
 ACR players have 100+ hands and eight have 500+, so `--hands ">=500"` is
