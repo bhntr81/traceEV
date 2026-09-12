@@ -500,10 +500,11 @@ class HistWidget:
                 if r.get("n") or r.get("key") == "other"]
         seen = self.got.get("n") or 0
         weak = query.weak_pct_of(self.got["rows"], seen)
+        weak_n = sum(r["n"] for r in self.got["rows"] if r.get("is_weak"))
         labels = [r["label"] for r in self.got["rows"] if r.get("is_weak")]
         self.weak_lab.configure(
-            text=f"Weak  {weak:.1f}%  ({int(round(weak * seen / 100)):,} of "
-                 f"{seen:,})" if seen else "Weak  –")
+            text=f"Weak  {weak:.1f}%  ({weak_n:,} of {seen:,})"
+            if seen else "Weak  –")
         tagged = ", ".join(labels) or "none"
         cov = self.got.get("coverage") or {}
         site_bits = []
