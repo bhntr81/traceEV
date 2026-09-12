@@ -8,6 +8,50 @@ Newest first.
 
 ---
 
+## Weak-hand % on postflop histograms
+
+H2N’s “how often they bluff” readout on a betting range. Tracking
+half only: no HUD, no solver, no group editor, no board slices,
+no Detach.
+
+One aggregator, `query.hist_postflop_of`. Groups live in
+`strength.HIST_SPEC` next to `WEAK`: ordered bars, first match
+wins, Other implicit for leftovers. Air / Draws / Weak pair
+default to `is_weak`. A made pair keeps its pair bar even when
+it also has a draw — otherwise “how do they play a gutshot”
+includes the top pairs that happen to have one.
+
+Weak % is of the hands that were **seen**. Ignition shows every
+hand including folds; ACR shows 23%. Coverage rides with the
+payload for the same reason `range_of` prints it.
+
+`--hist-group` is the bar click, the same flag a pane row already
+knew how to AND. Right-click flips `is_weak` on that bar and
+recomputes the percentage from the counts already on screen.
+
+### Added — shared widget
+
+`HistWidget` on Statistics (under the 13×13) and the Reports
+study strip. The page draws the same payload. Hand Values is
+also a plus pane.
+
+### Added — CLI
+
+```bash
+python query.py --street flop --action bet --hist-postflop
+python query.py hist-postflop --street flop --facing bet
+```
+
+`weak_pct` is in the payload and printed. `--check` uses eleven
+shown hands and does not invent EV.
+
+### Not this, on purpose
+
+No HUD. No solver. No full group editor. No board slices.
+No Detach. No rakeback. No multi-profile.
+
+---
+
 ## Win Graph — official H2N four-line chart
 
 Reports + Sessions, the tracking-half win chart. No HUD. No

@@ -83,6 +83,7 @@ VALUE_FIELDS = {
     "fmt": "--fmt",
     "last_sessions": "--last-sessions",
     "call_range": "--call-range",
+    "hist_group": "--hist-group",
     "start_of_day": "--start-of-day",
     "tz": "--tz",
     "alias": "--alias",
@@ -223,16 +224,17 @@ def payload(con, params):
         if call:
             key, kind = call, "call"
         combo = (params.get("combo", [""])[0] or "").strip() or None
+        hist_group = (params.get("hist_group", [""])[0] or "").strip() or None
         if key:
             try:
                 drill = query.stat_range_of(
                     con, where, key, kind=kind, exclude=exclude,
-                    combo=combo)
+                    combo=combo, hist_group=hist_group)
                 compact.attach(con, drill.get("hands") or [], fmt="html")
                 notes.decorate(con, drill.get("hands") or [])
                 out["drill"] = drill
                 out["open_reports"] = query.reports_argv(
-                    argv, key, kind, combo)
+                    argv, key, kind, combo, hist_group)
             except SystemExit as e:
                 out["drill_error"] = str(e)
         return out
@@ -507,6 +509,18 @@ td.compact{text-align:left;font-weight:500}
   letter-spacing:.06em;padding-top:12px}
 .empty{color:var(--dim);padding:26px 0}
 .bar{height:5px;background:var(--accent);border-radius:3px;opacity:.5}
+.hist{margin:8px 0 12px;padding:8px;border:1px solid var(--edge);border-radius:6px;
+  background:var(--panel)}
+.hist .weakpct{font-weight:600;margin:0 0 6px}
+.histbars{display:flex;align-items:flex-end;gap:4px;height:110px}
+.histbar{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:flex-end;cursor:pointer;height:100%}
+.histbar i{display:block;width:100%;border-radius:3px 3px 0 0}
+.histbar.weak i{background:var(--bad)}
+.histbar.strong i{background:var(--accent);opacity:.75}
+.histbar.other i{background:var(--dim)}
+.histbar span{font-size:10px;color:var(--dim);margin-top:4px;text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .crumbs,.chips-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
   margin:0 0 8px;font-size:12px}
 .crumbs a,.chip-x{color:var(--accent);cursor:pointer;text-decoration:none}
@@ -661,6 +675,7 @@ td.compact{text-align:left;font-weight:500}
       <input id="stat_key" placeholder="threebet"></label>
     <label>Call Range <input id="call_range" placeholder="threebet"></label>
     <input type="hidden" id="quick">
+    <input type="hidden" id="hist_group">
     <p class="n">The exclude box is a Statistics compute flag.
       Reports and Sessions ignore it. villain_type stays a Reports
       filter. Last N is cash sit-downs.</p>
@@ -832,7 +847,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick','hist_group']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -1051,12 +1066,14 @@ function renderStatistics(d){
       h += '<br>';
     }
     h += '</div>';
+    h += renderHist(drill.hist, {click: 'stat'});
     h += renderStudyHands(drill.hands||[]);
   }
   $('#out').innerHTML = h;
   $('#out').querySelectorAll('.statcell').forEach(b => {
     b.onclick = () => { $('#stat_key').value = b.dataset.key;
       const cr = $('#call_range'); if (cr) cr.value = '';
+      const hg = $('#hist_group'); if (hg) hg.value = '';
       load(); };
   });
   const rangeBtn = $('#stat_range'), callBtn = $('#stat_call');
@@ -1085,6 +1102,7 @@ function renderStatistics(d){
   $('#out').querySelectorAll('.chartcell').forEach(b => {
     b.onclick = () => { $('#combo').value = b.dataset.combo; load(); };
   });
+  bindHist($('#out'), d, 'stat');
   bindHandRows(d.drill || {});
 }
 function renderSessions(d){
@@ -1166,7 +1184,7 @@ function renderStudy(d){
     '<a data-fam="'+r.key+'">'+r.label+'</a>').join('');
   const plus = (d.plus||[]).filter(k => !(state.extraPanes||[]).includes(k))
     .map(k => '<option value="'+k+'">'+( {size:'Bet Sizes',made:'Flop Hand',
-      board:'Flop Board',combo:'Combos'}[k]||k)+'</option>').join('');
+      board:'Flop Board',combo:'Combos',hist:'Hand Values'}[k]||k)+'</option>').join('');
   const names = ['results','stack','position','next'].concat(state.extraPanes||[]);
   let panes = '<div class="panes">';
   for (const name of names){
@@ -1181,6 +1199,7 @@ function renderStudy(d){
     + '<p class="n">+ pane <select id="plus">'+plus+'</select>'
     + '  click a row to drill · right-click a hand</p>'
     + panes
+    + renderHist(d.hist, {click: 'study'})
     + (d.graph && d.graph.n >= 2
         ? (d.graph_markup || '')
         : '')
@@ -1239,13 +1258,76 @@ function renderStudy(d){
     };
   });
   bindHandRows(d);
+  bindHist($('#out'), d, 'study');
   if (window.bindWinGraph)
     $('#out').querySelectorAll('.wingraph').forEach(window.bindWinGraph);
+}
+function renderHist(got, how){
+  how = how || {};
+  if (!got || !got.n){
+    return '<div class="hist"><p class="n">'
+      + 'no shown hands — Weak % needs cards (Ignition shows folds; ACR 23%)</p></div>';
+  }
+  const rows = (got.rows||[]).filter(r => r.n || r.key==='other');
+  const peak = Math.max(1, ...rows.map(r => r.pct||0));
+  let h = '<div class="hist"><p class="weakpct" title="'
+    + (got.note||'') + '">Weak ' + got.weak_pct.toFixed(1) + '%  ·  '
+    + (got.weak_n||0).toLocaleString() + ' of ' + got.n.toLocaleString()
+    + ' shown</p><p class="n">' + (got.weak_labels||[]).join(', ')
+    + '  ·  click a bar to filter · click Weak on a bar to flip</p>';
+  const cov = got.coverage||{};
+  if ((cov.sites||[]).length){
+    h += '<p class="n">' + cov.sites.map(s =>
+      (s.site||'?')+': '+s.seen+'/'+s.total+' ('+s.pct.toFixed(0)+'%)'
+    ).join(' · ') + '</p>';
+  }
+  h += '<div class="histbars">';
+  for (const r of rows){
+    const cls = r.is_weak ? 'weak' : (r.key==='other' ? 'other' : 'strong');
+    const ht = Math.max(2, Math.round(100 * (r.pct||0) / peak));
+    h += `<div class="histbar ${cls}" data-hist="${r.key}" data-weak="${r.is_weak?1:0}" `
+      + `title="${r.label} ${r.pct.toFixed(1)}% n=${r.n} ${r.is_weak?'weak':'strong'}">`
+      + `<i style="height:${ht}%"></i><span>${r.label}</span></div>`;
+  }
+  return h + '</div></div>';
+}
+function bindHist(root, d, kind){
+  (root || document).querySelectorAll('.histbar').forEach(b => {
+    b.onclick = (ev) => {
+      if (ev.target.closest && ev.target.closest('.flipweak')) return;
+      const key = b.dataset.hist;
+      if (kind === 'stat'){
+        const el = $('#hist_group');
+        if (el) el.value = (el.value === key) ? '' : key;
+        load();
+        return;
+      }
+      const hist = d.hist || ((d.drill||{}).hist);
+      const row = ((hist && hist.rows) || []).find(r => r.key === key);
+      if (row) applyStep(stepFromRow(row));
+    };
+    b.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      if (b.dataset.hist === 'other') return;
+      const hist = (kind==='stat' ? ((d.drill||{}).hist) : d.hist);
+      if (!hist || !hist.rows) return;
+      const row = hist.rows.find(r => r.key === b.dataset.hist);
+      if (!row) return;
+      row.is_weak = !row.is_weak;
+      let weak_n = 0;
+      for (const r of hist.rows) if (r.is_weak) weak_n += r.n;
+      hist.weak_n = weak_n;
+      hist.weak_pct = hist.n ? 100.0 * weak_n / hist.n : 0;
+      hist.weak_labels = hist.rows.filter(r => r.is_weak).map(r => r.label);
+      if (kind === 'stat') renderStatistics(d);
+      else renderStudy(d);
+    };
+  });
 }
 function renderPane(name, pane){
   const title = {results:'Results',stack:'Stack Sizes',position:'Positions',
     next:'Next Action',size:'Bet Sizes',made:'Flop Hand',board:'Flop Board',
-    combo:'Combos'}[name] || name;
+    combo:'Combos',hist:'Hand Values'}[name] || name;
   const rows = (pane && pane.rows) || [];
   if (!rows.length)
     return '<div class="pane"><h3>'+title+'</h3><p class="n">nothing in this pane</p></div>';
@@ -1257,6 +1339,7 @@ function renderPane(name, pane){
   if (name==='results') cols = ['label','hands','net','bb/100'];
   if (name==='stack' || name==='next' || name==='size')
     cols = ['label','n','freq','act bb'];
+  if (name==='hist') cols = ['label','n','freq','weak'];
   cols = cols.filter(c => !hidden.has(c));
   const sort = state.paneSort[name];
   const copy = rows.slice();
@@ -1276,6 +1359,7 @@ function renderPane(name, pane){
     }
     if (c==='net') return (r.net_bb>=0?'+':'')+(r.net_bb||0).toFixed(1);
     if (c==='bb/100') return (r.bb100>=0?'+':'')+(r.bb100||0).toFixed(1);
+    if (c==='weak') return r.is_weak ? 'weak' : '';
     return '';
   };
   let h = '<div class="pane"><h3>'+title+'<button type="button" data-pane="'+name+'">⚙</button></h3><table><thead><tr>';
@@ -1936,6 +2020,8 @@ def check(db_path=DB):
          ["--fmt", "cash", "--last-sessions", "10"]),
         ({"call_range": ["threebet"]},
          ["--call-range", "threebet"]),
+        ({"hist_group": ["air"]},
+         ["--hist-group", "air"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))

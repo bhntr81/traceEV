@@ -151,6 +151,12 @@ Facts that stay true, and that have each been got wrong at least once:
   draws the line under middle pair, on the grounds that a middle pair calls
   a river bet and a bottom pair does not. Disagreeing with it should be a
   line changed, not an argument.
+- **Histogram Weak % is of groups, of the hands that were SEEN.**
+  `strength.HIST_SPEC` orders the bars; Air / Draws / Weak pair default
+  to `is_weak`. Other is implicit leftover and is never weak. A made
+  pair keeps its pair bar even when it also has a draw. Ignition
+  shows every hand including folds; ACR shows 23%. Flipping `is_weak`
+  on a group changes the percentage; the classifier does not.
 - **Nothing draws on the river.** `flush_draw` always knew; `straight_draw`
   did not, and a river range came back a third "straight draw" — drawing to
   a card that was never coming.

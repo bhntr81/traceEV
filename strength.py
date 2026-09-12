@@ -78,6 +78,144 @@ ORDER = ("straight flush", "quads", "boat", "flush", "straight", "set",
 # much of a betting range is hands that cannot call.
 WEAK = ("high card", "board pair", "weak pair", "under pair")
 
+# Postflop histogram groups. First match wins; Other is implicit and
+# never listed here -- a leftover (an unexpected `made`, a future
+# label) has to land somewhere, and inventing a fifteenth bar for
+# each one would hide that the classifier missed it.
+#
+# is_weak is the Weak % line: H2N's "how often they bluff" readout
+# on a betting range. Air / Draws / Weak pair default to weak
+# because those are the hands that cannot call a river bet -- air
+# and semi-bluffs, and pairs below middle. The same opinion WEAK
+# encodes, one layer up: which BARS count, so flipping a checkbox
+# changes the percentage without rewriting the classifier.
+#
+# A made pair keeps its pair bar even when it also has a draw.
+# Draws is only air-like hands (high card, board pair) that are
+# still drawing -- otherwise "how does the pool play a gutshot"
+# would include the top pairs that happen to have one, the
+# failure `range_of` already refuses.
+HIST_OTHER = "other"
+
+# key, label, is_weak, made names, draw (None = ignore, False = none, True = any)
+HIST_SPEC = (
+    ("air", "Air", True, ("high card", "board pair"), False),
+    ("draws", "Draws", True, ("high card", "board pair"), True),
+    ("weak_pair", "Weak pair", True, ("weak pair", "under pair"), None),
+    ("middle_pair", "Middle pair", False, ("middle pair",), None),
+    ("top_pair", "Top pair", False, ("top pair",), None),
+    ("overpair", "Overpair", False, ("overpair",), None),
+    ("two_pair", "Two pair", False, ("two pair",), None),
+    ("trips", "Trips", False, ("trips",), None),
+    ("set", "Set", False, ("set",), None),
+    ("straight", "Straight", False, ("straight",), None),
+    ("flush", "Flush", False, ("flush",), None),
+    ("boat", "Boat", False, ("boat",), None),
+    ("quads", "Quads", False, ("quads",), None),
+    ("straight_flush", "Straight flush", False, ("straight flush",), None),
+)
+
+
+def _quote_sql(name):
+    return "'" + str(name).replace("'", "''") + "'"
+
+
+def _draw_sql(draw):
+    if draw is True:
+        return "(fd IS NOT NULL OR sd IS NOT NULL)"
+    if draw is False:
+        return "(fd IS NULL AND sd IS NULL)"
+    return None
+
+
+def group_key(name):
+    """The registry key for a typed group, or None."""
+    raw = (name or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if raw == HIST_OTHER:
+        return HIST_OTHER
+    for key, label, _w, _made, _draw in HIST_SPEC:
+        if raw in (key, label.lower().replace(" ", "_")):
+            return key
+    return None
+
+
+def group_sql(key, specs=None):
+    """Predicate for one named group. Other is leftover_sql."""
+    specs = specs or HIST_SPEC
+    if key == HIST_OTHER:
+        return leftover_sql(specs)
+    for k, _lab, _w, made, draw in specs:
+        if k != key:
+            continue
+        sql = "made IN (" + ", ".join(_quote_sql(m) for m in made) + ")"
+        extra = _draw_sql(draw)
+        return f"{sql} AND {extra}" if extra else sql
+    raise ValueError(f"unknown hist group {key!r}")
+
+
+def leftover_sql(specs=None):
+    """Shown hands that matched no group -- the Other bar."""
+    specs = specs or HIST_SPEC
+    return " AND ".join(
+        f"NOT ({group_sql(k, specs)})" for k, *_rest in specs)
+
+
+def group_filter_sql(key, specs=None):
+    """Shown hands in this group. Other is the leftover."""
+    specs = specs or HIST_SPEC
+    if key == HIST_OTHER:
+        return f"made IS NOT NULL AND ({leftover_sql(specs)})"
+    return f"made IS NOT NULL AND ({group_sql(key, specs)})"
+
+
+def group_of(made, fd=None, sd=None, specs=None):
+    """
+    Which histogram bar this shown hand belongs to.
+
+    None if the cards were not named -- a preflop row, or a site
+    that hid the hole cards. Other if they were named and still
+    matched nothing, so a new `made` label cannot silently vanish.
+    """
+    if not made:
+        return None
+    drawing = bool(fd or sd)
+    for key, _lab, _w, names, draw in (specs or HIST_SPEC):
+        if made not in names:
+            continue
+        if draw is True and not drawing:
+            continue
+        if draw is False and drawing:
+            continue
+        return key
+    return HIST_OTHER
+
+
+def hist_groups(specs=None, weak=None):
+    """
+    Ordered groups with is_weak applied. Other is not in this list.
+
+    `weak` is an override set of keys -- the flip that changes Weak %
+    without a group editor. None keeps the defaults.
+    """
+    specs = specs or HIST_SPEC
+    out = []
+    for key, label, default, _made, _draw in specs:
+        is_weak = (key in weak) if weak is not None else default
+        out.append({"key": key, "label": label, "is_weak": bool(is_weak),
+                    "sql": group_sql(key, specs)})
+    return out
+
+
+def with_weak(groups, key, on):
+    """A copy with one bar's is_weak flipped. Other is not a group."""
+    out = []
+    for g in groups:
+        row = dict(g)
+        if row["key"] == key:
+            row["is_weak"] = bool(on)
+        out.append(row)
+    return out
+
 
 def parse(text):
     return [card(c) for c in (text or "").split()]
@@ -354,8 +492,58 @@ def check(db_path=DB):
     if wrong:
         fails.append(f"{wrong} known hands classified wrongly")
 
+    # Histogram groups do not need a corpus. They have to pass on a
+    # machine that has not imported yet, the same way query.py's
+    # fixture checks do -- otherwise --check invents a failure that
+    # is really "no hands.db".
+    hist_ok = len(fails)
+    grouped = 0
+    for cards, board, made, kicker, fd, sd in KNOWN:
+        got = group_of(made, fd, sd)
+        if got is None:
+            fails.append(f"{cards} on {board} was shown and grouped None")
+            continue
+        grouped += 1
+        drawing = bool(fd or sd)
+        if made in ("high card", "board pair"):
+            want = "draws" if drawing else "air"
+            if got != want:
+                fails.append(f"{cards} on {board}: group {got}, want {want}")
+        elif made in ("weak pair", "under pair") and got != "weak_pair":
+            fails.append(f"{cards} on {board}: group {got}, want weak_pair")
+    print(f"known hands grouped          {grouped}/{len(KNOWN)}")
+    if group_of(None) is not None:
+        fails.append("ungrouped cards were not None")
+    if group_of("mystery pair") != HIST_OTHER:
+        fails.append("an unknown made label did not fall into Other")
+    weak_made = set()
+    for key, _lab, is_weak, names, _draw in HIST_SPEC:
+        if is_weak:
+            weak_made.update(names)
+    if weak_made != set(WEAK):
+        fails.append(f"default hist weak made {sorted(weak_made)}, "
+                     f"not WEAK {list(WEAK)}")
+    if group_of("top pair", "nut", "oesd") != "top_pair":
+        fails.append("top pair plus a draw left its pair bar")
+    print(f"hist groups / Other / weak   "
+          f"{'yes' if len(fails) == hist_ok else 'NO'}")
+
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- known hands and groups only)")
+        return not fails
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "decisions" not in tables:
+        con.close()
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no decisions -- known hands and groups only)")
+        return not fails
     n = con.execute("SELECT COUNT(*) FROM decisions "
                     "WHERE made IS NOT NULL").fetchone()[0]
     known = con.execute("SELECT COUNT(*) FROM decisions WHERE cards IS NOT NULL "

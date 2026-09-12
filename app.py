@@ -433,6 +433,138 @@ class WinGraph:
             text=f"#{i + 1}  {hid}  {when}   " + "   ".join(bits))
 
 
+class HistWidget:
+    """
+    Postflop hand-value histogram + Weak %.
+
+    One widget, used by Statistics and the Reports study strip.
+    Left-click a bar ANDs `--hist-group` onto the filter the same
+    way a pane row does. Right-click flips that bar's is_weak and
+    recomputes Weak % from the counts already on screen -- a group
+    editor is deferred, but the percentage has to move.
+    """
+
+    def __init__(self, parent, on_click=None, height=150):
+        self.on_click = on_click
+        self.got = None
+        self.message = None
+        self.bars = []
+        self.frame = ttk.Frame(parent)
+        bar = ttk.Frame(self.frame)
+        bar.pack(fill="x", padx=4, pady=(4, 0))
+        ttk.Label(bar, text="hand values", style="Dim.TLabel").pack(
+            side="left")
+        self.weak_lab = ttk.Label(bar, text="Weak  –", style="Dim.TLabel")
+        self.weak_lab.pack(side="left", padx=(12, 0))
+        ttk.Label(bar, text="click a bar to filter · right-click flips weak",
+                  style="Dim.TLabel").pack(side="left", padx=12)
+        self.tip = ttk.Label(self.frame, text="", style="Dim.TLabel")
+        self.tip.pack(anchor="w", padx=8)
+        self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0,
+                                height=height)
+        self.canvas.pack(fill="x")
+        self.canvas.bind("<Configure>", lambda _e: self.draw())
+        self.canvas.bind("<Motion>", self._hover)
+        self.canvas.bind("<Leave>", lambda _e: self.tip.configure(text=""))
+        self.canvas.bind("<Button-1>", self._click)
+        self.canvas.bind("<Button-3>", self._flip)
+
+    def pack(self, **kw):
+        self.frame.pack(**kw)
+
+    def set(self, got, message=None):
+        self.got = got if got and got.get("n") else None
+        self.message = message or (got or {}).get("why") or (
+            "no hand under this filter was ever shown, so there is "
+            "no histogram to draw")
+        if self.got:
+            # A local copy so flipping is_weak does not mutate the
+            # payload the next refresh would redraw from.
+            self.got = dict(self.got)
+            self.got["rows"] = [dict(r) for r in self.got.get("rows") or []]
+        self.draw()
+
+    def draw(self, _message=None):
+        c = self.canvas
+        c.delete("all")
+        self.bars = []
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 50 or h < 40:
+            return
+        if not self.got:
+            c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 40,
+                          justify="center", text=self.message)
+            self.weak_lab.configure(text="Weak  –")
+            return
+        rows = [r for r in self.got["rows"]
+                if r.get("n") or r.get("key") == "other"]
+        seen = self.got.get("n") or 0
+        weak = query.weak_pct_of(self.got["rows"], seen)
+        weak_n = sum(r["n"] for r in self.got["rows"] if r.get("is_weak"))
+        labels = [r["label"] for r in self.got["rows"] if r.get("is_weak")]
+        self.weak_lab.configure(
+            text=f"Weak  {weak:.1f}%  ({weak_n:,} of {seen:,})"
+            if seen else "Weak  –")
+        tagged = ", ".join(labels) or "none"
+        cov = self.got.get("coverage") or {}
+        site_bits = []
+        for s in cov.get("sites") or []:
+            site_bits.append(
+                f"{s.get('site') or '?'}: {s['seen']:,}/{s['total']:,} "
+                f"({s['pct']:.0f}%)")
+        self.tip.configure(
+            text=f"tagged weak: {tagged}"
+                 + (("  ·  " + "  ·  ".join(site_bits)) if site_bits else ""))
+        L, R, T, B = 8, 8, 8, 28
+        n = max(1, len(rows))
+        gap = 4
+        bw = max(8, (w - L - R - gap * (n - 1)) / n)
+        peak = max((r.get("pct") or 0) for r in rows) or 1.0
+        inner = h - T - B
+        for i, r in enumerate(rows):
+            x0 = L + i * (bw + gap)
+            x1 = x0 + bw
+            pct = r.get("pct") or 0.0
+            bh = inner * (pct / peak)
+            y1 = h - B
+            y0 = y1 - bh
+            fill = BAD if r.get("is_weak") else (
+                DIM if r.get("key") == "other" else ACCENT)
+            c.create_rectangle(x0, y0, x1, y1, fill=fill, outline=BG,
+                               tags=("bar", r["key"]))
+            c.create_text((x0 + x1) / 2, h - 12, text=r.get("label") or "",
+                          fill=DIM, font=(UI, 7), angle=0,
+                          width=max(10, bw))
+            self.bars.append((x0, y0, x1, y1, r))
+
+    def _at(self, event):
+        for x0, y0, x1, y1, r in self.bars:
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                return r
+        return None
+
+    def _hover(self, event):
+        r = self._at(event)
+        if not r:
+            return
+        kind = "weak" if r.get("is_weak") else "strong"
+        self.tip.configure(
+            text=f"{r['label']}  {r['pct']:.1f}%  n={r['n']:,}  {kind}  "
+                 f"— click filters · right-click flips weak")
+
+    def _click(self, event):
+        r = self._at(event)
+        if r and self.on_click:
+            self.on_click(r)
+
+    def _flip(self, event):
+        r = self._at(event)
+        if not r or r.get("key") == "other":
+            return
+        r["is_weak"] = not r.get("is_weak")
+        self.draw()
+
+
 class Progress(tk.Toplevel):
     """
     A window that says what the import is doing while it does it.
@@ -705,7 +837,7 @@ class App(ImportMixin, ttk.Frame):
                       "after", "then", "size", "outcome",
                       "players", "live", "stack", "tag",
                       "alias", "vs_alias", "villain_type",
-                      "combo", "action", "result",
+                      "combo", "action", "result", "hist_group",
                       "session", "hours", "start_of_day", "tz",
                       "fmt", "last_sessions", "call_range")}
         self.options = {"sites": [], "stakes": [], "players": []}
@@ -730,6 +862,7 @@ class App(ImportMixin, ttk.Frame):
         self.stat_key = None
         self.stat_kind = "action"
         self.stat_combo = None
+        self.stat_hist_group = None
         self.stat_cells = {}
         self.session_hidden = set()
         self.session_series = None
@@ -992,6 +1125,7 @@ class App(ImportMixin, ttk.Frame):
                             "--vs-class": "villain_type",
                             "--combo": "combo", "--action": "action",
                             "--result": "result",
+                            "--hist-group": "hist_group",
                             "--session": "session", "--hours": "hours",
                             "--start-of-day": "start_of_day",
                             "--tz": "tz",
@@ -1269,6 +1403,9 @@ class App(ImportMixin, ttk.Frame):
         self.stat_canvas.bind("<Configure>",
                               lambda _e: self._draw_stat_chart())
         self.stat_canvas.bind("<Button-1>", self._click_stat_cell)
+        self.stat_hist = HistWidget(right, on_click=self._click_stat_hist,
+                                    height=150)
+        self.stat_hist.pack(fill="x", pady=(4, 0))
         hands = ttk.LabelFrame(right, text="Hands")
         hands.pack(fill="both", expand=True, pady=(6, 0))
         mark = ttk.Frame(hands)
@@ -1323,12 +1460,14 @@ class App(ImportMixin, ttk.Frame):
             return
         self.stat_kind = kind
         self.stat_combo = None
+        self.stat_hist_group = None
         self.refresh()
 
     def _pick_stat(self, key):
         self.stat_key = key
         self.stat_kind = "action"
         self.stat_combo = None
+        self.stat_hist_group = None
         self.refresh()
 
     def _stat_to_reports(self):
@@ -1337,7 +1476,7 @@ class App(ImportMixin, ttk.Frame):
             return
         argv = query.reports_argv(
             self.statistics_argv(), self.stat_key, self.stat_kind,
-            self.stat_combo)
+            self.stat_combo, self.stat_hist_group)
         self.clear_situation()
         # Who/when stay: cash/MTT, dates, last-N. situation_only
         # would drop them and Reports would open a different subject.
@@ -1485,6 +1624,9 @@ class App(ImportMixin, ttk.Frame):
             self._make_pane(grid, name, r, c)
         self.plus_frames = {}
 
+        self.study_hist = HistWidget(parent, on_click=self._click_study_hist,
+                                     height=140)
+        self.study_hist.pack(fill="x", padx=8, pady=(0, 4))
         self.study_graph = WinGraph(parent, unit_var=self.graph_unit,
                                     height=170, compact=True)
         self.study_graph.pack(fill="x", padx=8, pady=(0, 4))
@@ -1600,6 +1742,7 @@ class App(ImportMixin, ttk.Frame):
                            ("combo", "--combo"),
                            ("action", "--action"),
                            ("result", "--result"),
+                           ("hist_group", "--hist-group"),
                            ("session", "--session"),
                            ("hours", "--hours"),
                            ("start_of_day", "--start-of-day"),
@@ -1674,7 +1817,8 @@ class App(ImportMixin, ttk.Frame):
         stat_ctx = None
         if view == "statistics":
             stat_ctx = (bool(self.stat_exclude.get()), self.stat_key,
-                        self.stat_kind, self.stat_combo)
+                        self.stat_kind, self.stat_combo,
+                        self.stat_hist_group)
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
                                self.by.get(), cohort_spec, self.chart_stat(),
@@ -1784,8 +1928,11 @@ class App(ImportMixin, ttk.Frame):
                     detail = sessions.detail_of(con, sid, clock=clock)
                     out["detail"] = detail
             elif view == "statistics":
-                exclude, key, kind, combo = stat_ctx or (False, None, "action",
-                                                         None)
+                exclude, key, kind, combo, hist_group = (
+                    False, None, "action", None, None)
+                if stat_ctx:
+                    exclude, key, kind, combo, hist_group = (
+                        list(stat_ctx) + [None] * 5)[:5]
                 out.update(query.statistics_of(
                     con, where, argv, exclude=exclude))
                 if cohort_spec is not None:
@@ -1807,7 +1954,7 @@ class App(ImportMixin, ttk.Frame):
                     try:
                         drill = query.stat_range_of(
                             con, where, key, kind=kind, exclude=exclude,
-                            combo=combo)
+                            combo=combo, hist_group=hist_group)
                         compact.attach(con, drill.get("hands") or [],
                                        fmt="text")
                         notes.decorate(con, drill.get("hands") or [])
@@ -1852,6 +1999,7 @@ class App(ImportMixin, ttk.Frame):
                     or out.get("compare")
                     or out.get("hands") or out.get("panes")
                     or (out.get("graph") or {}).get("n")
+                    or (out.get("hist") or {}).get("n")
                     or (out.get("sizes") or {}).get("rows")
                     or "clock" in out
                     or out.get("rows") is not None
@@ -2017,12 +2165,14 @@ class App(ImportMixin, ttk.Frame):
             self.stat_title.configure(text=out["drill_error"])
             self.stat_chart = None
             self._draw_stat_chart(out["drill_error"])
+            self.stat_hist.set(None, out["drill_error"])
             self._render_hands(self.stat_hands, {"rows": []})
             return
         if drill:
             self.stat_title.configure(text=drill.get("title") or "")
             self.stat_chart = drill.get("chart")
             self._draw_stat_chart()
+            self.stat_hist.set(drill.get("hist"))
             self._render_hands(self.stat_hands,
                                {"rows": drill.get("hands") or []})
         else:
@@ -2031,6 +2181,7 @@ class App(ImportMixin, ttk.Frame):
                      "the same spot · a cell opens those hands")
             self.stat_chart = None
             self._draw_stat_chart()
+            self.stat_hist.set(None)
             self._render_hands(self.stat_hands, {"rows": []})
 
     def _fill_stat_grid(self, rows):
@@ -2095,8 +2246,21 @@ class App(ImportMixin, ttk.Frame):
         for combo, (x0, y0, x1, y1) in self.stat_cells.items():
             if x0 <= event.x < x1 and y0 <= event.y < y1:
                 self.stat_combo = None if self.stat_combo == combo else combo
+                self.stat_hist_group = None
                 self.refresh()
                 return
+
+    def _click_stat_hist(self, row):
+        if not self.stat_key or not row:
+            return
+        key = row.get("key")
+        self.stat_hist_group = None if self.stat_hist_group == key else key
+        self.refresh()
+
+    def _click_study_hist(self, row):
+        if not row:
+            return
+        self._apply_step(_step_from_row(row))
 
     def _render_study(self, out):
         """Chips, breadcrumb, Smart strip, panes, compact hands."""
@@ -2117,6 +2281,8 @@ class App(ImportMixin, ttk.Frame):
         self._render_hands(self.study_hands, {"rows": out.get("hands") or []})
         self.study_graph.set(out.get("graph"),
                              out.get("why") or out.get("error"))
+        self.study_hist.set(out.get("hist"),
+                            out.get("why") or out.get("error"))
         self._paint_related(out.get("related") or [])
 
     def _paint_crumbs(self):
@@ -3061,6 +3227,7 @@ def _pane_available(name, pane):
         "made": ["label", "n", "freq"],
         "board": ["label", "n", "freq"],
         "combo": ["label", "n", "freq"],
+        "hist": ["label", "n", "freq", "weak"],
     }.get(name, ["label", "n", "freq"])
     # Gear can put VPIP/PFR back on a postflop pack; they stay off
     # until asked because columns_for already dropped them.
@@ -3079,7 +3246,8 @@ def _pane_columns(name, pane, hidden):
     if "label" not in cols:
         cols = ["label"] + cols
     widths = {"label": 140, "n": 70, "freq": 70, "act bb": 70,
-              "hits/opps": 110, "hands": 70, "net": 80, "bb/100": 80}
+              "hits/opps": 110, "hands": 70, "net": 80, "bb/100": 80,
+              "weak": 60}
     anchors = {"label": "w"}
     def n_of(r):
         return r.get("hands") if name == "results" else r.get("n") or r.get("k") or 0
@@ -3092,6 +3260,7 @@ def _pane_columns(name, pane, hidden):
         "hands": lambda r: f"{r.get('hands', r.get('n', 0)):,}",
         "net": lambda r: f"{r.get('net_bb', 0):+.1f}",
         "bb/100": lambda r: f"{r.get('bb100', 0):+.1f}",
+        "weak": lambda r: "weak" if r.get("is_weak") else "",
     }
     for c in pane.get("cols") or []:
         if c not in render:
@@ -4616,10 +4785,12 @@ def check(db_path=DB):
     app.clear_situation()
     app.crumbs = []
     app._apply_argv(["--stack", "80-120", "--action", "call",
-                     "--combo", "Axs", "--result", "won"])
+                     "--combo", "Axs", "--result", "won",
+                     "--hist-group", "air"])
     a, _, _ = query.build(app.argv())
     b, _, _ = query.build(["--stack", "80-120", "--action", "call",
-                           "--combo", "Axs", "--result", "won"])
+                           "--combo", "Axs", "--result", "won",
+                           "--hist-group", "air"])
     same_study = sorted(a.split(" AND ")) == sorted(b.split(" AND "))
     print(f"study flags round-trip        "
           f"{'yes' if same_study else 'NO -- ' + a}")
@@ -4645,6 +4816,23 @@ def check(db_path=DB):
         fails.append("the window has no Statistics tab")
     print(f"statistics tab                "
           f"{'yes' if 'statistics' in app.tabs else 'NO'}")
+    if not hasattr(app, "stat_hist") or not hasattr(app, "study_hist"):
+        fails.append("histogram widget missing on Statistics or Reports")
+    else:
+        blob = {"n": 10, "weak_pct": 50.0, "weak_n": 5, "rows": [
+            {"key": "air", "label": "Air", "n": 5, "pct": 50.0,
+             "is_weak": True, "flag": "--hist-group", "value": "air"},
+            {"key": "other", "label": "Other", "n": 5, "pct": 50.0,
+             "is_weak": False, "flag": "--hist-group", "value": "other"},
+        ], "coverage": {"sites": []}}
+        app.stat_hist.set(blob)
+        air = next(r for r in app.stat_hist.got["rows"] if r["key"] == "air")
+        air["is_weak"] = False
+        moved = query.weak_pct_of(app.stat_hist.got["rows"], 10)
+        if abs(moved - 0.0) > 1e-9:
+            fails.append(f"flipping is_weak left Weak % {moved}, not 0")
+        print(f"histogram Weak % flips        "
+              f"{'yes' if abs(moved - 0.0) <= 1e-9 else 'NO'}")
     app.stat_fmt.set("cash")
     app.stat_last_n.set("10")
     app.stat_exclude.set(True)

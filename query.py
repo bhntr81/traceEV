@@ -15,6 +15,7 @@ Three questions, one filter:
     --results   what the money did in them
     --graph     the official four-line win graph (HTML, or CSV with --csv)
     graph       same as --graph (also: report graph)
+    --hist-postflop  hand-value histogram + Weak % (also: hist-postflop)
 
 and one hand on its own:
 
@@ -51,6 +52,8 @@ money is summed over the hands those decisions happened in.
     python query.py --hero --graph
     python query.py --hero --pot 3bet --graph --csv --out win.csv
     python query.py report graph --hero --unit currency
+    python query.py --street flop --action bet --hist-postflop
+    python query.py hist-postflop --street flop --facing bet
     python query.py --hours 4 --start-of-day 6 --tz acr=-5
     python query.py --marked --hands
     python query.py --tag leak --hands
@@ -129,6 +132,10 @@ VALUE_FLAGS = {
     # narrow hard, and `why_empty` says so rather than leaving an empty
     # table looking like a broken filter.
     "--made": "made IN ({list})",
+    # Histogram bar. `--made` is one label; this is the grouped bar
+    # Weak % is read off -- Air is high card / board pair with no
+    # draw, Draws is those with a draw, Other is the leftover.
+    "--hist-group": None,
     "--kicker": "kicker IN ({list})",
     "--fd": "fd IN ({list})",
     "--sd": "sd IN ({list})",
@@ -252,7 +259,8 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
 # Not filters, and they take no value. OPTIONS skip two tokens
 # (flag + argument). Putting exclude there ate `--hero` and
 # Reports opened without the person -- the check that caught it.
-SKIP = ("--exclude-reg-vs-fish", "--statistics", "--csv")
+SKIP = ("--exclude-reg-vs-fish", "--statistics", "--csv",
+        "--hist-postflop")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -984,7 +992,8 @@ def _canonical(argv):
             v = str(argv[i + 1])
             if "{list}" in (VALUE_FLAGS[a] or "") or a in (
                     "--quick", "--board", "--turn-card", "--river-card",
-                    "--size", "--outcome", "--action", "--result"):
+                    "--size", "--outcome", "--action", "--result",
+                    "--hist-group"):
                 v = ",".join(sorted(x.strip() for x in v.split(",") if x.strip()))
             parts.append((a, v))
             i += 2
@@ -2169,7 +2178,7 @@ STUDY_VS_OR = (
 )
 
 DEFAULT_STUDY_PANES = ("results", "stack", "position", "next")
-PLUS_STUDY_PANES = ("size", "made", "board", "combo")
+PLUS_STUDY_PANES = ("size", "made", "board", "combo", "hist")
 STUDY_PANE_LABELS = {
     "results": "Results",
     "stack": "Stack Sizes",
@@ -2179,6 +2188,7 @@ STUDY_PANE_LABELS = {
     "made": "Flop Hand",
     "board": "Flop Board",
     "combo": "Combos",
+    "hist": "Hand Values",
 }
 
 RANKS = "AKQJT98765432"
@@ -2497,6 +2507,7 @@ def study_of(con, where, argv, panes=None, pin=""):
         "made": lambda: study_made_of(con, where, argv),
         "board": lambda: study_board_of(con, where, argv),
         "combo": lambda: study_combos_of(con, where, argv),
+        "hist": lambda: hist_postflop_of(con, where, argv=argv),
     }
     for name in panes:
         if name in builders:
@@ -2513,6 +2524,13 @@ def study_of(con, where, argv, panes=None, pin=""):
         out["graph"] = graph_of(con, where)
     except sqlite3.Error:
         out["graph"] = None
+    # Same blob the Statistics histogram draws. Always attached so
+    # the strip does not depend on the plus-pane being open, and so
+    # a click is `--hist-group` rather than a second WHERE.
+    try:
+        out["hist"] = hist_postflop_of(con, where, argv=argv)
+    except sqlite3.Error:
+        out["hist"] = None
     hands = matching_hands(con, where, limit=400)
     notes.decorate(con, hands)
     compact.attach(con, hands, fmt="text")
@@ -3179,6 +3197,20 @@ def build(argv):
                     words.append(key)
                 described.append("action " + ", ".join(words))
                 continue
+            if a == "--hist-group":
+                words = []
+                known = [k for k, *_rest in strength.HIST_SPEC] + [
+                    strength.HIST_OTHER]
+                for name in v.split(","):
+                    key = strength.group_key(name)
+                    if key is None:
+                        raise SystemExit(
+                            f"unknown hist group {name!r} -- one of: "
+                            f"{', '.join(known)}")
+                    parts.append("(" + strength.group_filter_sql(key) + ")")
+                    words.append(key)
+                described.append("hist-group " + ", ".join(words))
+                continue
             if a == "--result":
                 words = []
                 for name in v.split(","):
@@ -3464,13 +3496,15 @@ def action_range_sql(stat):
     return f"({st.chance}) AND ({st.action})"
 
 
-def reports_argv(subject_argv, key, kind="action", combo=None):
+def reports_argv(subject_argv, key, kind="action", combo=None,
+                 hist_group=None):
     """
     Open-in-Reports flags for a Statistics click.
 
     Who, date, cash/MTT, last-N stay. The exclude flag does not --
     Reports ignore it, matching H2N. `--villain-type` is already a
-    Reports filter and is not invented here.
+    Reports filter and is not invented here. A histogram bar is
+    `--hist-group`, the same flag a Reports click writes.
     """
     out = list(who_only(subject_argv or []))
     if kind == "call":
@@ -3479,6 +3513,8 @@ def reports_argv(subject_argv, key, kind="action", combo=None):
         out += ["--quick", key]
     if combo:
         out += ["--combo", combo]
+    if hist_group:
+        out += ["--hist-group", hist_group]
     return out
 
 
@@ -3613,10 +3649,12 @@ def statistics_of(con, where, argv=None, exclude=False):
 
 
 def stat_range_of(con, where, key, kind="action", exclude=False,
-                  combo=None, hand_limit=200):
+                  combo=None, hist_group=None, hand_limit=200):
     """
     Click-stat payload: the 13x13 of the hits (or the Call Range),
-    plus compact hands. `kind` is `action` or `call`.
+    the postflop histogram, plus compact hands. `kind` is `action`
+    or `call`. A histogram bar ANDs `--hist-group` onto the drill
+    the same way a combo cell ANDs `--combo`.
     """
     st = BY_KEY.get(key)
     if st is None:
@@ -3633,15 +3671,22 @@ def stat_range_of(con, where, key, kind="action", exclude=False,
         items = ", ".join(q(c) for c in expand_combo(combo))
         drill = f"({drill}) AND combo IN ({items})"
         title = f"{title} · {combo}"
+    if hist_group:
+        gkey = strength.group_key(hist_group)
+        if gkey is None:
+            raise SystemExit(f"unknown hist group {hist_group!r}")
+        drill = f"({drill}) AND ({strength.group_filter_sql(gkey)})"
+        title = f"{title} · {gkey}"
     chart = chart_of(con, drill)
     rng = range_of(con, drill)
+    hist = hist_postflop_of(con, drill)
     hands = matching_hands(con, drill, limit=hand_limit)
     notes.decorate(con, hands)
     return {
         "key": key, "kind": kind, "title": title,
         "combo": combo, "where": drill,
-        "chart": chart, "range": rng, "hands": hands,
-        "reports_argv": reports_argv([], key, kind, combo),
+        "chart": chart, "range": rng, "hist": hist, "hands": hands,
+        "reports_argv": reports_argv([], key, kind, combo, hist_group),
     }
 
 
@@ -3677,6 +3722,8 @@ def show_statistics(con, where, label, argv=None, exclude=False,
                           combo=combo)
     print(f"\n  {drill['title']}")
     show_chart(con, drill["where"], drill["title"])
+    if (drill.get("hist") or {}).get("n"):
+        show_hist_postflop(con, drill["where"], drill["title"])
     compact.attach(con, drill["hands"], fmt="text")
     print(f"  {len(drill['hands']):,} hands  (Open in Reports: "
           f"{' '.join(reports_argv(argv or [], hit, kind, combo))})")
@@ -3908,6 +3955,129 @@ def show_range(con, where, label, parts=()):
           "including folds; ACR shows 23%,")
     print("so an ACR-heavy filter here describes the hands that reached "
           "showdown, which is the stronger half.")
+
+
+def weak_pct_of(rows, seen):
+    """Share of shown hands sitting on bars tagged is_weak."""
+    if not seen:
+        return 0.0
+    weak_n = sum(r["n"] for r in rows if r.get("is_weak"))
+    return 100.0 * weak_n / seen
+
+
+def hist_postflop_of(con, where, groups=None, argv=None):
+    """
+    The postflop hand-value histogram, and how much of it is Weak %.
+
+    Hand2Note's "how often they bluff" readout on a betting range:
+    grouped bars in a fixed order, Other last for leftovers, and a
+    single percentage of the bars tagged `is_weak`. Defaults are
+    Air / Draws / Weak pair -- typically bluffs and semi-bluffs.
+
+    **It is a range of the hands that were SEEN.** Ignition shows
+    every hand including folds; ACR shows 23%. The coverage rides
+    along for the same reason `range_of` prints it: a Weak % drawn
+    from a quarter of a range, presented as the range, is worse
+    than no percentage at all.
+
+    `groups` is the flip surface. Changing one row's `is_weak` and
+    calling again is how Weak % moves without a group editor.
+    """
+    argv = situation_only(list(argv or []))
+    specs = list(groups) if groups is not None else strength.hist_groups()
+    total = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
+    shown = f"({where}) AND made IS NOT NULL"
+    seen = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {shown}").fetchone()[0]
+    rows = []
+    claimed = 0
+    for g in specs:
+        n = 0
+        if seen:
+            n = con.execute(
+                f"SELECT COUNT(*) FROM decisions WHERE {shown} "
+                f"AND ({g['sql']})").fetchone()[0]
+        claimed += n
+        rows.append(_hist_row(g["key"], g["label"], n, seen,
+                              g.get("is_weak"), argv))
+    other_n = max(0, seen - claimed)
+    if seen:
+        # The filter `--hist-group other` uses leftover_sql, so the
+        # bar has to count the same rows or a click would open a
+        # different set than the number beside it.
+        other_sql = con.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE {shown} "
+            f"AND ({strength.leftover_sql()})").fetchone()[0]
+        other_n = other_sql
+    rows.append(_hist_row(strength.HIST_OTHER, "Other", other_n, seen,
+                          False, argv))
+    weak_n = sum(r["n"] for r in rows if r["is_weak"])
+    return {
+        "id": "hist",
+        "title": "Hand Values",
+        "flag": "--hist-group",
+        "rows": rows,
+        "n": seen,
+        "total": total,
+        "weak_n": weak_n,
+        "weak_pct": weak_pct_of(rows, seen),
+        "weak_labels": [r["label"] for r in rows if r["is_weak"]],
+        "coverage": coverage_of(con, where),
+        "note": (
+            "Weak % is the share of the SEEN range in groups tagged "
+            "weak (Air, Draws, Weak pair by default). Ignition shows "
+            "every hand including folds; ACR shows the showdown slice."
+        ),
+    }
+
+
+def _hist_row(key, label, n, seen, is_weak, argv):
+    """One histogram bar, in the shape a study pane click already uses."""
+    _p, lo, hi = wilson(n, seen) if seen else (0.0, 0.0, 0.0)
+    return {
+        "key": key, "label": label, "n": n, "k": n, "hits": n,
+        "opps": seen,
+        # Share of the seen range, not a Wilson centre -- the bars
+        # have to add to 100 or Other looks like a rounding error.
+        "pct": 100.0 * n / seen if seen else 0.0,
+        "band": 100 * (hi - lo) / 2,
+        "is_weak": bool(is_weak),
+        "flag": "--hist-group", "value": key,
+        "argv": list(argv) + ["--hist-group", key],
+        "how": f"--hist-group {key}",
+    }
+
+
+def show_hist_postflop(con, where, label, parts=(), groups=None, argv=None):
+    """The postflop histogram, printed. Always ends with Other."""
+    out = hist_postflop_of(con, where, groups=groups, argv=argv)
+    print(f"\npostflop histogram  {label}")
+    print("=" * (len(label) + 22))
+    if not out["n"]:
+        print("no hand in this filter was ever shown, so there is no "
+              "histogram to draw.")
+        if parts:
+            why = why_empty(con, parts)
+            if why:
+                print(why)
+        return out
+    print(f"{out['n']:,} of {out['total']:,} decisions had cards to read "
+          f"({100 * out['n'] / out['total']:.0f}%)")
+    _print_coverage(out.get("coverage") or coverage_of(con, where))
+    tagged = ", ".join(out["weak_labels"]) or "none"
+    print(f"\n  Weak {out['weak_pct']:5.1f}%   {out['weak_n']:,} of "
+          f"{out['n']:,} shown  -- {tagged}")
+    print()
+    for r in out["rows"]:
+        if r["key"] != strength.HIST_OTHER and not r["n"]:
+            continue
+        bar = "#" * int(round(r["pct"] / 2))
+        print(f"  {r['label']:16} {r['pct']:5.1f}%  {r['n']:6,}  "
+              f"{'weak' if r['is_weak'] else '    '}  {bar}")
+    print()
+    print("  " + out["note"])
+    return out
 
 
 # The 13x13 chart, in the order every range chart has ever been drawn:
@@ -5467,6 +5637,9 @@ def usage():
     print(f"    {'--statistics':14} curated Statistics grid (H2N tab)")
     print(f"    {'--graph':14} four-line win graph (Amount Won, All-in EV, "
           f"W/O SD, at SD)")
+    print(f"    {'--hist-postflop':14} postflop hand-value histogram + Weak %")
+    print(f"    {'--hist-group':14} histogram bar: air, draws, weak_pair, "
+          f"…, other")
     print(f"    {'--csv':14} with --graph: write the series as CSV "
           f"(also: --out file.csv)")
     print(f"    {'--unit':14} bb (default) or currency / $")
@@ -5604,6 +5777,9 @@ def check_shape():
             (["--vs-class", "reg,unknown"],
              "vs_class IN ('reg', 'unknown')"),
             (["--action", "call"], "action IN ('C','A') AND agg = 0"),
+            (["--hist-group", "air"], "high card"),
+            (["--hist-group", "draws"], "fd IS NOT NULL"),
+            (["--hist-group", "other"], "NOT ("),
             (["--result", "won"], "s.net_bb > 0"),
             (["--combo", "Axs"], "A2s"),
             (["--session", "h1"], "session_hands"),
@@ -6866,6 +7042,108 @@ def check_graph():
     return fails
 
 
+def check_hist():
+    """
+    Postflop histogram groups, Weak %, Other, and the bar filter.
+
+    No corpus, no invented EV. Eleven shown hands are enough to
+    prove the partition, the leftover bar, and that flipping
+    is_weak moves the percentage -- the H2N readout this is.
+    """
+    fails = []
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, seat INT, site TEXT, street TEXT, "
+        "made TEXT, fd TEXT, sd TEXT, combo TEXT, action TEXT, agg INT)")
+    # 3 air, 2 draws, 2 weak pair, 3 top pair, 1 leftover.
+    rows = [
+        ("h1", 1, "ignition", "flop", "high card", None, None, "QJo", "B", 1),
+        ("h2", 1, "ignition", "flop", "high card", None, None, "KTo", "B", 1),
+        ("h3", 1, "ignition", "flop", "board pair", None, None, "AKo", "B", 1),
+        ("h4", 1, "ignition", "flop", "high card", "nut", None, "AKs", "B", 1),
+        ("h5", 1, "ignition", "flop", "high card", None, "oesd", "98s", "B", 1),
+        ("h6", 1, "ignition", "flop", "weak pair", None, None, "72o", "B", 1),
+        ("h7", 1, "ignition", "flop", "under pair", None, None, "22", "B", 1),
+        ("h8", 1, "ignition", "flop", "top pair", None, None, "AKs", "B", 1),
+        ("h9", 1, "ignition", "flop", "top pair", "nut", None, "AQs", "B", 1),
+        ("h10", 1, "acr", "flop", "top pair", None, None, "KQs", "B", 1),
+        ("h11", 1, "ignition", "flop", "mystery", None, None, "xx", "B", 1),
+        # Hidden cards -- must not enter the histogram or Weak %.
+        ("h12", 1, "acr", "flop", None, None, None, None, "B", 1),
+    ]
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    got = hist_postflop_of(con, "1=1")
+    by = {r["key"]: r for r in got["rows"]}
+    if got["n"] != 11:
+        fails.append(f"hist seen {got['n']}, not 11 shown hands")
+    if got["total"] != 12:
+        fails.append(f"hist total {got['total']}, not 12 decisions")
+    if by.get("air", {}).get("n") != 3:
+        fails.append(f"air was {by.get('air')}, not 3")
+    if by.get("draws", {}).get("n") != 2:
+        fails.append(f"draws was {by.get('draws')}, not 2")
+    if by.get("weak_pair", {}).get("n") != 2:
+        fails.append(f"weak_pair was {by.get('weak_pair')}, not 2")
+    if by.get("top_pair", {}).get("n") != 3:
+        fails.append(f"top pair was {by.get('top_pair')}, not 3 "
+                     "(the one with a flush draw stays on its pair bar)")
+    if by.get(strength.HIST_OTHER, {}).get("n") != 1:
+        fails.append(f"Other was {by.get(strength.HIST_OTHER)}, not 1")
+    if got["rows"][-1]["key"] != strength.HIST_OTHER:
+        fails.append("Other was not the last bar")
+    if sum(r["n"] for r in got["rows"]) != got["n"]:
+        fails.append("histogram bars do not sum to the seen count")
+    # Default weak = air + draws + weak pair = 7 of 11.
+    if abs(got["weak_pct"] - 100.0 * 7 / 11) > 1e-9:
+        fails.append(f"default Weak % was {got['weak_pct']}, not 7/11")
+    flipped = hist_postflop_of(
+        con, "1=1", groups=strength.with_weak(
+            strength.hist_groups(), "draws", False))
+    if abs(flipped["weak_pct"] - 100.0 * 5 / 11) > 1e-9:
+        fails.append(f"flipping draws off left Weak % {flipped['weak_pct']}, "
+                     "not 5/11")
+    if flipped["weak_pct"] == got["weak_pct"]:
+        fails.append("flipping is_weak did not change Weak %")
+    # Bar click is the same SQL the bar counted.
+    air_w, _, _ = build(["--hist-group", "air"])
+    air_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {air_w}").fetchone()[0]
+    if air_n != 3:
+        fails.append(f"--hist-group air kept {air_n}, not the 3 air bars")
+    other_w, _, _ = build(["--hist-group", "other"])
+    other_n = con.execute(
+        f"SELECT COUNT(*) FROM decisions WHERE {other_w}").fetchone()[0]
+    if other_n != 1:
+        fails.append(f"--hist-group other kept {other_n}, not the leftover")
+    # Coverage names the two sites so an ACR-heavy Weak % cannot
+    # pretend to be the range that arrived.
+    cov = got.get("coverage") or {}
+    sites_seen = {s["site"]: s for s in cov.get("sites") or []}
+    if "ignition" not in sites_seen or "acr" not in sites_seen:
+        fails.append(f"hist coverage missed a site: {list(sites_seen)}")
+    elif sites_seen["acr"]["pct"] > 90:
+        fails.append("ACR coverage read as full -- it hid a hole card")
+    # One aggregator: the study pane and the Statistics drill both
+    # call hist_postflop_of. The plus-pane key is the same blob.
+    if "hist" not in PLUS_STUDY_PANES:
+        fails.append("Hand Values is not a plus pane")
+    if STUDY_PANE_LABELS.get("hist") != "Hand Values":
+        fails.append("hist pane label drifted")
+    # A preflop-only filter has nothing to draw, and must not invent
+    # a Weak % from empty.
+    empty = hist_postflop_of(con, "street = 'preflop'")
+    if empty["n"] or empty["weak_pct"]:
+        fails.append("preflop hist invented a Weak %")
+    con.close()
+    print(f"postflop histogram / Weak %  "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check(db_path=DB):
     """
     Every filter is valid SQL, it filters, and it reaches an index.
@@ -6889,6 +7167,7 @@ def check(db_path=DB):
     fails.extend(check_sessions())
     fails.extend(check_statistics())
     fails.extend(check_graph())
+    fails.extend(check_hist())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -7379,6 +7658,8 @@ def main(argv):
         argv = ["--graph"] + argv[2:]
     elif argv[:1] == ["graph"]:
         argv = ["--graph"] + argv[1:]
+    if argv[:1] == ["hist-postflop"]:
+        argv = ["--hist-postflop"] + argv[1:]
     cohort_spec, argv = players.parse_cohort(argv)
     # `--hit` is click-stat on the command line: the same flag as
     # `--quick`, named the way the research brief names the click.
@@ -7398,7 +7679,7 @@ def main(argv):
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
               "--chart", "--related", "--faced-next", "--next-actions",
-              "--bet-sizes", "--statistics"):
+              "--bet-sizes", "--statistics", "--hist-postflop"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -7638,6 +7919,8 @@ def main(argv):
         show_chain_report(con, where, label, argv, True)
     elif mode == "--bet-sizes":
         show_bet_sizes(con, where, label, argv, _parts)
+    elif mode == "--hist-postflop":
+        show_hist_postflop(con, where, label, _parts, argv=argv)
     elif mode == "--statistics":
         show_statistics(con, where, label, argv, exclude=exclude_reg_vs_fish,
                         hit=stat_hit, kind=stat_kind or "action",

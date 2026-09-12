@@ -228,8 +228,13 @@ every suited ace; `22+`, `pairs`, `broadways` are the same idea.
 The page (`python gui.py`) has the same study view as its default
 tab. Pin, Mark, and Add to Note hit the same backends.
 
+The study strip now carries the postflop **hand-value histogram**
+and its Weak % (Air / Draws / Weak pair by default). Click a bar
+to AND `--hist-group` onto the filter; right-click flips whether
+that group counts as weak. Other is always last, for leftovers.
+
 Not in this cockpit: Detach, multi-profile Save/Open, a board
-editor, weak%. Sessions is the neighbouring tab. Statistics is
+editor. Sessions is the neighbouring tab. Statistics is
 the one after study.
 
 ### Statistics
@@ -252,12 +257,17 @@ a date range, and last N sessions sit on this tab (last-N is
 cash sit-downs; MTT has none and the box is ignored). Cohort
 counts -- how many regs / fish / unknown -- sit above the grid.
 
-Click **3bet** → the 13×13 of those raises. **Call Range** is the
-sibling: same chance, a call instead (Call Open Raise). A cell
-narrows to that combo. Compact hands under the chart; double-click
-replays. **Open in Reports** writes `--quick threebet` (or
-`--call-range threebet`) onto the study tab and keeps who / cash
-/ dates / last-N. It does not take the exclude flag with it.
+Click **3bet** → the 13×13 of those raises. A postflop stat
+(CBet Flop, …) also draws the **hand-value histogram** and Weak %
+— how much of the shown range sits on bars tagged weak. Click a
+bar to keep only that group; right-click flips `is_weak` and the
+percentage moves. **Call Range** is the sibling: same chance, a
+call instead (Call Open Raise). A cell narrows to that combo.
+Compact hands under the chart; double-click replays. **Open in
+Reports** writes `--quick threebet` (or `--call-range threebet`)
+onto the study tab and keeps who / cash / dates / last-N, and a
+clicked histogram bar as `--hist-group`. It does not take the
+exclude flag with it.
 
 **exclude reg-vs-fish** is a Statistics compute flag, not a
 filter. H2N's rebuild toggle: a regular's decision with a fish
@@ -277,7 +287,7 @@ same person.
 `--fmt cash` is everything that is not a tournament (`fmt <>
 'MTT'`). `fmt='RING'` is not a pool; ACR ring is in cash too.
 
-Not this: multi-profile Save/Open, weak%, a board editor, Detach.
+Not this: multi-profile Save/Open, a board editor, Detach.
 
 ### Sessions
 
@@ -716,6 +726,21 @@ that 40% is a hand that cannot call.
 The line between weak and strong is drawn under **middle pair**, and it is
 one list in `strength.WEAK` precisely so that disagreeing with it is a line
 changed rather than an argument.
+
+The **histogram** is the same question grouped into bars, with Weak %
+on top — H2N’s “how often they bluff” readout on a betting range:
+
+```bash
+python query.py --street flop --action bet --hist-postflop
+python query.py hist-postflop --street flop --facing bet
+python query.py --hist-group air --street flop --stats
+```
+
+Air / Draws / Weak pair default to weak. Other is always last and
+catches leftovers (an unexpected `made`). A top pair with a flush
+draw stays on Top pair. Right-clicking a bar (or passing a flipped
+`is_weak` into `hist_postflop_of`) changes Weak %; the classifier
+does not.
 
 **It is the range that was *seen*.** Ignition shows every hand at showdown
 including the folds; ACR shows 23%. So on an ACR-heavy filter this describes
