@@ -958,6 +958,24 @@ inventing EV.
 **Result:** `query.study_of` / `drill_child` is the payload both
 front ends draw. Default panes Results / Stack Sizes / Positions /
 Next Action; breadcrumb capped at 3; `--action`, `--result`, combo
-families. Documented gaps: Sessions, Statistics grid, graphs in
-the cockpit, Detach, Reg-Fish stats exclusion, live `hands.db`,
-window `--check` (needs Tk).
+families. Documented gaps: Sessions (shipped next), Statistics
+grid, graphs in the cockpit, Detach, Reg-Fish stats exclusion,
+live `hands.db`, window `--check` (needs Tk).
+
+## Run — Sessions (H2N study surface)
+
+**Goal:** auto session entities with duration, hand count, Won /
+Won bb, compact hands, mark/note, export, Open in Reports. Today
++ start-of-day hour + per-room HH timezone offset. No HUD, no
+solver, `--check` without a corpus.
+
+**Result:** `sessions.py`. A sit-down is hero cash hands at one
+site, split on a 60-minute gap or a site/hero change. Not in
+`importer.CHAIN`; opponent class is ignored. Ignition is one
+hero stream. The clock is Today / last N hours / a range, with
+the two date footguns named when the window is empty. Window
+tab, page tab, `--session` / `--today` / `--hours` on `query.py`.
+Export is the original HH text or a counted miss. `--facing` is a
+chip so a related-spot click rebuilds the same filter the CLI
+would. Remaining: Chip EV, rakeback, merge/split, live
+`hands.db`. Window `--check` needs Tk.

@@ -37,6 +37,7 @@ CHECKS = [
     ("equity", "the hand evaluator, against published equities"),
     ("compact", "the compact-hand encoding, against fixtures, no corpus"),
     ("notes", "player notes, marks and tags, against a memory store"),
+    ("sessions", "sit-downs: gap/site/hero, Today clock, export, no corpus"),
     ("expr", "expressions over plain stats: Value/Cases/Opps, no corpus"),
     ("aliases", "named account groups, CSV, and the SQL they compile to"),
     ("query", "the filter surface: every filter runs, and every one narrows"),

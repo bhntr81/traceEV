@@ -43,6 +43,9 @@ money is summed over the hands those decisions happened in.
     python query.py --villain-type fish --reg --stats
     python query.py --hero --board mono --results
     python query.py --hero --pot 3bet --hands
+    python query.py --session FIRST_HAND --stats
+    python query.py --today --hero --results
+    python query.py --hours 4 --start-of-day 6 --tz acr=-5
     python query.py --marked --hands
     python query.py --tag leak --hands
     python query.py --hand cp-2459218653 --mark --tag leak
@@ -65,6 +68,7 @@ import expr
 import lines
 import notes
 import players
+import sessions
 import sites
 import stats
 import strength
@@ -127,6 +131,13 @@ VALUE_FLAGS = {
     "--live": "n_live = {n}",
     "--since": "played_at >= {v}",
     "--until": "played_at <= {v}",
+    # A sit-down, not a raw date. `--session` is the first hand of
+    # the cluster `sessions.py` built; `--today` / `--hours` go
+    # through the start-of-day hour and per-room HH offset. Raw
+    # `--since` / `--until` stay literal `played_at` so a saved
+    # report does not move when the clock prefs do.
+    "--session": None,
+    "--hours": None,
     # The shape of the betting rather than one decision in it. Each takes a
     # GLOB pattern over the strings `lines.py` derives, so `--flop "XB*"` is
     # "checked to somebody, who bet, and then anything at all".
@@ -216,7 +227,10 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
-           "--define", "--forget", "--label", "--do", "--per", "--save")
+           "--define", "--forget", "--label", "--do", "--per", "--save",
+           # Clock prefs for `--today` / `--hours`. Not predicates:
+           # they change how those two flags are compiled.
+           "--start-of-day", "--tz")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -666,10 +680,12 @@ def reports_by_family(path=None):
 # you opened it on your own hands, and offer no neighbours.
 WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
                 "--reg", "--fish", "--vs-reg", "--vs-fish",
-                "--with-fish", "--regs-only")
+                "--with-fish", "--regs-only",
+                "--today")
 WHO_VALUES = ("--player", "--vs-player", "--site", "--stake",
               "--since", "--until",
-              "--alias", "--vs-alias", "--villain-type", "--vs-class")
+              "--alias", "--vs-alias", "--villain-type", "--vs-class",
+              "--session", "--hours")
 
 
 def resolve_filter(name, path=None):
@@ -2946,6 +2962,23 @@ def q(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def clock_from_argv(argv):
+    """`--start-of-day` / `--tz` on this command, else `sessions.json`."""
+    start = tz = None
+    i = 0
+    argv = list(argv or [])
+    while i < len(argv):
+        if argv[i] == "--start-of-day" and i + 1 < len(argv):
+            start = argv[i + 1]
+            i += 2
+        elif argv[i] == "--tz" and i + 1 < len(argv):
+            tz = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    return sessions.load_clock(start_of_day=start, tz=tz)
+
+
 def build(argv):
     """
     The command line as one WHERE clause over `decisions`.
@@ -2958,6 +2991,15 @@ def build(argv):
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a == "--today":
+            # Not in SWITCHES: the SQL is the clock, and a machine
+            # whose corpus is last month would fail "selects nothing"
+            # for a filter that is working.
+            clock = clock_from_argv(argv)
+            parts.append("(" + clock.today_sql() + ")")
+            described.append("today")
+            i += 1
+            continue
         if a in SWITCHES:
             parts.append(SWITCHES[a])
             described.append(a.lstrip("-"))
@@ -3115,6 +3157,22 @@ def build(argv):
                     words.append(key)
                 described.append("result " + ", ".join(words))
                 continue
+            if a == "--session":
+                sid = str(v).strip()
+                if not sid:
+                    raise SystemExit("--session needs an id "
+                                     "(the first hand of the sit-down)")
+                parts.append("(" + sessions.session_sql(sid) + ")")
+                described.append("session " + sid)
+                continue
+            if a == "--hours":
+                clock = clock_from_argv(argv)
+                try:
+                    parts.append("(" + clock.hours_sql(v) + ")")
+                except ValueError as e:
+                    raise SystemExit(str(e))
+                described.append(f"last {v} hours")
+                continue
             if a in LINE_FLAGS:
                 # Normalised rather than taken as typed, because the columns
                 # are stored in one case and nobody holds shift for half a
@@ -3231,6 +3289,18 @@ def why_empty(con, parts):
     """
     if not parts:
         return "the database is empty"
+    joined = " ".join(sql for _l, sql in parts)
+    if "session_hands" in joined:
+        # A stale id, or ensure() never ran, looks like an empty
+        # report rather than a sit-down that is not in this database.
+        try:
+            n_sess = con.execute(
+                "SELECT COUNT(*) FROM session_hands").fetchone()[0]
+        except sqlite3.Error:
+            n_sess = 0
+        if not n_sess:
+            return ("no session cache -- sessions.ensure has not run, "
+                    "or there are no hero cash hands")
     count = lambda w: con.execute(
         f"SELECT COUNT(*) FROM decisions WHERE {w}").fetchone()[0]
 
@@ -4732,6 +4802,15 @@ def usage():
     print(f"    {'--action':14} this decision: fold, check, call, bet, raise")
     print(f"    {'--result':14} whole-hand: won, lost, even, showdown, "
           f"no-showdown")
+    print(f"    {'--session':14} one sit-down (id = first hand); "
+          f"see sessions.py")
+    print(f"    {'--today':14} local Today via start-of-day hour "
+          f"and per-room HH timezone offset")
+    print(f"    {'--hours':14} last N hours, same clock")
+    print(f"    {'--start-of-day':14} hour the day begins (0-23), "
+          f"for --today / --hours")
+    print(f"    {'--tz':14} site=hours offset "
+          f"(acr=-5,ignition=0)")
     print(f"    {'--combo':14} AKs, or a family: Axs, Kxo, 22+, pairs, "
           f"broadways")
     print(f"    {'--outcome':14} what the pot did with this bet: "
@@ -4816,6 +4895,10 @@ SCAN_OK = {
         "a whole-hand result is EXISTS onto spots.net_bb / wtsd. "
         "Money is a property of a hand, so there is no prefix on "
         "decisions that can seek it",
+    "--session":
+        "a session is an IN-list of hand ids from session_hands, "
+        "not a prefix of decisions.played_at -- the sit-down is "
+        "clustered, not a date range",
 }
 
 
@@ -4852,7 +4935,10 @@ def check_shape():
              "vs_class IN ('reg', 'unknown')"),
             (["--action", "call"], "action IN ('C','A') AND agg = 0"),
             (["--result", "won"], "s.net_bb > 0"),
-            (["--combo", "Axs"], "A2s")):
+            (["--combo", "Axs"], "A2s"),
+            (["--session", "h1"], "session_hands"),
+            (["--hours", "4"], "played_at"),
+            (["--today"], "played_at")):
         where, _label, _p = build(argv)
         if needle not in where.replace("0.40", "0.4"):
             fails.append(f"{argv} built {where!r}, expected {needle!r}")
@@ -5438,6 +5524,49 @@ def check_study():
     return fails
 
 
+def check_sessions():
+    """
+    `--session` / `--today` / `--hours` compile, and stay on the person.
+
+    No corpus. The cluster itself is `sessions.py --check`; this is
+    the filter half -- a sit-down that compiled to a date range, or
+    that a Smart Report dropped, would empty Reports and look like
+    the session had no hands.
+    """
+    fails = []
+    where, label, _p = build(["--session", "h1"])
+    if "session_hands" not in where or "h1" not in where:
+        fails.append(f"--session compiled to {where!r}")
+    if "session h1" not in label:
+        fails.append(f"--session labelled {label!r}")
+    kept = who_only(["--hero", "--session", "h1", "--street", "flop"])
+    if "--session" not in kept or "h1" not in kept:
+        fails.append("who_only dropped --session")
+    if "--street" in kept:
+        fails.append("who_only kept a situation flag")
+    gone = without_who(["--session", "h1", "--pot", "3bet"])
+    if "--session" in gone:
+        fails.append("without_who kept --session")
+    today, tlabel, _ = build(["--today", "--start-of-day", "6"])
+    if "played_at" not in today or "site = 'acr'" not in today:
+        fails.append(f"--today was not per-site: {today!r}")
+    if tlabel != "today":
+        fails.append(f"--today labelled {tlabel!r}")
+    hours, hlabel, _ = build(["--hours", "4", "--tz", "acr=-3"])
+    if "played_at" not in hours or "last 4 hours" not in hlabel:
+        fails.append(f"--hours compiled to {hours!r} / {hlabel!r}")
+    try:
+        build(["--hours", "0"])
+        fails.append("--hours 0 was accepted")
+    except SystemExit:
+        pass
+    print(f"session / today / hours flags  "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check_fixture():
     """
     Outcome / size / first-in against a hand-built table.
@@ -5764,6 +5893,7 @@ def check(db_path=DB):
     fails.extend(check_cohort())
     fails.extend(check_aliases_filter())
     fails.extend(check_study())
+    fails.extend(check_sessions())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -5772,6 +5902,7 @@ def check(db_path=DB):
               "PASS (no hands.db -- shape and fixture only)")
         return not fails
     con = sqlite3.connect(db)
+    sessions.ensure(con)
     tables = {r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     if "decisions" not in tables:
@@ -5837,6 +5968,12 @@ def check(db_path=DB):
     cases.append(("--player", ["--player", con.execute(
         "SELECT player FROM decisions WHERE player IS NOT NULL LIMIT 1"
     ).fetchone()[0]]))
+    try:
+        sid = con.execute("SELECT id FROM sessions LIMIT 1").fetchone()
+    except sqlite3.Error:
+        sid = None
+    if sid:
+        cases.append(("--session", ["--session", sid[0]]))
 
     for name, argv in cases:
         where, _, _p = build(argv)
@@ -6411,6 +6548,7 @@ def main(argv):
             raise SystemExit(f"no database at {DB} -- load some hands first")
         con = sqlite3.connect(DB)
         notes.attach(con)
+        sessions.ensure(con)
         if cohort_spec is not None:
             _, header, _ = apply_cohort(con, cohort_spec, "1=1")
             show_cohort_banner(header)
@@ -6454,6 +6592,7 @@ def main(argv):
         raise SystemExit(f"no database at {DB} -- load some hands first")
     con = sqlite3.connect(DB)
     notes.attach(con)
+    sessions.ensure(con)
     if cohort_spec is not None:
         where, header, label = apply_cohort(con, cohort_spec, where, label)
         show_cohort_banner(header)
