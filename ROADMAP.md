@@ -997,7 +997,8 @@ n_fish>0)`. Reports / Sessions unchanged. `--villain-type`
 stays a Reports filter. Who-is-Reg is `players.classify` plus
 `player_types.json`; a pin restamps `decisions`. Last-N is
 cash sit-downs (`sessions.last_n_sql`). Deferred: multi-profile
-Save/Open, weak%, board editor, Detach.
+Save/Open, board editor, Detach. Weak % shipped as the
+histogram readout.
 
 ## Run — Win Graph polish
 
@@ -1014,3 +1015,20 @@ and both CLIs draw. Extractors `won` / `all_in_ev` / `won_wos`
 tab, the study strip, and Sessions detail. `--graph --csv` /
 `sessions graph --csv`. Remaining: rakeback overlay, Chip EV,
 Detach, live `hands.db`.
+
+## Run — Weak-hand % on postflop histograms
+
+**Goal:** H2N’s Weak % on postflop hand-value histograms.
+Ordered groups + `is_weak`; Air / Draws / Weak pair default
+weak; Other always last. Statistics + shared Reports widget
++ tooltip; bar-click still filters. CLI `hist-postflop`
+includes `weak_pct`. No HUD, no solver, no group editor,
+no board slices, no Detach. `--check` without inventing EV.
+
+**Result:** `strength.HIST_SPEC` / `group_of` classify a shown
+hand onto a bar. `query.hist_postflop_of` is the one
+aggregator; `--hist-group` is the click. `HistWidget` on
+Statistics and the Reports study strip. Flipping `is_weak`
+moves Weak %. Coverage names Ignition (every hand) vs ACR
+(23%). Remaining: full group editor, board slices, Detach,
+live `hands.db`.
