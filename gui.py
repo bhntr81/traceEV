@@ -34,6 +34,7 @@ import json
 import shlex
 import sqlite3
 import sys
+import tempfile
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -155,6 +156,46 @@ def payload(con, params):
         # in, the grid would be the 3bet hands and every rate a lie.
         argv, _, _, _ = query.take_stat_drill(argv)
     spec, argv = players.parse_cohort(argv)
+    if view == "profiles":
+        return {"profiles": [
+            {"id": p["id"], "name": p["name"]} for p in query.profiles()]}
+    if view == "stat-reports":
+        return {"reports": query.list_stat_reports(),
+                "recent": query.recent_stat_reports()}
+    if view == "save-stat-report":
+        name = (params.get("name", [""])[0] or "").strip()
+        exclude = params.get("exclude_reg_vs_fish", [""])[0] in (
+            "1", "true", "on")
+        profile_id = (params.get("profile", [""])[0] or "").strip() or None
+        try:
+            saved, n, described = query.save_stat_report(
+                name, argv, cohort_spec=spec, exclude=exclude,
+                profile_id=profile_id)
+        except ValueError as e:
+            return {"error": str(e)}
+        return {"ok": True, "name": saved["name"], "n": n,
+                "described": described, "payload": saved,
+                "recent": query.recent_stat_reports()}
+    if view == "open-stat-report":
+        name = (params.get("name", [""])[0] or "").strip()
+        try:
+            saved = query.open_stat_report(name)
+        except ValueError as e:
+            return {"error": str(e)}
+        ctx = query.hydrate_stat_report(saved)
+        return {"ok": True, "payload": saved, "hydrate": {
+            "argv": ctx["argv"],
+            "subject_argv": ctx["subject_argv"],
+            "cohort": players.describe_cohort(ctx["cohort_spec"])
+            if ctx["cohort_spec"] else "",
+            "cohort_predicate": ctx["cohort_predicate"],
+            "fmt": ctx["fmt"],
+            "date_range": ctx["date_range"],
+            "last_n_sessions": ctx["last_n_sessions"],
+            "exclude_reg_vs_fish": ctx["exclude_reg_vs_fish"],
+            "profile_id": ctx["profile_id"],
+            "warnings": ctx["warnings"],
+        }, "recent": query.recent_stat_reports()}
     where, label, parts = query.build(argv)
     notes.attach(con)
     sessions.ensure(con)
@@ -202,7 +243,9 @@ def payload(con, params):
     if view == "statistics":
         exclude = params.get("exclude_reg_vs_fish", [""])[0] in (
             "1", "true", "on")
-        out = query.statistics_of(con, where, argv, exclude=exclude)
+        profile_id = (params.get("profile", [""])[0] or "").strip() or None
+        out = query.statistics_of(con, where, argv, exclude=exclude,
+                                  profile_id=profile_id)
         out["label"] = label
         out["why"] = None if out.get("n") else nothing()
         if spec is not None:
@@ -444,6 +487,9 @@ def options(con):
         "reports": [{"name": n, "family": fam}
                     for fam, names in query.reports_by_family()
                     for n in names],
+        "profiles": [{"id": p["id"], "name": p["name"]}
+                     for p in query.profiles()],
+        "stat_reports": query.list_stat_reports(),
     }
 
 
@@ -676,6 +722,18 @@ body.detached .filter, body.detached #related{display:none}
     <label>last N sessions <input id="last_sessions" placeholder="10"></label>
     <label><input id="exclude_reg_vs_fish" type="checkbox">
       exclude reg-vs-fish (Statistics only)</label>
+    <label>profile
+      <select id="profile">
+        <option value="default">Default</option>
+        <option value="preflop">Preflop</option>
+        <option value="postflop">Postflop</option>
+        <option value="showdown">Showdown</option>
+      </select></label>
+    <label>save report as
+      <input id="stat_report_name" placeholder="regs last 10"></label>
+    <p class="n"><a class="link" id="save_stat_report">Save Report</a>
+      · <a class="link" id="open_stat_report">Open Report</a>
+      · recent <select id="recent_stat_reports"></select></p>
     <label>click-stat
       <input id="stat_key" placeholder="threebet"></label>
     <label>Call Range <input id="call_range" placeholder="threebet"></label>
@@ -818,7 +876,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key','profile']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -864,6 +922,8 @@ function params(){
   if (ex && ex.checked) p.set('exclude_reg_vs_fish', '1');
   const sk = $('#stat_key');
   if (sk && sk.value.trim()) p.set('stat_key', sk.value.trim());
+  const pr = $('#profile');
+  if (pr && pr.value.trim()) p.set('profile', pr.value.trim());
   return p;
 }
 const money = v => `<span class="${v>=0?'pos':'neg'}">${v>=0?'+':''}${
@@ -1042,6 +1102,8 @@ function renderStatistics(d){
       + (d.cohort.players
         ? ` (${d.cohort.regs||0} regs / ${d.cohort.fish||0} fish / ${d.cohort.unknown||0} unknown)`
         : '');
+  if (d.profile) h += ` · profile ${d.profile.name||d.profile_id||''}`;
+  for (const w of (d.warnings||[])) h += ` · warning: ${w}`;
   h += '</p>';
   h += `<p class="n">${d.note||''}</p>`;
   const by = {};
@@ -2020,10 +2082,108 @@ if (DETACH_CH){
     $('#pin').innerHTML = html.replace('>no report<', '>none<');
   }
   $('#sub').textContent = OPT.sites.join(' · ');
+  fillProfiles(OPT.profiles || []);
+  fillRecent(OPT.stat_reports || []);
   hydrateFromURL();
   paintChips();
   load();
 })();
+
+function fillProfiles(items){
+  const el = $('#profile'); if (!el) return;
+  const cur = el.value || 'default';
+  el.innerHTML = (items||[]).map(p =>
+    `<option value="${p.id}"${p.id===cur?' selected':''}>${p.name}</option>`
+  ).join('');
+}
+function fillRecent(items){
+  const el = $('#recent_stat_reports'); if (!el) return;
+  el.innerHTML = '<option value="">recent…</option>'
+    + (items||[]).map(r => `<option>${r.name}</option>`).join('');
+}
+function cohortCompact(pred){
+  if (!pred) return '';
+  const bits = [];
+  for (const pair of (pred.conditions||[])){
+    if (pair[0] === '_expr') bits.push(pair[1]);
+    else bits.push(pair[0] + pair[1]);
+  }
+  if (pred.class) bits.push('class='+pred.class);
+  if (pred.site) bits.push('site='+pred.site);
+  return bits.join(',');
+}
+function applyHydrate(h){
+  if (!h) return;
+  ['hero','pool','reg','fish'].forEach(f => { state.flags[f] = false; });
+  const argv = h.subject_argv || [];
+  for (let i=0;i<argv.length;i++){
+    const a = argv[i];
+    if (a === '--hero') state.flags.hero = true;
+    else if (a === '--pool') state.flags.pool = true;
+    else if (a === '--reg') state.flags.reg = true;
+    else if (a === '--fish') state.flags.fish = true;
+    else if (a === '--player' && argv[i+1]){ $('#player').value = argv[++i]; }
+    else if (a === '--site' && argv[i+1]){ $('#site').value = argv[++i]; }
+    else if (a === '--alias' && argv[i+1]){ $('#alias').value = argv[++i]; }
+  }
+  $('#cohort').value = cohortCompact(h.cohort_predicate);
+  if (h.cohort_predicate && h.cohort_predicate.class)
+    $('#cohort_class').value = h.cohort_predicate.class;
+  $('#fmt').value = h.fmt || 'cash';
+  const dr = h.date_range || {};
+  $('#since').value = dr.since || '';
+  $('#until').value = dr.until || '';
+  $('#last_sessions').value = h.last_n_sessions || '';
+  const ex = $('#exclude_reg_vs_fish');
+  if (ex) ex.checked = !!h.exclude_reg_vs_fish;
+  if ($('#profile')) $('#profile').value = h.profile_id || 'default';
+  if (h.warnings && h.warnings.length) alert(h.warnings.join('\\n'));
+  paintChips();
+  state.view = 'statistics';
+  document.querySelectorAll('#tabs button').forEach(x =>
+    x.classList.toggle('on', x.dataset.v==='statistics'));
+  load();
+}
+const saveBtn = $('#save_stat_report');
+if (saveBtn) saveBtn.onclick = ev => {
+  ev.preventDefault();
+  const name = ($('#stat_report_name').value || '').trim()
+    || prompt('Save Statistics report as');
+  if (!name) return;
+  const p = params();
+  p.set('view', 'save-stat-report');
+  p.set('name', name);
+  fetch('/api?'+p).then(r => r.json()).then(d => {
+    if (d.error){ alert(d.error); return; }
+    fillRecent(d.recent || []);
+    alert(d.n ? ('Saved. '+d.n+' decisions match it today.')
+              : 'Saved -- NOTHING MATCHES. Open will recompute empty.');
+  });
+};
+const openBtn = $('#open_stat_report');
+if (openBtn) openBtn.onclick = ev => {
+  ev.preventDefault();
+  const name = ($('#recent_stat_reports').value || '').trim()
+    || ($('#stat_report_name').value || '').trim()
+    || prompt('Open Statistics report');
+  if (!name) return;
+  fetch('/api?'+new URLSearchParams({view:'open-stat-report', name}))
+    .then(r => r.json()).then(d => {
+      if (d.error){ alert(d.error); return; }
+      fillRecent(d.recent || []);
+      applyHydrate(d.hydrate);
+    });
+};
+const recentSel = $('#recent_stat_reports');
+if (recentSel) recentSel.onchange = () => {
+  const name = recentSel.value.trim();
+  if (!name) return;
+  fetch('/api?'+new URLSearchParams({view:'open-stat-report', name}))
+    .then(r => r.json()).then(d => {
+      if (d.error){ alert(d.error); return; }
+      applyHydrate(d.hydrate);
+    });
+};
 """ + query.GRAPH_WIDGET_JS + """
 </script>
 </html>"""
@@ -2150,6 +2310,34 @@ def check(db_path=DB):
                      "Reports would change with the Statistics toggle")
     print(f"exclude stays off Reports     "
           f"{'yes' if '--exclude-reg-vs-fish' not in leaked else 'NO'}")
+    leaked_p = argv_from({"profile": ["preflop"], "hero": ["1"]})
+    if "--profile" in leaked_p:
+        fails.append("profile leaked into argv_from -- "
+                     "a Profile Menu click would become a filter")
+    print(f"profile stays off Reports     "
+          f"{'yes' if '--profile' not in leaked_p else 'NO'}")
+
+    store = Path(tempfile.mkdtemp()) / "stat_reports.json"
+    was = query.STAT_REPORTS_FILE
+    query.STAT_REPORTS_FILE = store
+    try:
+        saved, _n, _d = query.save_stat_report(
+            "page-roundtrip",
+            argv_from({"hero": ["1"], "fmt": ["cash"],
+                       "last_sessions": ["10"]}),
+            cohort_spec=([("hands", ">=1")], None, "reg", None),
+            exclude=True, profile_id="preflop", path=store,
+            db=Path("no-such.db"))
+        opened = query.open_stat_report("page-roundtrip", path=store)
+        if query.report_identity(saved) != query.report_identity(opened):
+            fails.append("page save→open identity drifted")
+        ctx = query.hydrate_stat_report(opened)
+        if ctx["profile_id"] != "preflop" or not ctx["exclude_reg_vs_fish"]:
+            fails.append("page hydrate dropped profile / exclude")
+    finally:
+        query.STAT_REPORTS_FILE = was
+    print(f"Save→Open identity            "
+          f"{'yes' if not [f for f in fails if 'save→open' in f or 'hydrate dropped' in f] else 'NO'}")
 
     parent = argv_from({"stack": ["80-120"]})
     child = query.drill_child(parent, {"flag": "--action", "value": "call"})

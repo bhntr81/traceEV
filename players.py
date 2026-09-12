@@ -435,6 +435,95 @@ def describe_cohort(spec):
     return ", ".join(said) if said else "every player"
 
 
+def cohort_to_argv(spec):
+    """
+    The flags `parse_cohort` would read back as this spec.
+
+    Save/Open of a Statistics report has to persist the people, not
+    only the heading. Reconstructing the flags here means Open cannot
+    invent a second spelling that `parse_cohort` would refuse.
+    """
+    if spec is None:
+        return []
+    conditions, site, klass, durable = spec
+    argv = ["--cohort"]
+    flags = {"fold_to_threebet": "--fold-to-threebet"}
+    for field, value in conditions:
+        if field == "_expr":
+            argv.append(value)
+            continue
+        argv += [flags.get(field, "--" + field), value]
+    if site:
+        argv += ["--site", site]
+    if klass:
+        argv += ["--class", klass]
+    if durable is not None:
+        argv += ["--durable", str(durable)]
+    return argv
+
+
+def cohort_to_dict(spec):
+    """The cohort as a JSON object. Open reconstitutes the same spec."""
+    if spec is None:
+        return None
+    conditions, site, klass, durable = spec
+    out = {}
+    if conditions:
+        out["conditions"] = [[str(field), str(value)]
+                             for field, value in conditions]
+    if site:
+        out["site"] = str(site)
+    if klass:
+        out["class"] = str(klass)
+    if durable is not None:
+        out["durable"] = int(durable)
+    return out
+
+
+def cohort_from_dict(obj):
+    """
+    Inverse of `cohort_to_dict`. Missing or empty is no cohort.
+
+    A compact string (`vpip>=40,hands>=100`) is accepted so a file
+    written by hand does not have to spell the list-of-pairs form.
+    """
+    if obj in (None, "", {}, []):
+        return None
+    if isinstance(obj, str):
+        extra, site, klass, durable = parse_cohort_expr(obj)
+        return (extra, site, klass, durable)
+    if not isinstance(obj, dict):
+        raise ValueError("cohort_predicate must be an object or a compact string")
+    conditions = []
+    raw = obj.get("conditions") or []
+    if isinstance(raw, str):
+        extra, e_site, e_klass, e_durable = parse_cohort_expr(raw)
+        conditions.extend(extra)
+        site = obj.get("site", e_site)
+        klass = obj.get("class", obj.get("klass", e_klass))
+        durable = obj.get("durable", e_durable)
+    else:
+        for item in raw:
+            if isinstance(item, dict) and item.get("field"):
+                conditions.append((str(item["field"]), str(item.get("value", ""))))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                conditions.append((str(item[0]), str(item[1])))
+        site = obj.get("site") or None
+        klass = obj.get("class") or obj.get("klass") or None
+        durable = obj.get("durable")
+    if durable is not None and durable != "":
+        durable = int(durable)
+    else:
+        durable = None
+    if site in ("", None):
+        site = None
+    if klass in ("", None):
+        klass = None
+    if not conditions and site is None and klass is None and durable is None:
+        return None
+    return (conditions, site, klass, durable)
+
+
 def load_types(path=None):
     """Manual class labels, keyed (site, player). Missing file is none."""
     src = Path(path or TYPES)
@@ -999,6 +1088,22 @@ def check_parse():
             ([("_expr", "Value(3Bet) < 2 and Opps(3Bet) > 100")],
              None, None, None)) != "Value(3Bet) < 2 and Opps(3Bet) > 100":
         fails.append("describe_cohort hid the expression text")
+    # Save/Open of a Statistics report persists this object. A dict
+    # that parse_cohort would refuse, or argv that drifted from the
+    # spec, would reopen a different population and look like the
+    # numbers moved.
+    spec = ([("vpip", ">=40"), ("hands", ">=100")], "acr", "fish", 1)
+    back = cohort_from_dict(cohort_to_dict(spec))
+    if back != spec:
+        fails.append(f"cohort dict round-trip was {back}, not {spec}")
+    again, rest = parse_cohort(cohort_to_argv(spec))
+    if again != spec or rest:
+        fails.append(f"cohort argv round-trip was {again}, {rest}")
+    if cohort_from_dict("vpip>=40,hands>=100")[0] != [
+            ("vpip", ">=40"), ("hands", ">=100")]:
+        fails.append("cohort_from_dict refused a compact string")
+    if cohort_from_dict(None) is not None or cohort_from_dict({}) is not None:
+        fails.append("empty cohort_predicate was not None")
     print(f"the cohort takes only its own flags  "
           f"{len(splits) - len([f for f in fails if 'parse_cohort' in f])}"
           f"/{len(splits)}")

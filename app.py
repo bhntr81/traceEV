@@ -37,6 +37,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -625,6 +626,20 @@ class ImportMixin:
         m.add_command(label="Merge another database…", command=self.import_db)
         bar.add_cascade(label="Import", menu=m)
 
+        r = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                    activebackground=ACCENT, activeforeground=BG)
+        r.add_command(label="Save Statistics Report…",
+                      command=self.save_stat_report)
+        r.add_command(label="Open Statistics Report…",
+                      command=self.open_stat_report)
+        self.recent_menu = tk.Menu(r, tearoff=0, background=PANEL,
+                                   foreground=INK,
+                                   activebackground=ACCENT,
+                                   activeforeground=BG)
+        r.add_cascade(label="Recent", menu=self.recent_menu)
+        bar.add_cascade(label="Report", menu=r)
+        self._refresh_recent_menu()
+
         u = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
         u.add_command(label="Update from GitHub now", command=self.update_now)
@@ -867,6 +882,7 @@ class App(ImportMixin, ttk.Frame):
         self.stat_until = tk.StringVar()
         self.stat_last_n = tk.StringVar()
         self.stat_exclude = tk.BooleanVar(value=False)
+        self.stat_profile = tk.StringVar(value=query.DEFAULT_PROFILE_ID)
         self.stat_key = None
         self.stat_kind = "action"
         self.stat_combo = None
@@ -1375,8 +1391,22 @@ class App(ImportMixin, ttk.Frame):
                         variable=self.stat_exclude,
                         command=self._stat_context_changed).pack(
                             side="left")
+        ttk.Label(bar, text="profile", style="Dim.TLabel").pack(
+            side="left", padx=(14, 4))
+        self.stat_profile_box = ttk.Combobox(
+            bar, state="readonly", width=12)
+        self._fill_profile_menu()
+        self.stat_profile_box.pack(side="left")
+        self.stat_profile_box.bind("<<ComboboxSelected>>",
+                                   lambda _e: self._profile_changed())
         ttk.Button(bar, text="Who is Reg",
                    command=self._who_is_reg).pack(side="left", padx=(12, 0))
+        ttk.Button(bar, text="Save Report",
+                   command=self.save_stat_report).pack(
+                       side="left", padx=(8, 0))
+        ttk.Button(bar, text="Open Report",
+                   command=self.open_stat_report).pack(
+                       side="left", padx=(4, 0))
         ttk.Button(bar, text="Apply",
                    command=self._stat_context_changed).pack(
                        side="left", padx=(8, 0))
@@ -1436,6 +1466,97 @@ class App(ImportMixin, ttk.Frame):
         self.stat_hands.bind("<Button-3>", self._hand_menu)
 
     def _stat_context_changed(self):
+        self.refresh()
+
+    def _fill_profile_menu(self):
+        """Names in the menu, ids on the variable. A raw id is not a label."""
+        items = query.profiles()
+        self._profile_names = {p["id"]: p["name"] for p in items}
+        self._profile_by_name = {p["name"]: p["id"] for p in items}
+        ids = [p["id"] for p in items]
+        if self.stat_profile.get() not in ids:
+            self.stat_profile.set(query.DEFAULT_PROFILE_ID)
+        if hasattr(self, "stat_profile_box"):
+            self.stat_profile_box.configure(values=[p["name"] for p in items])
+            self.stat_profile_box.set(
+                self._profile_names.get(self.stat_profile.get(), "Default"))
+
+    def _profile_changed(self):
+        """
+        Columns only. Subject, cohort, dates, exclude stay where they
+        were -- a dropdown that rebuilt the sample is how a Profile
+        Menu looks broken.
+        """
+        name = ""
+        if hasattr(self, "stat_profile_box"):
+            name = (self.stat_profile_box.get() or "").strip()
+        pid = self._profile_by_name.get(name) or name or query.DEFAULT_PROFILE_ID
+        self.stat_profile.set(pid)
+        self.refresh()
+
+    def save_stat_report(self):
+        SaveStatReportDialog(self)
+
+    def open_stat_report(self):
+        OpenStatReportDialog(self)
+
+    def _refresh_recent_menu(self):
+        menu = getattr(self, "recent_menu", None)
+        if menu is None:
+            return
+        menu.delete(0, "end")
+        rows = query.recent_stat_reports()
+        if not rows:
+            menu.add_command(label="(none yet)", state="disabled")
+            return
+        for row in rows:
+            name = row["name"]
+            menu.add_command(
+                label=name,
+                command=lambda n=name: self.apply_stat_report_name(n))
+
+    def apply_stat_report_name(self, name):
+        try:
+            payload = query.open_stat_report(name)
+        except ValueError as e:
+            messagebox.showerror("Open report", str(e), parent=self)
+            return
+        self.apply_stat_report(payload)
+
+    def apply_stat_report(self, payload):
+        """
+        Hydrate the Statistics bar and recompute. Missing stats warn.
+
+        Who / cohort / dates / exclude / profile come back. Study
+        crumbs stay -- this is not a Smart Report.
+        """
+        ctx = query.hydrate_stat_report(payload)
+        for flag in query.WHO_SWITCHES:
+            if flag in self.flags and flag not in ("--today",):
+                self.flags[flag].set(False)
+        for name in ("player", "alias", "site", "stake", "vs_alias",
+                     "villain_type"):
+            if name in self.vals:
+                self.vals[name].set("")
+        self._apply_argv(ctx["subject_argv"], who=True)
+        self.cohort_spec = ctx["cohort_spec"]
+        self.cohort_btn.configure(
+            text="Players: active" if self.cohort_spec else "Players")
+        self.stat_fmt.set(ctx["fmt"])
+        dates = ctx["date_range"] or {}
+        self.stat_since.set(dates.get("since") or "")
+        self.stat_until.set(dates.get("until") or "")
+        self.stat_last_n.set(ctx["last_n_sessions"] or "")
+        self.stat_exclude.set(bool(ctx["exclude_reg_vs_fish"]))
+        self.stat_profile.set(ctx["profile_id"])
+        self._fill_profile_menu()
+        if ctx["warnings"]:
+            messagebox.showwarning(
+                "Opened with warnings",
+                "\n".join(ctx["warnings"]), parent=self)
+        self._refresh_recent_menu()
+        if "statistics" in self.tabs:
+            self.nb.select(self.tabs["statistics"])
         self.refresh()
 
     def statistics_argv(self):
@@ -1832,7 +1953,7 @@ class App(ImportMixin, ttk.Frame):
         if view == "statistics":
             stat_ctx = (bool(self.stat_exclude.get()), self.stat_key,
                         self.stat_kind, self.stat_combo,
-                        self.stat_hist_group)
+                        self.stat_hist_group, self.stat_profile.get())
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
                                self.by.get(), cohort_spec, self.chart_stat(),
@@ -1942,13 +2063,15 @@ class App(ImportMixin, ttk.Frame):
                     detail = sessions.detail_of(con, sid, clock=clock)
                     out["detail"] = detail
             elif view == "statistics":
-                exclude, key, kind, combo, hist_group = (
-                    False, None, "action", None, None)
+                exclude, key, kind, combo, hist_group, profile_id = (
+                    False, None, "action", None, None,
+                    query.DEFAULT_PROFILE_ID)
                 if stat_ctx:
-                    exclude, key, kind, combo, hist_group = (
-                        list(stat_ctx) + [None] * 5)[:5]
+                    exclude, key, kind, combo, hist_group, profile_id = (
+                        list(stat_ctx) + [None] * 6)[:6]
                 out.update(query.statistics_of(
-                    con, where, argv, exclude=exclude))
+                    con, where, argv, exclude=exclude,
+                    profile_id=profile_id))
                 if cohort_spec is not None:
                     header = {
                         "describe": players.describe_cohort(cohort_spec),
@@ -2172,6 +2295,11 @@ class App(ImportMixin, ttk.Frame):
         if (self.stat_fmt.get() or "") == "mtt" and (
                 self.stat_last_n.get() or "").strip():
             bits.append("last-N is cash sit-downs -- ignored in MTT")
+        if out.get("profile"):
+            bits.append("profile " + (out["profile"].get("name")
+                                      or out.get("profile_id") or ""))
+        for warn in out.get("warnings") or []:
+            bits.append("warning: " + warn)
         self.stat_counts.configure(text="  ·  ".join(bits))
         self._fill_stat_grid(out.get("rows") or [])
         drill = out.get("drill")
@@ -3861,6 +3989,159 @@ class ReportDialog(tk.Toplevel):
         self.destroy()
 
 
+class SaveStatReportDialog(tk.Toplevel):
+    """
+    Persist the Statistics context: who, cohort, dates, profile.
+
+    Not `Save as report`. That one is a situation for the report box.
+    This is the costly multi-player view -- Open reconstitutes it
+    rather than asking you to rebuild a 500-player cohort by hand.
+    """
+
+    def __init__(self, app):
+        super().__init__(app.master)
+        self.app = app
+        self.title("Save Statistics report")
+        self.configure(background=BG)
+        self.geometry("620x380")
+        self.transient(app.master)
+        self.grab_set()
+        self.name = tk.StringVar()
+        payload = query.stat_report_payload(
+            app.statistics_argv(), cohort_spec=app.cohort_spec,
+            exclude=bool(app.stat_exclude.get()),
+            profile_id=app.stat_profile.get())
+        self.payload = payload
+        ttk.Label(self, text="SAVE STATISTICS REPORT",
+                  style="Title.TLabel").pack(anchor="w", padx=24, pady=(22, 4))
+        ttk.Label(self, text="Subject, cohort, dates, exclude, and profile. "
+                             "Not a Smart Report -- those stay in the box.",
+                  style="Dim.TLabel", wraplength=560).pack(
+                      anchor="w", padx=24, pady=(0, 12))
+        bits = [f"subject {payload['subject']['label']}",
+                f"{payload['fmt']}",
+                f"profile {payload['profile_id']}"]
+        if payload.get("cohort_predicate"):
+            bits.append("cohort " + players.describe_cohort(app.cohort_spec))
+        if payload.get("last_n_sessions"):
+            bits.append(f"last {payload['last_n_sessions']} sessions")
+        if payload.get("exclude_reg_vs_fish"):
+            bits.append("exclude reg-vs-fish")
+        ttk.Label(self, text=" · ".join(bits), style="Dim.TLabel",
+                  wraplength=560).pack(anchor="w", padx=24, pady=(0, 16))
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=24, pady=4)
+        ttk.Label(row, text="Name", width=11).pack(side="left")
+        ttk.Entry(row, textvariable=self.name, width=30).pack(side="left")
+        self.result = ttk.Label(self, text="", style="Dim.TLabel",
+                                wraplength=560)
+        self.result.pack(anchor="w", padx=24, pady=(18, 0))
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=24, pady=20, side="bottom")
+        ttk.Button(foot, text="CLOSE", command=self.close).pack(side="right")
+        ttk.Button(foot, text="SAVE", style="Accent.TButton",
+                   command=self.save).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Return>", lambda _e: self.save())
+
+    def save(self):
+        try:
+            _payload, n, _described = query.save_stat_report(
+                self.name.get(), self.app.statistics_argv(),
+                cohort_spec=self.app.cohort_spec,
+                exclude=bool(self.app.stat_exclude.get()),
+                profile_id=self.app.stat_profile.get())
+        except (ValueError, SystemExit) as error:
+            messagebox.showerror("Not a report yet", str(error), parent=self)
+            return
+        self.result.configure(
+            text=(f"Saved. {n:,} decisions match it today." if n else
+                  "Saved -- but NOTHING MATCHES. Open will recompute empty."))
+        self.app._refresh_recent_menu()
+
+    def close(self):
+        self.grab_release()
+        self.destroy()
+
+
+class OpenStatReportDialog(tk.Toplevel):
+    """Pick a saved Statistics report and hydrate the tab."""
+
+    def __init__(self, app):
+        super().__init__(app.master)
+        self.app = app
+        self.title("Open Statistics report")
+        self.configure(background=BG)
+        self.geometry("620x420")
+        self.transient(app.master)
+        self.grab_set()
+        ttk.Label(self, text="OPEN STATISTICS REPORT",
+                  style="Title.TLabel").pack(anchor="w", padx=24, pady=(22, 4))
+        ttk.Label(self, text="Hydrates subject, cohort, dates, exclude, "
+                             "and profile, then recomputes the grid.",
+                  style="Dim.TLabel", wraplength=560).pack(
+                      anchor="w", padx=24, pady=(0, 12))
+        self.pick = ttk.Combobox(self, values=self._names(),
+                                 state="readonly", width=40)
+        self.pick.pack(anchor="w", padx=24, pady=(0, 8))
+        names = self._names()
+        if names:
+            self.pick.set(names[0])
+        self.detail = ttk.Label(self, text="", style="Dim.TLabel",
+                                wraplength=560)
+        self.detail.pack(anchor="w", padx=24, pady=(8, 0))
+        self.pick.bind("<<ComboboxSelected>>", lambda _e: self._preview())
+        self._preview()
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=24, pady=20, side="bottom")
+        ttk.Button(foot, text="FORGET", command=self.forget).pack(side="left")
+        ttk.Button(foot, text="CLOSE", command=self.close).pack(side="right")
+        ttk.Button(foot, text="OPEN", style="Accent.TButton",
+                   command=self.open).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Return>", lambda _e: self.open())
+
+    def _names(self):
+        return [r["name"] for r in query.list_stat_reports()]
+
+    def _preview(self):
+        name = self.pick.get()
+        rows = {r["name"]: r for r in query.list_stat_reports()}
+        row = rows.get(name)
+        if not row:
+            self.detail.configure(text="no saved reports yet")
+            return
+        sub = (row.get("subject") or {}).get("label") or "all"
+        self.detail.configure(
+            text=f"{sub} · {row.get('fmt', 'cash')} · "
+                 f"profile {row.get('profile_id', query.DEFAULT_PROFILE_ID)}")
+
+    def open(self):
+        name = self.pick.get()
+        if not name:
+            return
+        self.app.apply_stat_report_name(name)
+        self.close()
+
+    def forget(self):
+        name = self.pick.get()
+        if not name:
+            return
+        try:
+            query.forget_stat_report(name)
+        except ValueError as error:
+            messagebox.showerror("Cannot forget that", str(error), parent=self)
+            return
+        self.pick.configure(values=self._names())
+        self.pick.set("")
+        self._preview()
+        self.app._refresh_recent_menu()
+
+    def close(self):
+        self.grab_release()
+        self.destroy()
+
+
 class StatDialog(tk.Toplevel):
     """
     The filter on the screen, saved as a stat with a name of its own.
@@ -5025,6 +5306,59 @@ def check(db_path=DB):
         fails.append("Open in Reports dropped last-N sessions")
     print(f"Open in Reports is --quick     "
           f"{'yes' if '--quick' in app.argv() else 'NO'}")
+    # Profile Menu changes columns only. Save/Open reconstitutes
+    # subject + cohort + dates + exclude + profile. A hydrate that
+    # dropped the cohort is the silent failure this exists to catch.
+    if not hasattr(app, "stat_profile") or not hasattr(app, "stat_profile_box"):
+        fails.append("Statistics has no Profile Menu")
+    else:
+        app.stat_fmt.set("cash")
+        app.stat_last_n.set("10")
+        app.stat_exclude.set(True)
+        app.flags["--hero"].set(True)
+        app.cohort_spec = ([("hands", ">=1")], "acr", "reg", None)
+        app.cohort_btn.configure(text="Players: active")
+        before = list(app.statistics_argv())
+        app.stat_profile.set("preflop")
+        after = list(app.statistics_argv())
+        if before != after:
+            fails.append("Profile Menu changed statistics_argv")
+        if "--profile" in app.argv() or "--profile" in after:
+            fails.append("profile leaked into argv -- Reports would change")
+        store = Path(tempfile.mkdtemp()) / "stat_reports.json"
+        was = query.STAT_REPORTS_FILE
+        query.STAT_REPORTS_FILE = store
+        try:
+            payload, _n, _d = query.save_stat_report(
+                "window-roundtrip", app.statistics_argv(),
+                cohort_spec=app.cohort_spec, exclude=True,
+                profile_id="preflop", path=store, db=Path("no-such.db"))
+            app.stat_profile.set("default")
+            app.stat_exclude.set(False)
+            app.stat_last_n.set("")
+            app.flags["--hero"].set(False)
+            app.cohort_spec = None
+            app.apply_stat_report(payload)
+            if not app.flags["--hero"].get():
+                fails.append("Open dropped --hero")
+            if app.stat_profile.get() != "preflop":
+                fails.append("Open dropped the profile")
+            if not app.stat_exclude.get():
+                fails.append("Open dropped exclude")
+            if (app.stat_last_n.get() or "") != "10":
+                fails.append("Open dropped last-N")
+            if app.cohort_spec != ([("hands", ">=1")], "acr", "reg", None):
+                fails.append(f"Open dropped the cohort: {app.cohort_spec}")
+            if (app.stat_fmt.get() or "") != "cash":
+                fails.append("Open dropped cash mode")
+        finally:
+            query.STAT_REPORTS_FILE = was
+        print(f"Profile Menu / Save→Open      "
+              f"{'yes' if not [f for f in fails if 'Profile' in f or 'Open dropped' in f or 'profile leaked' in f] else 'NO'}")
+    app.cohort_spec = None
+    app.cohort_btn.configure(text="Players")
+    app.stat_profile.set(query.DEFAULT_PROFILE_ID)
+    app.stat_exclude.set(False)
     # Cash / last-N are who-context and survive clear_situation.
     # Leave them on the widgets and the custom-builder check
     # below compares unequal for a reason that is not its own.

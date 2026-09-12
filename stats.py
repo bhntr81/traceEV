@@ -29,6 +29,9 @@ Three rules are built in rather than left to whoever reads the output:
     python stats.py --pool                    both pools side by side
     python stats.py --player NAME             one opponent
     python stats.py --check                   agree with spots, PASS or FAIL
+    python stats.py save NAME [filter]        persist a Statistics context
+    python stats.py open NAME                 hydrate and recompute that grid
+    python stats.py list                      saved Statistics reports
 """
 
 import json
@@ -912,6 +915,12 @@ def check(db_path=DB):
 
 
 def main(argv):
+    if argv and argv[0] in ("save", "open", "list", "recent", "forget"):
+        # Same verbs as `query.py stats`. This module is the registry;
+        # the payload lives next to the grid so the two CLIs cannot
+        # drift on what "this report" means.
+        import query
+        return query.stats_cli(argv)
     con = sqlite3.connect(DB)
     if "--list" in argv:
         for s in STATS:

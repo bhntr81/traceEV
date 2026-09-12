@@ -63,7 +63,7 @@ players.py      who each player is: reg, fish, unknown  --check
         v
 stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check
-parity.py       H2N invariants A–H on committed HH    --check
+parity.py       H2N invariants A–I on committed HH    --check
 app.py          desktop study / Statistics / Sessions  --check
 gui.py          the same three surfaces as a page    --check
 expr.py         Value/Cases/Opps over plain stats    --check
@@ -84,6 +84,8 @@ python query.py --player dblj32 --pos BTN --hands
 python query.py --pot 3bet --ip --street river --define river_barrel3 --do bet
 python query.py --site ignition --quick threebet --chart
 python query.py --statistics --fmt cash --exclude-reg-vs-fish
+python query.py stats save "regs last 10" --hero --fmt cash --last-sessions 10
+python query.py stats open "regs last 10"
 ```
 
 ## The database, as it stands

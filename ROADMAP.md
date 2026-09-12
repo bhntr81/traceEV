@@ -1068,3 +1068,24 @@ Tk Toplevel; the page opens a second window of the same
 payload. Live: `_sync_detached` / BroadcastChannel redraw
 from the latest study blob. Cap is four; close frees the
 slot and does not break main. Dock-back deferred.
+
+## Run — Statistics Profile Menu + Save/Open
+
+**Goal:** H2N Profile Menu and Save/Open Report on the
+Statistics tab. `default` curated stat-id list; the menu
+switches columns without dropping subject / cohort. Save
+persists subject + cohort + cash|mtt + dates + last-N +
+exclude_reg_vs_fish + profile. Open hydrates and recomputes;
+missing stats warn/skip. CLI `stats save|open`. Golden
+save→open identity on the fixture corpus. No HUD, no solver,
+no WYSIWYG editor, no dock-back. `--check` without inventing
+EV.
+
+**Result:** `query.profiles` / `stat_report_payload` /
+`hydrate_stat_report`. Built-in Default / Preflop / Postflop /
+Showdown; user extras in `profiles.json`. Reports in
+`stat_reports.json` with a recent list. Profile Menu on the
+Statistics bar; Report menu Save / Open / Recent. `python
+query.py stats save|open|list` and `python stats.py save|open`.
+Parity I: save→open identity on `fixtures/parity/`. Deferred:
+WYSIWYG editor, rakeback, dock-back.
