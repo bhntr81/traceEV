@@ -13,7 +13,8 @@ Three questions, one filter:
     --hands     which hands those were
     --range     what the hands that got there actually were
     --results   what the money did in them
-    --graph     the four-line results graph, written as an HTML file
+    --graph     the official four-line win graph (HTML, or CSV with --csv)
+    graph       same as --graph (also: report graph)
 
 and one hand on its own:
 
@@ -47,6 +48,9 @@ money is summed over the hands those decisions happened in.
     python query.py --statistics --fmt cash --last-sessions 10
     python query.py --statistics --exclude-reg-vs-fish --hit threebet
     python query.py --today --hero --results
+    python query.py --hero --graph
+    python query.py --hero --pot 3bet --graph --csv --out win.csv
+    python query.py report graph --hero --unit currency
     python query.py --hours 4 --start-of-day 6 --tz acr=-5
     python query.py --marked --hands
     python query.py --tag leak --hands
@@ -59,6 +63,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import csv
+import html
 import json
 import re
 import shlex
@@ -239,12 +245,14 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            "--define", "--forget", "--label", "--do", "--per", "--save",
            # Clock prefs for `--today` / `--hours`. Not predicates:
            # they change how those two flags are compiled.
-           "--start-of-day", "--tz")
+           "--start-of-day", "--tz",
+           # Win graph units. Not a filter -- the same hands, in $ or bb.
+           "--unit")
 
 # Not filters, and they take no value. OPTIONS skip two tokens
 # (flag + argument). Putting exclude there ate `--hero` and
 # Reports opened without the person -- the check that caught it.
-SKIP = ("--exclude-reg-vs-fish", "--statistics")
+SKIP = ("--exclude-reg-vs-fish", "--statistics", "--csv")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -2499,6 +2507,12 @@ def study_of(con, where, argv, panes=None, pin=""):
     # Combo-family chips on the Smart strip, even when the Combos pane
     # is off -- Axs has to be one click from unfiltered.
     out["families"] = study_combos_of(con, where, argv)
+    # The same widget the Graph tab and Sessions draw. Inside the
+    # cockpit so a drill reshapes the four lines without changing tabs.
+    try:
+        out["graph"] = graph_of(con, where)
+    except sqlite3.Error:
+        out["graph"] = None
     hands = matching_hands(con, where, limit=400)
     notes.decorate(con, hands)
     compact.attach(con, hands, fmt="text")
@@ -4178,29 +4192,46 @@ def show_related(related, label):
     _print_related(related)
 
 
-# The four lines every tracker draws, and what each one is for.
+# The official Hand2Note four-line win chart, and what each line is for.
 #
-#   green   every big blind won or lost. The bottom line.
-#   blue    the part of it won at showdown.
-#   red     the part won without one -- pots taken by betting.
-#   yellow  green again, with all-in pots scored by what they were worth
-#           rather than by what the deck did afterwards.
+#   green   Amount Won -- every chip won or lost. The headline.
+#   yellow  All-in EV -- green again, with all-in pots scored by what they
+#           were worth rather than by what the deck did afterwards.
+#   red     Won without Showdown -- the "red line". Rising is bluffy
+#           (pots taken by betting); falling is passive.
+#   gray    Won at Showdown -- the rest of Amount Won.
 #
-# Blue and red add up to green exactly: a hand either reached a showdown or
-# it did not. Read apart they say different things -- a winning red line
-# with a losing blue one is somebody who takes pots away and pays off when
-# called, and the reverse is somebody too passive to win without a hand.
+# Red and gray add up to green exactly: a hand either reached a showdown
+# or it did not. A winning red line with a losing gray one is somebody
+# who takes pots away and pays off when called; the reverse is somebody
+# too passive to win without a hand. The keys are H2N's names so a CSV
+# column and a legend chip mean the same thing.
+GRAPH_KEYS = ("won", "all_in_ev", "won_wos", "won_wsd")
 LINES = [
-    ("total", "#22a35a", "every bb won or lost"),
-    ("showdown", "#2f7fd6", "won at showdown"),
-    ("nonshowdown", "#d1443c", "won without a showdown"),
-    ("allin_ev", "#e0b020", "all-in pots at their equity"),
+    ("won", "#22a35a", "Amount Won"),
+    ("all_in_ev", "#e0b020", "All-in EV"),
+    ("won_wos", "#d1443c", "Won without Showdown"),
+    ("won_wsd", "#8b929c", "Won at Showdown"),
 ]
+LINE_COLOUR = {k: c for k, c, _ in LINES}
+LINE_LABEL = {k: why for k, _, why in LINES}
+# Painted in this order so the headline sits on top. Drawing Amount Won
+# first put it under All-in EV, and where the two agree -- which they do
+# exactly when nothing could be adjusted -- the green line vanished and
+# looked missing. Reported as "why is there no green line".
+DRAW_ORDER = ("all_in_ev", "won_wos", "won_wsd", "won")
 
 # A graph is drawn once and looked at; half a point of sampling error on one
 # preflop all-in cannot move a line anybody can see, so preflop runouts are
 # sampled more coarsely here than `equity`'s own default.
 GRAPH_SAMPLES = 2000
+
+
+def graph_unit(unit):
+    """bb or currency. Anything else is bb -- a typo must not invent a third."""
+    if unit in ("currency", "$", "money", "usd"):
+        return "currency"
+    return "bb"
 
 
 def adjusted(con, pairs):
@@ -4212,6 +4243,8 @@ def adjusted(con, pairs):
     left at their actual result and COUNTED, because an EV line that quietly
     drops the hands it cannot price is an EV line about a different set of
     hands than the one beside it.
+
+    Does not invent an EV. Hands that cannot be priced stay at `net_bb`.
     """
     from equity import equity
 
@@ -4229,8 +4262,8 @@ def adjusted(con, pairs):
     fresh = []
 
     rows = con.execute(
-        "SELECT s.hand_id, s.seat, s.played_at, s.net_bb, s.wtsd, s.bb, "
-        "       s.put_in, h.board "
+        "SELECT s.hand_id, s.seat, s.played_at, s.net_bb, s.net, s.won, "
+        "       s.wtsd, s.bb, s.put_in, h.board "
         "FROM spots s JOIN hands h USING(hand_id) JOIN _sel "
         "  ON _sel.hand_id = s.hand_id AND _sel.seat = s.seat "
         "WHERE s.fmt <> 'MTT' AND s.net_bb IS NOT NULL "
@@ -4254,13 +4287,18 @@ def adjusted(con, pairs):
 
     out, adjusted_n, skipped = [], 0, 0
     cache = {}
-    for hid, seat, when, net_bb, wtsd, bb, put_in, board in rows:
+    for hid, seat, when, net_bb, net, won, wtsd, bb, put_in, board in rows:
+        if net is None:
+            net = (won or 0.0) - (put_in or 0.0)
         ev_bb = net_bb
         street = allin_street.get(hid)
         if (hid, seat) in known_ev:
             ev_bb = known_ev[(hid, seat)]
             adjusted_n += 1 if ev_bb != net_bb else 0
-            out.append((when, net_bb, bool(wtsd), ev_bb))
+            out.append({
+                "when": when, "hand_id": hid, "seat": seat,
+                "net_bb": net_bb, "net": net, "wtsd": bool(wtsd),
+                "ev_bb": ev_bb, "bb": bb})
             continue
         if street and street != "river" and bb:
             live = con.execute(
@@ -4287,26 +4325,184 @@ def adjusted(con, pairs):
                     fresh.append((hid, seat, ev_bb))
             else:
                 skipped += 1
-        out.append((when, net_bb, bool(wtsd), ev_bb))
+        out.append({
+            "when": when, "hand_id": hid, "seat": seat,
+            "net_bb": net_bb, "net": net, "wtsd": bool(wtsd),
+            "ev_bb": ev_bb, "bb": bb})
     if fresh:
         con.executemany("INSERT OR REPLACE INTO hand_ev VALUES (?,?,?)", fresh)
         con.commit()
     return out, adjusted_n, skipped
 
 
-def svg(series, label, note, dark=False):
+def point_of(row, unit="bb"):
+    """
+    One hand as the four H2N extractors: won, all_in_ev, won_wos, won_wsd.
+
+    `won_wsd` is the hand's net when it went to showdown, else 0 -- not
+    the `spots.wsd` flag, which is "won money at showdown" and would
+    drop every showdown that lost. `all_in_ev` is the cached equity
+    price when one exists, and the actual result when none does. A
+    check that needs a yellow line different from green has to use a
+    real all-in; inventing one here is how a graph lies.
+    """
+    unit = graph_unit(unit)
+    won = (row.get("net_bb") if unit == "bb" else row.get("net")) or 0.0
+    if unit == "bb":
+        ev = row.get("ev_bb")
+        ev = won if ev is None else ev
+    elif row.get("ev_bb") is None or row.get("ev_bb") == row.get("net_bb"):
+        ev = won
+    else:
+        ev = (row.get("ev_bb") or 0.0) * (row.get("bb") or 0.0)
+    wtsd = bool(row.get("wtsd"))
+    return {
+        "hand_id": row.get("hand_id"),
+        "when": row.get("when"),
+        "won": won,
+        "all_in_ev": ev,
+        "won_wos": 0.0 if wtsd else won,
+        "won_wsd": won if wtsd else 0.0,
+    }
+
+
+def accumulate(points):
+    """Running totals, in hand order. The chart is these four lists."""
+    series = {k: [] for k in GRAPH_KEYS}
+    run = {k: 0.0 for k in GRAPH_KEYS}
+    for p in points:
+        for k in GRAPH_KEYS:
+            run[k] += p[k] or 0.0
+            series[k].append(run[k])
+    return series
+
+
+def series_of(blob):
+    """The four cumulative lists, whichever shape a caller handed us."""
+    if not blob:
+        return {k: [] for k in GRAPH_KEYS}
+    if blob.get("units"):
+        unit = graph_unit(blob.get("unit"))
+        return blob["units"].get(unit) or blob.get("series") or {}
+    if blob.get("series"):
+        return blob["series"]
+    return {k: list(blob[k]) for k in GRAPH_KEYS if isinstance(blob.get(k), list)}
+
+
+def coincident(series, slack=0.5):
+    """
+    Which lines are sitting exactly on top of which, and under what.
+
+    Drawn last wins, so a line that agrees with one painted after it is
+    invisible. Reported rather than nudged apart: two results that are equal
+    are equal, and moving one to prove it exists would be a lie drawn to
+    look like data.
+    """
+    out = {}
+    series = series_of(series) if series and "units" in (series or {}) else (series or {})
+    for i, key in enumerate(DRAW_ORDER):
+        for later in DRAW_ORDER[i + 1:]:
+            a, b = series.get(key), series.get(later)
+            if a and b and len(a) == len(b) and all(
+                    abs(x - y) <= slack for x, y in zip(a, b)):
+                out[key] = later
+                break
+    return out
+
+
+def graph_of(con, where, unit="bb"):
+    """
+    The four-line win graph over the hands this filter selected.
+
+    One function, so Reports, Sessions, the page, and the CSV cannot
+    drift. MTT is out (chips are not dollars). Order is play order,
+    not the list order `--hands` prints (newest first).
+    """
+    unit = graph_unit(unit)
+    empty = {
+        "n": 0, "unit": unit,
+        "series": {k: [] for k in GRAPH_KEYS},
+        "units": {"bb": {k: [] for k in GRAPH_KEYS},
+                  "currency": {k: [] for k in GRAPH_KEYS}},
+        "points": [],
+        "points_by_unit": {"bb": [], "currency": []},
+        "adjusted": 0, "skipped": 0, "note": "",
+        "why": "nothing matches", "ends": {k: 0.0 for k in GRAPH_KEYS},
+    }
+    pairs = matching_seats(con, where)
+    if not pairs:
+        return empty
+    select_into(con, pairs)
+    rows, adj, skipped = adjusted(con, pairs)
+    if len(rows) < 2:
+        empty["n"] = len(rows)
+        empty["why"] = "not enough hands to draw a line"
+        empty["adjusted"] = adj
+        empty["skipped"] = skipped
+        return empty
+    points_bb = [point_of(r, "bb") for r in rows]
+    points_cur = [point_of(r, "currency") for r in rows]
+    units = {"bb": accumulate(points_bb), "currency": accumulate(points_cur)}
+    points = points_bb if unit == "bb" else points_cur
+    note = (f"{len(rows):,} hands  ·  {adj} all-in pots scored at equity"
+            + (f"  ·  {skipped} left unadjusted (side pots or three-handed)"
+               if skipped else ""))
+    return {
+        "n": len(rows),
+        "unit": unit,
+        "series": units[unit],
+        "units": units,
+        "points": points,
+        "points_by_unit": {"bb": points_bb, "currency": points_cur},
+        "adjusted": adj,
+        "skipped": skipped,
+        "note": note,
+        "why": None,
+        "ends": {k: units[unit][k][-1] for k in GRAPH_KEYS},
+    }
+
+
+def write_graph_csv(got, path, label=""):
+    """One row per hand: extractors and their running totals."""
+    unit = graph_unit(got.get("unit"))
+    points = got.get("points") or []
+    series = series_of(got)
+    path = Path(path)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["# win graph", label, "unit=" + unit, got.get("note") or ""])
+        w.writerow(["n", "hand_id", "when",
+                    "won", "all_in_ev", "won_wos", "won_wsd",
+                    "cum_won", "cum_all_in_ev", "cum_won_wos", "cum_won_wsd"])
+        for i, p in enumerate(points):
+            w.writerow([
+                i + 1, p.get("hand_id") or "", p.get("when") or "",
+                p["won"], p["all_in_ev"], p["won_wos"], p["won_wsd"],
+                series["won"][i], series["all_in_ev"][i],
+                series["won_wos"][i], series["won_wsd"][i],
+            ])
+    return str(path.resolve())
+
+
+def svg(series, label="", note="", dark=False, hidden=None, unit="bb"):
     """The four lines as one standalone SVG, no library and no dependency."""
+    hidden = set(hidden or [])
+    if series and "units" in series:
+        unit = graph_unit(series.get("unit") or unit)
+        note = note or series.get("note") or ""
+        series = series_of(series)
+    keys = [k for k in GRAPH_KEYS if k in (series or {}) and k not in hidden]
+    n = max((len(series[k]) for k in keys), default=0) if series else 0
+    if n < 2:
+        return "<p>not enough hands to draw a line</p>"
     W, H, L, R, T, B = 960, 440, 70, 210, 46, 40
     # The line colours read on either ground; everything around them does not.
     ink, grid, dim, paper = (("#d8dbe0", "#2a2f38", "#8b929c", "#14161a")
                              if dark else
                              ("#111111", "#e6e6e3", "#888888", "#fbfbfa"))
-    n = len(series["total"])
-    if n < 2:
-        return "<p>not enough hands to draw a line</p>"
-    lo = min(min(v) for v in series.values())
-    hi = max(max(v) for v in series.values())
-    lo, hi = min(lo, 0.0), max(hi, 0.0)
+    vals = [v for k in keys for v in series[k]]
+    lo = min(vals + [0.0])
+    hi = max(vals + [0.0])
     span = (hi - lo) or 1.0
 
     def x(i):
@@ -4315,8 +4511,11 @@ def svg(series, label, note, dark=False):
     def y(v):
         return T + (H - T - B) * (1 - (v - lo) / span)
 
+    axis = "big blinds" if graph_unit(unit) == "bb" else "currency"
+    covered = coincident(series)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
+        f'class="wingraph-svg" data-n="{n}" '
         f'width="100%" style="max-width:{W}px;font-family:system-ui,sans-serif">',
         f'<rect width="{W}" height="{H}" fill="{paper}"/>',
         f'<text x="{L}" y="24" font-size="15" font-weight="600" fill="{ink}">{label}</text>',
@@ -4333,76 +4532,212 @@ def svg(series, label, note, dark=False):
             f'text-anchor="end">{v:,.0f}</text>')
     parts.append(f'<line x1="{L}" y1="{y(0):.1f}" x2="{W - R}" y2="{y(0):.1f}" '
                  f'stroke="{dim}" stroke-dasharray="3,3"/>')
-    for i, (key, colour, why) in enumerate(LINES):
+    for key in DRAW_ORDER:
+        if key not in keys:
+            continue
         pts = " ".join(f"{x(j):.1f},{y(v):.1f}" for j, v in
                        enumerate(series[key]))
-        parts.append(f'<polyline points="{pts}" fill="none" stroke="{colour}" '
-                     f'stroke-width="1.8"/>')
-        end = series[key][-1]
-        ly = T + 14 + i * 34
         parts.append(
+            f'<polyline class="wg-line" data-key="{key}" points="{pts}" '
+            f'fill="none" stroke="{LINE_COLOUR[key]}" stroke-width="1.8"/>')
+    for i, (key, colour, why) in enumerate(LINES):
+        end = series[key][-1] if series.get(key) else 0.0
+        ly = T + 14 + i * 34
+        faded = ' opacity="0.35"' if key in hidden else ""
+        under = covered.get(key)
+        under_txt = (f' under {LINE_LABEL.get(under, under)}'
+                     if under and key not in hidden else "")
+        parts.append(
+            f'<g class="wg-leg" data-key="{key}" cursor="pointer"{faded}>'
             f'<line x1="{W - R + 6}" y1="{ly - 4}" x2="{W - R + 26}" '
             f'y2="{ly - 4}" stroke="{colour}" stroke-width="2.5"/>'
             f'<text x="{W - R + 32}" y="{ly}" font-size="12" fill="{ink}">'
-            f'{key.replace("_", " ")}  <tspan font-weight="600">{end:+,.0f}'
+            f'{why}  <tspan font-weight="600">{end:+,.0f}'
             f'</tspan></text>'
             f'<text x="{W - R + 32}" y="{ly + 14}" font-size="10" fill="{dim}">'
-            f'{why}</text>')
+            f'click to toggle{under_txt}</text></g>')
     parts.append(f'<text x="{(L + W - R) / 2}" y="{H - 10}" font-size="11" '
                  f'fill="{dim}" text-anchor="middle">{n:,} hands</text>')
     parts.append(f'<text x="{L - 52}" y="{(T + H - B) / 2}" font-size="11" '
                  f'fill="{dim}" transform="rotate(-90 {L - 52} '
-                 f'{(T + H - B) / 2})" text-anchor="middle">big blinds</text>')
+                 f'{(T + H - B) / 2})" text-anchor="middle">{axis}</text>')
+    # Invisible hit strip so a hover can name the hand under the pointer
+    # without the page having to reverse-engineer the viewBox.
+    parts.append(
+        f'<rect class="wg-hit" x="{L}" y="{T}" width="{W - L - R}" '
+        f'height="{H - T - B}" fill="transparent"/>')
+    parts.append(
+        f'<line class="wg-cursor" x1="{L}" y1="{T}" x2="{L}" y2="{H - B}" '
+        f'stroke="{dim}" stroke-dasharray="2,3" visibility="hidden"/>')
     parts.append("</svg>")
     return "\n".join(parts)
 
 
-def show_graph(con, where, label, out_path="graph.html"):
-    """The results graph, over whatever the filter selected."""
-    pairs = matching_seats(con, where)
-    if not pairs:
-        print("nothing matches")
-        return
-    select_into(con, pairs)
-    hands, adj, skipped = adjusted(con, pairs)
-    if len(hands) < 2:
-        print("not enough hands to draw a line")
-        return
+def graph_markup(got, label="", dark=False):
+    """
+    The shared Graph widget as HTML: unit toggle, legend, tooltip.
 
-    series = {k: [] for k, _, _ in LINES}
-    total = sd = nsd = ev = 0.0
-    for _when, net, was_sd, ev_net in hands:
-        total += net or 0.0
-        ev += ev_net or 0.0
-        if was_sd:
-            sd += net or 0.0
-        else:
-            nsd += net or 0.0
-        series["total"].append(total)
-        series["showdown"].append(sd)
-        series["nonshowdown"].append(nsd)
-        series["allin_ev"].append(ev)
+    The page binds this after innerHTML (scripts inserted that way do
+    not run). A file written to disk runs the script itself.
+    """
+    if not got or got.get("why") or got.get("n", 0) < 2:
+        return f"<p class='n'>{(got or {}).get('why') or 'not enough hands to draw a line'}</p>"
+    unit = graph_unit(got.get("unit"))
+    payload = json.dumps({
+        "units": got["units"],
+        "points_by_unit": got.get("points_by_unit") or {},
+        "note": got.get("note") or "",
+        "n": got["n"],
+        "labels": LINE_LABEL,
+        "colours": LINE_COLOUR,
+        "order": list(GRAPH_KEYS),
+        "draw": list(DRAW_ORDER),
+    }, separators=(",", ":"))
+    body = svg(got, label, got.get("note") or "", dark=dark, unit=unit)
+    bb_on = " on" if unit == "bb" else ""
+    cur_on = " on" if unit == "currency" else ""
+    return (
+        f'<div class="wingraph" data-unit="{unit}" '
+        f'data-graph="{html.escape(payload, quote=True)}">'
+        f'<div class="wg-bar">'
+        f'<button type="button" class="wg-unit{bb_on}" data-unit="bb">bb</button>'
+        f'<button type="button" class="wg-unit{cur_on}" data-unit="currency">$</button>'
+        f'<span class="n">  rising red ≈ bluffy · falling ≈ passive'
+        f' · click a name to hide it</span>'
+        f'</div>'
+        f'<div class="wg-tip n" hidden></div>'
+        f'{body}'
+        f'</div>'
+        f'<script>{GRAPH_WIDGET_JS}</script>'
+    )
 
-    note = (f"{len(hands):,} hands  ·  {adj} all-in pots scored at equity"
-            + (f"  ·  {skipped} left unadjusted (side pots or three-handed)"
-               if skipped else ""))
-    body = svg(series, label, note)
+
+# Bound by the page after render, and by a file when it is opened.
+# Keep it small: toggle a line, switch bb/$, name the hand under the pointer.
+GRAPH_WIDGET_JS = r"""
+(function(){
+  function each(sel, fn){ document.querySelectorAll(sel).forEach(fn); }
+  function bind(root){
+    if (!root || root.dataset.bound) return;
+    root.dataset.bound = '1';
+    let hidden = {};
+    const data = JSON.parse(root.dataset.graph || '{}');
+    function unit(){ return root.dataset.unit || 'bb'; }
+    function series(){ return (data.units || {})[unit()] || {}; }
+    function redraw(){
+      const s = series();
+      const keys = (data.order || []).filter(k => !hidden[k] && s[k]);
+      const n = data.n || 0;
+      if (n < 2) return;
+      const svg = root.querySelector('svg');
+      if (!svg) return;
+      const W=960,H=440,L=70,R=210,T=46,B=40;
+      let vals = [];
+      keys.forEach(k => { vals = vals.concat(s[k]); });
+      const lo = Math.min(0, ...(vals.length ? vals : [0]));
+      const hi = Math.max(0, ...(vals.length ? vals : [0]));
+      const span = (hi - lo) || 1;
+      const x = i => L + (W-L-R)*i/Math.max(1,n-1);
+      const y = v => T + (H-T-B)*(1 - (v-lo)/span);
+      each('.wg-line', el => {
+        const k = el.getAttribute('data-key');
+        el.style.display = hidden[k] ? 'none' : '';
+        if (!s[k]) return;
+        el.setAttribute('points', s[k].map((v,i) => x(i).toFixed(1)+','+y(v).toFixed(1)).join(' '));
+      });
+      each('.wg-leg', el => {
+        el.style.opacity = hidden[el.getAttribute('data-key')] ? '0.35' : '1';
+      });
+    }
+    root.querySelectorAll('.wg-unit').forEach(b => {
+      b.onclick = () => {
+        root.dataset.unit = b.dataset.unit;
+        root.querySelectorAll('.wg-unit').forEach(x =>
+          x.classList.toggle('on', x.dataset.unit === b.dataset.unit));
+        redraw();
+      };
+    });
+    root.querySelectorAll('.wg-leg').forEach(g => {
+      g.onclick = () => {
+        const k = g.getAttribute('data-key');
+        hidden[k] = !hidden[k];
+        redraw();
+      };
+    });
+    const tip = root.querySelector('.wg-tip');
+    const cur = root.querySelector('.wg-cursor');
+    const hit = root.querySelector('.wg-hit');
+    if (hit){
+      hit.addEventListener('mousemove', ev => {
+        const svg = root.querySelector('svg');
+        const box = svg.getBoundingClientRect();
+        const vb = svg.viewBox.baseVal;
+        const px = (ev.clientX - box.left) * vb.width / box.width;
+        const L=70,R=210,W=960,n=data.n||0;
+        const t = Math.max(0, Math.min(1, (px-L)/(W-L-R)));
+        const i = Math.round(t * Math.max(0, n-1));
+        const s = series();
+        const pts = (data.points_by_unit || {})[unit()] || [];
+        const p = pts[i] || {};
+        const bits = (data.order || []).map(k => {
+          const lab = (data.labels || {})[k] || k;
+          const v = (s[k] || [])[i];
+          return lab+': '+(v==null ? '–' : ((v>=0?'+':'')+v.toFixed(1)));
+        });
+        if (tip){
+          tip.hidden = false;
+          tip.textContent = '#'+(i+1)+'  '+(p.hand_id||'')+'  '+(p.when||'').slice(0,16)
+            +'  ·  '+bits.join('   ');
+        }
+        if (cur){
+          const x = L + (W-L-R)*i/Math.max(1,n-1);
+          cur.setAttribute('x1', x); cur.setAttribute('x2', x);
+          cur.setAttribute('visibility', 'visible');
+        }
+      });
+      hit.addEventListener('mouseleave', () => {
+        if (tip) tip.hidden = true;
+        if (cur) cur.setAttribute('visibility', 'hidden');
+      });
+    }
+  }
+  document.querySelectorAll('.wingraph').forEach(bind);
+  window.bindWinGraph = bind;
+})();
+"""
+
+
+def show_graph(con, where, label, out_path="graph.html", unit="bb",
+               as_csv=False):
+    """The official four-line win graph, over whatever the filter selected."""
+    got = graph_of(con, where, unit=unit)
+    if got["why"]:
+        print(got["why"] if got["n"] else "nothing matches")
+        return
     path = Path(out_path)
+    want_csv = as_csv or path.suffix.lower() == ".csv"
+    print(f"\nfilter: {label}")
+    print("=" * (len(label) + 8))
+    print(f"  hands              {got['n']:>10,}")
+    suffix = "bb" if got["unit"] == "bb" else "$"
+    for key, _c, why in LINES:
+        print(f"  {why:22} {got['ends'][key]:>+10,.1f} {suffix}")
+    print(f"\n  {got['adjusted']} all-in pots scored at their equity"
+          + (f"; {got['skipped']} left alone (side pots or three-handed)"
+             if got["skipped"] else ""))
+    if want_csv:
+        dest = write_graph_csv(got, path, label)
+        print(f"  written to {dest}")
+        return dest
+    body = graph_markup(got, label, dark=False)
     path.write_text(
         "<!doctype html><meta charset='utf-8'>"
         f"<title>results: {label}</title>"
-        "<body style='margin:24px;background:#fff'>" + body + "</body>",
+        "<style>body{margin:24px;background:#fff;font:14px system-ui,sans-serif}"
+        ".wg-bar{margin:0 0 8px} .wg-unit{margin-right:6px} .wg-unit.on{font-weight:700}"
+        ".wg-tip{min-height:1.2em;margin:0 0 6px}</style>"
+        "<body>" + body + "</body>",
         encoding="utf-8")
-
-    print(f"\nfilter: {label}")
-    print("=" * (len(label) + 8))
-    print(f"  hands              {len(hands):>10,}")
-    for key, _c, why in LINES:
-        print(f"  {key.replace('_', ' '):18} {series[key][-1]:>+10,.1f} bb"
-              f"   {why}")
-    print(f"\n  {adj} all-in pots scored at their equity"
-          + (f"; {skipped} left alone (side pots or three-handed)"
-             if skipped else ""))
     print(f"  written to {path.resolve()}")
     return str(path.resolve())
 
@@ -5130,6 +5465,11 @@ def usage():
     print(f"    {'--call-range':14} same chance as a stat, a call "
           f"(3bet → Call Open Raise)")
     print(f"    {'--statistics':14} curated Statistics grid (H2N tab)")
+    print(f"    {'--graph':14} four-line win graph (Amount Won, All-in EV, "
+          f"W/O SD, at SD)")
+    print(f"    {'--csv':14} with --graph: write the series as CSV "
+          f"(also: --out file.csv)")
+    print(f"    {'--unit':14} bb (default) or currency / $")
     print(f"    {'--exclude-reg-vs-fish':14} Statistics sample only -- "
           f"Reports / Sessions ignore it")
     print(f"    {'--session':14} one sit-down (id = first hand); "
@@ -6375,6 +6715,157 @@ def check_fixture():
     return fails
 
 
+def check_graph():
+    """
+    The four-line win graph, against a fixture, with no invented EV.
+
+    No corpus. Four cash hands and a 3-bet subset are enough to prove
+    the extractors, the cumulative, both units, the red/gray split,
+    and that a CSV last point is the Won summary. All-in EV is left
+    equal to Amount Won because nothing here is an all-in -- a yellow
+    line that differs without a priced pot is a lie.
+    """
+    fails = []
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE hands (hand_id TEXT PRIMARY KEY, board TEXT)")
+    con.executemany("INSERT INTO hands VALUES (?,?)",
+                    [("h1", "Ah Kh 2c"), ("h2", "7c 7d 2h 9s"),
+                     ("h3", "Qs Jh Td"), ("h4", "2c 2d 2h 5s 9c"),
+                     ("m1", "As Ks Qs")])
+    con.execute(
+        "CREATE TABLE spots ("
+        "hand_id TEXT, seat INT, played_at TEXT, fmt TEXT, "
+        "net_bb REAL, net REAL, won REAL, wtsd INT, bb REAL, "
+        "put_in REAL, cards TEXT, folded_on TEXT, "
+        "saw_flop INT, wwsf INT)")
+    # Play order: two single-raised, two 3-bet, one MTT that must drop.
+    # bb = 0.50 so currency is half of bb. No all-in anywhere.
+    spots = [
+        ("h1", 1, "2026-09-01 12:00:00", "RING", 10.0, 5.0, 8.0, 0, 0.5, 3.0,
+         "Ac Kd", None, 1, 1),
+        ("h2", 1, "2026-09-01 12:01:00", "RING", -4.0, -2.0, 0.0, 1, 0.5, 2.0,
+         "7h 6h", None, 1, 0),
+        ("h3", 1, "2026-09-01 12:02:00", "RING", 20.0, 10.0, 16.0, 0, 0.5, 6.0,
+         "Ah Ad", None, 1, 1),
+        ("h4", 1, "2026-09-01 12:03:00", "RING", -8.0, -4.0, 0.0, 1, 0.5, 4.0,
+         "9c 8c", None, 1, 0),
+        ("m1", 1, "2026-09-01 12:04:00", "MTT", 50.0, 50.0, 80.0, 0, 1.0, 30.0,
+         "As Ks", None, 1, 1),
+    ]
+    con.executemany(
+        "INSERT INTO spots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", spots)
+    con.execute(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, seat INT, n INT, street TEXT, allin INT, "
+        "pot_type TEXT, is_hero INT)")
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?)",
+        [("h1", 1, 1, "flop", 0, "raised", 1),
+         ("h2", 1, 1, "flop", 0, "raised", 1),
+         ("h3", 1, 1, "preflop", 0, "3bet", 1),
+         ("h4", 1, 1, "flop", 0, "3bet", 1),
+         ("m1", 1, 1, "flop", 0, "raised", 1)])
+
+    def trip(name, ok):
+        if not ok:
+            fails.append(name)
+        return ok
+
+    where, _, _ = build(["--hero"])
+    got = graph_of(con, where, unit="bb")
+    trip("unfiltered draws four cash hands, MTT out",
+         got["n"] == 4 and got["why"] is None)
+    trip("Amount Won last point is the Won summary in bb",
+         abs(got["ends"]["won"] - 18.0) < 1e-9)
+    trip("red + gray = green at every hand",
+         all(abs(got["series"]["won"][i]
+                 - got["series"]["won_wos"][i]
+                 - got["series"]["won_wsd"][i]) < 1e-9
+             for i in range(got["n"])))
+    trip("red line is W/O SD only (10, 10, 30, 30)",
+         [round(v, 6) for v in got["series"]["won_wos"]] == [10, 10, 30, 30])
+    trip("gray line is at-SD only (0, -4, -4, -12)",
+         [round(v, 6) for v in got["series"]["won_wsd"]] == [0, -4, -4, -12])
+    trip("no all-in: All-in EV equals Amount Won -- EV was not invented",
+         got["series"]["all_in_ev"] == got["series"]["won"]
+         and got["adjusted"] == 0)
+    trip("hand order is play order, not newest-first",
+         [p["hand_id"] for p in got["points"]] == ["h1", "h2", "h3", "h4"])
+
+    cash = graph_of(con, where, unit="currency")
+    trip("currency last point is the Won summary in dollars",
+         abs(cash["ends"]["won"] - 9.0) < 1e-9)
+    trip("bb and $ are the same hands, scaled",
+         cash["n"] == got["n"]
+         and [p["hand_id"] for p in cash["points"]]
+         == [p["hand_id"] for p in got["points"]])
+
+    three_w, _, _ = build(["--hero", "--pot", "3bet"])
+    three = graph_of(con, three_w, unit="bb")
+    trip("3-bet filter reshapes to the two 3-bet hands",
+         three["n"] == 2
+         and [p["hand_id"] for p in three["points"]] == ["h3", "h4"])
+    trip("3-bet Amount Won is +12 bb, not the unfiltered +18",
+         abs(three["ends"]["won"] - 12.0) < 1e-9)
+    trip("3-bet red line is W/O SD of those hands only",
+         [round(v, 6) for v in three["series"]["won_wos"]] == [20, 20])
+
+    pairs = matching_seats(con, where)
+    won = results_of(con, pairs)
+    trip("CSV / graph Amount Won ties results_of net_bb",
+         won and abs(got["ends"]["won"] - won["net_bb"]) < 1e-9)
+    trip("currency Amount Won ties results_of money",
+         won and abs(cash["ends"]["won"] - won["money"]) < 1e-9)
+
+    scratch = Path(tempfile.mkdtemp()) / "win.csv"
+    dest = write_graph_csv(got, scratch, "fixture")
+    text = Path(dest).read_text(encoding="utf-8")
+    last = [ln for ln in text.splitlines() if ln and not ln.startswith("#")][-1]
+    trip("CSV last cum_won is the Won summary",
+         last.split(",")[7] == "18.0" or abs(float(last.split(",")[7]) - 18) < 1e-9)
+    trip("CSV names the four extractors",
+         "won,all_in_ev,won_wos,won_wsd" in text)
+
+    p = point_of({"hand_id": "x", "when": "t", "net_bb": 3, "net": 1.5,
+                  "wtsd": 0, "ev_bb": 3, "bb": 0.5}, "bb")
+    trip("extractor won_wos takes the whole net when no showdown",
+         p["won"] == 3 and p["won_wos"] == 3 and p["won_wsd"] == 0)
+    p = point_of({"hand_id": "x", "when": "t", "net_bb": -2, "net": -1,
+                  "wtsd": 1, "ev_bb": -2, "bb": 0.5}, "bb")
+    trip("extractor won_wsd takes the whole net at showdown",
+         p["won"] == -2 and p["won_wos"] == 0 and p["won_wsd"] == -2)
+
+    empty = graph_of(con, "1=0")
+    trip("empty filter returns why, not a crash",
+         empty["n"] == 0 and empty["why"] == "nothing matches")
+    csv_w, _, _ = build(["--csv", "--unit", "currency", "--hero"])
+    trip("--csv / --unit are not filters and do not eat --hero",
+         "is_hero = 1" in csv_w)
+
+    one_w = "hand_id = 'h1'"
+    one = graph_of(con, one_w)
+    trip("one hand is not a line",
+         one["n"] == 1 and "not enough" in (one["why"] or ""))
+
+    markup = graph_markup(got, "fixture")
+    trip("shared widget names the four official lines",
+         "Amount Won" in markup and "All-in EV" in markup
+         and "Won without Showdown" in markup
+         and "Won at Showdown" in markup)
+    trip("showdown is gray, not the old blue",
+         "#8b929c" in markup and "#2f7fd6" not in markup)
+    trip("widget carries both units so the toggle does not recompute",
+         '"bb"' in markup and '"currency"' in markup)
+
+    print(f"win graph extractors / CSV   "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    con.close()
+    return fails
+
+
 def check(db_path=DB):
     """
     Every filter is valid SQL, it filters, and it reaches an index.
@@ -6397,6 +6888,7 @@ def check(db_path=DB):
     fails.extend(check_study())
     fails.extend(check_sessions())
     fails.extend(check_statistics())
+    fails.extend(check_graph())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
@@ -6555,6 +7047,12 @@ def check(db_path=DB):
                 fn(con, empty, "empty")
         except Exception as e:
             fails.append(f"--{mode} on an empty filter: {e}")
+    try:
+        empty_graph = graph_of(con, empty)
+        if empty_graph.get("n"):
+            fails.append("--graph on an empty filter drew hands")
+    except Exception as e:
+        fails.append(f"--graph on an empty filter: {e}")
     # The all-in EV line has to actually adjust something. It looked right
     # for weeks while doing almost nothing: the query that found all-in
     # hands required the all-in to be the hand's LAST action, and a shove is
@@ -6566,7 +7064,7 @@ def check(db_path=DB):
     if pairs:
         select_into(con, pairs)
         rows, priced, _skipped = adjusted(con, pairs)
-        gap = sum(r[3] for r in rows) - sum(r[1] for r in rows)
+        gap = sum(r["ev_bb"] or 0 for r in rows) - sum(r["net_bb"] or 0 for r in rows)
         qualify = con.execute(
             "SELECT COUNT(*) FROM (SELECT d.hand_id FROM decisions d "
             "WHERE d.allin = 1 AND d.n = (SELECT MAX(n) FROM decisions x "
@@ -6874,6 +7372,13 @@ def main(argv):
         return 0
     if "--check" in argv:
         return 0 if check() else 1
+    # `graph` / `report graph` are the same verb as `--graph`. Sessions
+    # already speaks this way; a second spelling that wrote HTML only
+    # would look like the CSV flag did nothing.
+    if argv[:2] == ["report", "graph"]:
+        argv = ["--graph"] + argv[2:]
+    elif argv[:1] == ["graph"]:
+        argv = ["--graph"] + argv[1:]
     cohort_spec, argv = players.parse_cohort(argv)
     # `--hit` is click-stat on the command line: the same flag as
     # `--quick`, named the way the research brief names the click.
@@ -7107,7 +7612,11 @@ def main(argv):
         where, header, label = apply_cohort(con, cohort_spec, where, label)
         show_cohort_banner(header)
     if mode == "--graph":
-        show_graph(con, where, label, opt("--out", "graph.html"))
+        as_csv = "--csv" in argv
+        dest = opt("--out", "graph.csv" if as_csv else "graph.html")
+        show_graph(con, where, label, dest,
+                   unit=opt("--unit", "bb"),
+                   as_csv=as_csv or dest.lower().endswith(".csv"))
     elif mode == "--hands":
         show_hands(con, where, label, parts=_parts)
     elif mode == "--range":

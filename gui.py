@@ -248,6 +248,9 @@ def payload(con, params):
         out["label"] = label
         out["why"] = None if (out.get("hands") or out.get("panes")) else nothing()
         out["crumbs"] = crumbs
+        if out.get("graph") and out["graph"].get("n", 0) >= 2:
+            out["graph_markup"] = query.graph_markup(
+                out["graph"], label, dark=True)
         return out
 
     if view == "stats":
@@ -411,30 +414,12 @@ def payload(con, params):
         return {"hand": d}
 
     if view == "graph":
-        pairs = query.matching_seats(con, where)
-        if len(pairs) < 2:
-            return {"label": label, "svg": None, "why": nothing()}
-        query.select_into(con, pairs)
-        hands, adj, skipped = query.adjusted(con, pairs)
-        if len(hands) < 2:
-            return {"label": label, "svg": None}
-        series = {k: [] for k, _, _ in query.LINES}
-        total = sd = nsd = ev = 0.0
-        for _when, net, was_sd, ev_net in hands:
-            total += net or 0.0
-            ev += ev_net or 0.0
-            if was_sd:
-                sd += net or 0.0
-            else:
-                nsd += net or 0.0
-            series["total"].append(total)
-            series["showdown"].append(sd)
-            series["nonshowdown"].append(nsd)
-            series["allin_ev"].append(ev)
-        note = (f"{len(hands):,} hands  ·  {adj} all-in pots scored at equity"
-                + (f"  ·  {skipped} unadjusted" if skipped else ""))
-        return {"label": label,
-                "svg": query.svg(series, label, note, dark=True)}
+        got = query.graph_of(con, where)
+        if got.get("why") or got.get("n", 0) < 2:
+            return {"label": label, "svg": None, "graph": got,
+                    "why": got.get("why") or nothing()}
+        return {"label": label, "graph": got,
+                "svg": query.graph_markup(got, label, dark=True)}
 
     return {"error": f"unknown view {view}"}
 
@@ -550,6 +535,12 @@ td.compact{text-align:left;font-weight:500}
 .chartcell{display:inline-block;width:36px;height:36px;margin:1px;
   font-size:9px;text-align:center;line-height:11px;vertical-align:top;
   cursor:pointer;border:0;color:var(--ink)}
+.wingraph{margin:0 0 12px}
+.wg-bar{margin:0 0 6px}
+.wg-unit{margin-right:6px;background:var(--panel);border:1px solid var(--edge);
+  color:var(--dim);border-radius:4px;cursor:pointer;font:inherit;padding:2px 8px}
+.wg-unit.on{color:var(--ink);border-color:var(--accent);font-weight:700}
+.wg-tip{min-height:1.2em;margin:0 0 6px}
 </style>
 <header>
   <h1>poker_analysis</h1>
@@ -1120,7 +1111,8 @@ function renderSessions(d){
       + ` · Won ${money(s.Won)} · Won bb ${money(s['Won bb'])}</p>`
       + `<p><a class="link" id="openrep">Open in Reports</a>`
       + ` · <a class="link" id="expsess">Export session hands</a></p>`;
-    if (det.svg) h += det.svg;
+    if (det.markup) h += det.markup;
+    else if (det.svg) h += det.svg;
     else if (det.why_graph) h += `<p class="n">${det.why_graph}</p>`;
     h += renderStudyHands(det.hands || []);
   } else {
@@ -1128,6 +1120,8 @@ function renderSessions(d){
       + 'and Open in Reports.</p>';
   }
   $('#out').innerHTML = h;
+  if (window.bindWinGraph)
+    $('#out').querySelectorAll('.wingraph').forEach(window.bindWinGraph);
   $('#out').querySelectorAll('tr[data-sid]').forEach(tr => {
     tr.onclick = () => { state.sessionId = tr.dataset.sid; load(); };
   });
@@ -1187,6 +1181,9 @@ function renderStudy(d){
     + '<p class="n">+ pane <select id="plus">'+plus+'</select>'
     + '  click a row to drill · right-click a hand</p>'
     + panes
+    + (d.graph && d.graph.n >= 2
+        ? (d.graph_markup || '')
+        : '')
     + renderStudyHands(d.hands||[]);
   $('#out').innerHTML = h;
   $('#out').querySelectorAll('.crumbs a').forEach(a => {
@@ -1242,6 +1239,8 @@ function renderStudy(d){
     };
   });
   bindHandRows(d);
+  if (window.bindWinGraph)
+    $('#out').querySelectorAll('.wingraph').forEach(window.bindWinGraph);
 }
 function renderPane(name, pane){
   const title = {results:'Results',stack:'Stack Sizes',position:'Positions',
@@ -1698,7 +1697,9 @@ function render(d){
     }
 
   } else if (state.view === 'graph'){
-    out.innerHTML = d.svg || nope('not enough hands to draw a line');
+    out.innerHTML = d.svg || nope(d.why || 'not enough hands to draw a line');
+    if (window.bindWinGraph)
+      out.querySelectorAll('.wingraph').forEach(window.bindWinGraph);
 
   } else {
     if (!d.rows.length){ out.innerHTML = nope(); return; }
@@ -1831,6 +1832,7 @@ async function load(){
   paintChips();
   load();
 })();
+""" + query.GRAPH_WIDGET_JS + """
 </script>
 </html>"""
 

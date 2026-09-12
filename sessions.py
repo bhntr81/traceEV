@@ -11,6 +11,7 @@ the four-line graph, compact hands, mark/note, and export.
     python sessions.py --show ID       one session: summary, graph, hands
     python sessions.py --export-hands ID --out session.txt
     python sessions.py --graph ID
+    python sessions.py graph ID --csv --out session-graph.csv
     python sessions.py --today
     python sessions.py --hours 4
     python sessions.py --since 2026-09-01 --until 2026-09-02
@@ -605,34 +606,17 @@ def as_row(session):
     }
 
 
-def series_of(con, session):
+def series_of(con, session, unit="bb"):
     """The four-line graph over this session's hero seats. Reuses query."""
     import query
     where = f"is_hero = 1 AND ({session_sql(session.id)})"
-    pairs = query.matching_seats(con, where)
-    if len(pairs) < 2:
+    try:
+        got = query.graph_of(con, where, unit=unit)
+    except Exception:
         return None, "not enough hands to draw a line"
-    query.select_into(con, pairs)
-    hands, adj, skipped = query.adjusted(con, pairs)
-    if len(hands) < 2:
-        return None, "not enough hands to draw a line"
-    series = {k: [] for k, _, _ in query.LINES}
-    total = sd = nsd = ev = 0.0
-    for _when, net, was_sd, ev_net in hands:
-        total += net or 0.0
-        ev += ev_net or 0.0
-        if was_sd:
-            sd += net or 0.0
-        else:
-            nsd += net or 0.0
-        series["total"].append(total)
-        series["showdown"].append(sd)
-        series["nonshowdown"].append(nsd)
-        series["allin_ev"].append(ev)
-    series["_note"] = (
-        f"{len(hands):,} hands · {adj} all-in pots at equity"
-        + (f" · {skipped} unadjusted" if skipped else ""))
-    return series, None
+    if got.get("why"):
+        return None, got["why"]
+    return got, None
 
 
 def hands_of(con, session, limit=500):
@@ -714,17 +698,20 @@ def detail_of(con, sid, clock=None):
     if session is None:
         return {"error": f"no session {sid!r}"}
     series, why_graph = series_of(con, session)
-    svg = None
+    svg = markup = None
     if series:
         import query
-        svg = query.svg(series, _label(session), series.get("_note", ""),
+        svg = query.svg(series, _label(session), series.get("note") or "",
                         dark=True)
+        markup = query.graph_markup(series, _label(session), dark=True)
     return {
         "session": as_row(session),
         "label": _label(session),
         "hands": hands_of(con, session),
         "series": series,
+        "graph": series,
         "svg": svg,
+        "markup": markup,
         "why_graph": why_graph,
         "clock": clock.describe(),
     }
@@ -826,7 +813,8 @@ def show_one(con, sid):
     return 0
 
 
-def show_graph(con, sid, out_path="session-graph.html"):
+def show_graph(con, sid, out_path="session-graph.html", unit="bb",
+               as_csv=False):
     import query
     ensure(con)
     session = of(con, sid)
@@ -834,7 +822,8 @@ def show_graph(con, sid, out_path="session-graph.html"):
         print(f"no session {sid!r}")
         return 1
     where = f"is_hero = 1 AND ({session_sql(session.id)})"
-    query.show_graph(con, where, _label(session), out_path)
+    query.show_graph(con, where, _label(session), out_path,
+                     unit=unit, as_csv=as_csv)
     return 0
 
 
@@ -1175,12 +1164,16 @@ def main(argv):
         finally:
             con.close()
     if verb == "graph" or "--graph" in rest:
-        dest = _opt(rest, "--out", "session-graph.html")
+        as_csv = "--csv" in rest
+        dest = _opt(rest, "--out",
+                    "session-graph.csv" if as_csv else "session-graph.html")
         if not Path(DB).exists():
             raise SystemExit(f"no database at {DB} -- load some hands first")
         con = sqlite3.connect(DB)
         try:
-            return show_graph(con, sid(), dest)
+            return show_graph(con, sid(), dest,
+                              unit=_opt(rest, "--unit", "bb"),
+                              as_csv=as_csv or dest.lower().endswith(".csv"))
         finally:
             con.close()
     if verb == "list" or "--list" in rest or verb is None:

@@ -88,18 +88,14 @@ stats.DB = DB
 stats.load_custom(HERE / "stats.json")
 query.SAVED = HERE / "filters.json"
 
-# One palette, so a colour is changed in one place. The line colours are the
-# same four the graph has always used.
+# One palette, so a colour is changed in one place. The four win-graph
+# colours live on `query.LINES` -- the official H2N chart -- and both
+# surfaces read them from there.
 BG, PANEL, EDGE = "#14161a", "#1b1e24", "#2a2f38"
 INK, DIM, ACCENT = "#d8dbe0", "#8b929c", "#4c9aff"
 GOOD, BAD, WARN = "#22a35a", "#d1443c", "#b8892a"
-LINE = {"total": "#22a35a", "showdown": "#2f7fd6",
-        "nonshowdown": "#d1443c", "allin_ev": "#e0b020"}
-# Painted in this order, so the headline is the one on top. Drawing them in
-# the order above put the all-in EV line over the total, and where the two
-# agree -- which they do exactly when nothing could be adjusted -- the green
-# line was invisible and looked missing. It was underneath.
-DRAW_ORDER = ("allin_ev", "nonshowdown", "showdown", "total")
+LINE = dict(query.LINE_COLOUR)
+DRAW_ORDER = query.DRAW_ORDER
 
 def blend(a, b, t):
     """
@@ -299,23 +295,142 @@ def dark(root):
 
 
 def _coincident(series, slack=0.5):
-    """
-    Which lines are sitting exactly on top of which, and under what.
+    """Which lines sit on top of which. The rule lives on query.coincident."""
+    return query.coincident(series, slack=slack)
 
-    Drawn last wins, so a line that agrees with one painted after it is
-    invisible. Reported rather than nudged apart: two results that are equal
-    are equal, and moving one to prove it exists would be a lie drawn to
-    look like data.
+
+class WinGraph:
     """
-    out = {}
-    for i, key in enumerate(DRAW_ORDER):
-        for later in DRAW_ORDER[i + 1:]:
-            a, b = series.get(key), series.get(later)
-            if a and b and len(a) == len(b) and all(
-                    abs(x - y) <= slack for x, y in zip(a, b)):
-                out[key] = later
-                break
-    return out
+    The official H2N four-line win chart.
+
+    One widget, used by the Graph tab, the Reports study strip, and
+    Sessions detail. Legend clicks hide a line; bb / $ switch units
+    without asking the database again; a hover names the hand under
+    the pointer. The series comes from `query.graph_of`.
+    """
+
+    def __init__(self, parent, unit_var=None, height=None, compact=False):
+        self.unit = unit_var or tk.StringVar(value="bb")
+        self.hidden = set()
+        self.got = None
+        self.message = None
+        self.compact = compact
+        self.frame = ttk.Frame(parent)
+        bar = ttk.Frame(self.frame)
+        bar.pack(fill="x", padx=4, pady=(4, 0))
+        ttk.Label(bar, text="win graph", style="Dim.TLabel").pack(side="left")
+        ttk.Radiobutton(bar, text="bb", value="bb", variable=self.unit,
+                        command=self.draw).pack(side="left", padx=(10, 0))
+        ttk.Radiobutton(bar, text="$", value="currency", variable=self.unit,
+                        command=self.draw).pack(side="left")
+        ttk.Label(bar, text="rising red ≈ bluffy · falling ≈ passive",
+                  style="Dim.TLabel").pack(side="left", padx=12)
+        self.leg_vars = {}
+        for key, _c, why in query.LINES:
+            var = tk.BooleanVar(value=True)
+            self.leg_vars[key] = var
+            ttk.Checkbutton(bar, text=why, variable=var,
+                            command=self._toggle).pack(side="left", padx=(8, 0))
+        self.tip = ttk.Label(self.frame, text="", style="Dim.TLabel")
+        self.tip.pack(anchor="w", padx=8)
+        self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0,
+                                height=height or (180 if compact else 1))
+        self.canvas.pack(fill="both", expand=not compact)
+        self.canvas.bind("<Configure>", lambda _e: self.draw())
+        self.canvas.bind("<Motion>", self._hover)
+        self.canvas.bind("<Leave>", lambda _e: self.tip.configure(text=""))
+
+    def pack(self, **kw):
+        self.frame.pack(**kw)
+
+    def _toggle(self):
+        self.hidden = {k for k, v in self.leg_vars.items() if not v.get()}
+        self.draw()
+
+    def set(self, got, message=None):
+        self.got = got if got and not got.get("why") and got.get("n", 0) >= 2 else None
+        self.message = message or (got or {}).get("why")
+        self.draw()
+
+    def _series(self):
+        if not self.got:
+            return {}
+        unit = query.graph_unit(self.unit.get())
+        return (self.got.get("units") or {}).get(unit) or self.got.get("series") or {}
+
+    def draw(self, message=None):
+        c = self.canvas
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 50 or h < 50:
+            return
+        s = self._series()
+        keys = [k for k in query.GRAPH_KEYS if k in s and k not in self.hidden]
+        n = max((len(s[k]) for k in keys), default=0)
+        if not s or n < 2:
+            c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10),
+                          text=message or self.message
+                          or "not enough hands to draw a line")
+            return
+        L, R, T, B = 56, 16, 16, 28
+        vals = [v for k in keys for v in s[k]]
+        lo, hi = min(vals + [0.0]), max(vals + [0.0])
+        span = (hi - lo) or 1.0
+        x = lambda i: L + (w - L - R) * i / max(1, n - 1)
+        y = lambda v: T + (h - T - B) * (1 - (v - lo) / span)
+        for f in range(5):
+            v = lo + span * f / 4
+            c.create_line(L, y(v), w - R, y(v), fill=EDGE)
+            c.create_text(L - 8, y(v), text=f"{v:,.0f}", fill=DIM,
+                          anchor="e", font=(UI, 8))
+        c.create_line(L, y(0), w - R, y(0), fill=DIM, dash=(3, 3))
+        for key in DRAW_ORDER:
+            if key not in keys:
+                continue
+            pts = []
+            for j, v in enumerate(s[key]):
+                pts += [x(j), y(v)]
+            if len(pts) >= 4:
+                c.create_line(*pts, fill=LINE[key], width=2, smooth=False,
+                              tags=("line", key))
+        covered = _coincident({k: s[k] for k in keys})
+        unit = "bb" if query.graph_unit(self.unit.get()) == "bb" else "$"
+        bits = []
+        for key, _c, why in query.LINES:
+            if key in self.hidden or key not in s:
+                continue
+            end = s[key][-1]
+            note = covered.get(key)
+            bits.append(f"{why} {end:+,.0f}{unit}"
+                        + (f" (under {query.LINE_LABEL[note]})" if note else ""))
+        note = (self.got or {}).get("note") or ""
+        c.create_text((L + w - R) / 2, h - 10, fill=DIM, font=(UI, 8),
+                      text=note + (("  ·  " + "  ·  ".join(bits)) if bits else ""))
+        self._xy = (x, n, L, w - R)
+
+    def _hover(self, event):
+        if not self.got or not getattr(self, "_xy", None):
+            return
+        x, n, left, right = self._xy
+        if n < 2 or right <= left:
+            return
+        t = (event.x - left) / (right - left)
+        i = max(0, min(n - 1, int(round(t * (n - 1)))))
+        unit = query.graph_unit(self.unit.get())
+        pts = (self.got.get("points_by_unit") or {}).get(unit) or []
+        s = self._series()
+        p = pts[i] if i < len(pts) else {}
+        bits = []
+        for key, _c, why in query.LINES:
+            if key in self.hidden:
+                continue
+            vals = s.get(key) or []
+            if i < len(vals):
+                bits.append(f"{why} {vals[i]:+,.1f}")
+        hid = p.get("hand_id") or ""
+        when = (p.get("when") or "")[:16]
+        self.tip.configure(
+            text=f"#{i + 1}  {hid}  {when}   " + "   ".join(bits))
 
 
 class Progress(tk.Toplevel):
@@ -618,6 +733,7 @@ class App(ImportMixin, ttk.Frame):
         self.stat_cells = {}
         self.session_hidden = set()
         self.session_series = None
+        self.graph_unit = tk.StringVar(value="bb")
         clock = sessions.load_clock()
         self.sess_today = tk.BooleanVar()
         self.sess_hours = tk.StringVar()
@@ -956,9 +1072,9 @@ class App(ImportMixin, ttk.Frame):
         self.tree = {}
         for name in ("stats", "range", "report", "results", "hands"):
             self.tree[name] = self._table(self.tabs[name])
-        self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self._draw_graph())
+        self.win_graph = WinGraph(self.tabs["graph"], unit_var=self.graph_unit)
+        self.win_graph.pack(fill="both", expand=True)
+        self.canvas = self.win_graph.canvas
         self.series = None
         # The chart is drawn and not tabulated, so like the graph it gets a
         # canvas rather than a Treeview. A range is a shape; 169 numbers in
@@ -1059,11 +1175,10 @@ class App(ImportMixin, ttk.Frame):
                    command=self._export_session).pack(side="left", padx=(8, 0))
         self.sess_sum = ttk.Label(tools, text="", style="Dim.TLabel")
         self.sess_sum.pack(side="left", padx=12)
-        self.session_canvas = tk.Canvas(right, bg=BG, highlightthickness=0,
-                                        height=180)
-        self.session_canvas.pack(fill="x")
-        self.session_canvas.bind("<Configure>",
-                                 lambda _e: self._draw_session_graph())
+        self.session_graph = WinGraph(right, unit_var=self.graph_unit,
+                                      height=200, compact=True)
+        self.session_graph.pack(fill="x")
+        self.session_canvas = self.session_graph.canvas
         hands = ttk.LabelFrame(right, text="Hands")
         hands.pack(fill="both", expand=True, pady=(6, 0))
         mark = ttk.Frame(hands)
@@ -1331,14 +1446,7 @@ class App(ImportMixin, ttk.Frame):
         ttk.Button(win, text="Apply", command=apply).pack(pady=8)
 
     def _draw_session_graph(self, message=None):
-        old_c, old_s = self.canvas, self.series
-        self.canvas = self.session_canvas
-        self.series = self.session_series
-        try:
-            self._draw_graph(message)
-        finally:
-            self.canvas = old_c
-            self.series = old_s
+        self.session_graph.set(self.session_series, message)
 
     def _build_study(self, parent):
         """
@@ -1377,6 +1485,9 @@ class App(ImportMixin, ttk.Frame):
             self._make_pane(grid, name, r, c)
         self.plus_frames = {}
 
+        self.study_graph = WinGraph(parent, unit_var=self.graph_unit,
+                                    height=170, compact=True)
+        self.study_graph.pack(fill="x", padx=8, pady=(0, 4))
         hands = ttk.LabelFrame(parent, text="Hands")
         hands.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.study_hands = self._table(hands)
@@ -1717,7 +1828,8 @@ class App(ImportMixin, ttk.Frame):
                 compact.attach(con, rows, fmt="text")
                 out["rows"] = rows
             elif view == "graph":
-                out["series"] = self._series(con, where)
+                out["graph"] = query.graph_of(con, where)
+                out["series"] = out["graph"].get("series")
             if not self._any(out):
                 out["why"] = query.why_empty(con, parts)
         except sqlite3.Error as e:
@@ -1739,35 +1851,15 @@ class App(ImportMixin, ttk.Frame):
                     or out.get("cells")
                     or out.get("compare")
                     or out.get("hands") or out.get("panes")
+                    or (out.get("graph") or {}).get("n")
                     or (out.get("sizes") or {}).get("rows")
                     or "clock" in out
                     or out.get("rows") is not None
                     or "counts" in out)
 
     def _series(self, con, where):
-        pairs = query.matching_seats(con, where)
-        if len(pairs) < 2:
-            return None
-        query.select_into(con, pairs)
-        hands, adj, skipped = query.adjusted(con, pairs)
-        if len(hands) < 2:
-            return None
-        s = {k: [] for k in LINE}
-        total = sd = nsd = ev = 0.0
-        for _when, net, was_sd, ev_net in hands:
-            total += net or 0.0
-            ev += ev_net or 0.0
-            if was_sd:
-                sd += net or 0.0
-            else:
-                nsd += net or 0.0
-            s["total"].append(total)
-            s["showdown"].append(sd)
-            s["nonshowdown"].append(nsd)
-            s["allin_ev"].append(ev)
-        s["_note"] = (f"{len(hands):,} hands · {adj} all-in pots at equity"
-                      + (f" · {skipped} unadjusted" if skipped else ""))
-        return s
+        got = query.graph_of(con, where)
+        return got if got.get("n", 0) >= 2 else None
 
     def _drain(self):
         try:
@@ -1786,8 +1878,9 @@ class App(ImportMixin, ttk.Frame):
         if out.get("label"):
             self.filter_line.configure(text="filter: " + out["label"])
         if view == "graph":
-            self.series = out.get("series")
-            self._draw_graph(out.get("why") or out.get("error"))
+            self.series = out.get("graph") or out.get("series")
+            self.win_graph.set(out.get("graph") or out.get("series"),
+                               out.get("why") or out.get("error"))
             return
         if view == "chart":
             self.chart = out if out.get("cells") else None
@@ -1880,7 +1973,7 @@ class App(ImportMixin, ttk.Frame):
                       f"{session['hands']} hands  {session['duration']}  "
                       f"Won {session['Won']:+.2f}  "
                       f"Won bb {session['Won bb']:+.1f}"))
-            self.session_series = detail.get("series")
+            self.session_series = detail.get("graph") or detail.get("series")
             self._draw_session_graph(detail.get("why_graph")
                                      or detail.get("error"))
             self._render_hands(self.session_hands,
@@ -2022,6 +2115,8 @@ class App(ImportMixin, ttk.Frame):
                 pane = out.get("families")
             self._fill_pane(name, tv, pane, out)
         self._render_hands(self.study_hands, {"rows": out.get("hands") or []})
+        self.study_graph.set(out.get("graph"),
+                             out.get("why") or out.get("error"))
         self._paint_related(out.get("related") or [])
 
     def _paint_crumbs(self):
@@ -2905,56 +3000,7 @@ class App(ImportMixin, ttk.Frame):
 
     # ---- the graph, drawn rather than served ---------------------------
     def _draw_graph(self, message=None):
-        c = self.canvas
-        c.delete("all")
-        w, h = c.winfo_width(), c.winfo_height()
-        if w < 50 or h < 50:
-            return
-        s = self.series
-        if not s:
-            c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10),
-                          text=message or "not enough hands to draw a line")
-            return
-        L, R, T, B = 70, 210, 30, 40
-        n = len(s["total"])
-        lo = min(min(v) for k, v in s.items() if k in LINE)
-        hi = max(max(v) for k, v in s.items() if k in LINE)
-        lo, hi = min(lo, 0.0), max(hi, 0.0)
-        span = (hi - lo) or 1.0
-        x = lambda i: L + (w - L - R) * i / max(1, n - 1)
-        y = lambda v: T + (h - T - B) * (1 - (v - lo) / span)
-
-        for f in range(5):
-            v = lo + span * f / 4
-            c.create_line(L, y(v), w - R, y(v), fill=EDGE)
-            c.create_text(L - 8, y(v), text=f"{v:,.0f}", fill=DIM,
-                          anchor="e", font=(UI, 8))
-        c.create_line(L, y(0), w - R, y(0), fill=DIM, dash=(3, 3))
-        for key in DRAW_ORDER:
-            pts = []
-            for j, v in enumerate(s[key]):
-                pts += [x(j), y(v)]
-            if len(pts) >= 4:
-                c.create_line(*pts, fill=LINE[key], width=2, smooth=False)
-
-        # The legend keeps its own order, and says when a line cannot be
-        # seen because another is sitting exactly on it. A line that is
-        # missing and a line that is hidden look identical on the canvas and
-        # are completely different facts.
-        covered = _coincident(s)
-        for i, (key, colour) in enumerate(LINE.items()):
-            ly = T + 16 + i * 30
-            c.create_line(w - R + 8, ly, w - R + 30, ly, fill=colour, width=3)
-            note = covered.get(key)
-            c.create_text(w - R + 38, ly, anchor="w", fill=INK,
-                          font=(UI, 9),
-                          text=f"{key.replace('_', ' ')}  {s[key][-1]:+,.0f}")
-            if note:
-                c.create_text(w - R + 38, ly + 12, anchor="w", fill=DIM,
-                              font=(UI, 8),
-                              text=f"under {note.replace('_', ' ')}")
-        c.create_text((L + w - R) / 2, h - 14, fill=DIM,
-                      font=(UI, 8), text=s.get("_note", ""))
+        self.win_graph.set(self.series, message)
 
     # ---- what this database holds -------------------------------------
     def load_options(self):

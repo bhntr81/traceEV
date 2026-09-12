@@ -8,6 +8,45 @@ Newest first.
 
 ---
 
+## Win Graph — official H2N four-line chart
+
+Reports + Sessions, the tracking-half win chart. No HUD. No
+solver. No rakeback overlay. No Chip EV. No Detach.
+
+One aggregator, `query.graph_of`, so the Graph tab, the study
+strip, Sessions detail, the page, and the CSV cannot drift.
+Per-hand extractors are `won`, `all_in_ev`, `won_wos`,
+`won_wsd`; the chart is their running totals in play order.
+bb | $ is a unit switch on the same hands, not a second query.
+
+Amount Won is green, All-in EV yellow, Won without Showdown the
+red line, Won at Showdown gray (it was blue, which is not H2N).
+Red + gray = green. Rising red ≈ bluffy; falling ≈ passive.
+All-in EV is the existing `equity` price for the clean two-way
+case with cards to come; everything else stays at the actual
+result. `--check` does not invent an EV -- on a fixture with no
+all-in the yellow line equals green, and that is asserted.
+
+### Added — shared widget
+
+`WinGraph` in the window (legend toggles, hover, bb/$). The
+page and `query.py --graph` write the same HTML widget.
+Reports study and Sessions detail reuse it; a 3-bet drill
+reshapes the four lines.
+
+### Added — CLI CSV
+
+`python query.py --graph --csv` / `report graph`, and
+`python sessions.py graph ID --csv`. Last `cum_won` is the
+Won summary `--results` prints.
+
+### Not this, on purpose
+
+No HUD. No solver. No rakeback overlay. No Chip EV. No Detach.
+Window `--check` still needs Tk.
+
+---
+
 ## Statistics — curated grid, Call Range, exclude_reg_vs_fish
 
 The tracking-half Statistics tab. No HUD. No solver.
