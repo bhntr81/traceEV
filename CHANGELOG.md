@@ -8,6 +8,43 @@ Newest first.
 
 ---
 
+## Compact Hand View in report hand lists
+
+A list of timestamps is a list you have to open. Hand2Note's compact
+hand view puts the betting on the row -- positions, sizes in bb, the
+board and pot at each street -- so a scan of forty rows is a scan of
+forty hands. `CompactHandRenderer(hand)` is that encoding, a pure
+function over the dict `hand_detail` already returns.
+
+    BTN R3  BB C2 | 7h Ks 8c (6)  BB X  BTN X | 8d (6)  BB B4.5  BTN C4.5 | Th (15)  BB B86'  BTN C86
+
+`X` is a check. `B`/`C`/`R` carry a size in bb. A trailing `'` is
+all-in. The focus seat -- the player the row is about -- is marked:
+underline on the page and in a colour terminal, `_R3_` in the window
+because Tk's Treeview cannot underline a substring. Position colours
+are fixed (H2N cannot customize yet either). Double-click still opens
+the full replay.
+
+`--hands`, the window's hands tab, and the page's hands view all
+render it. `--check` holds the H2N example, a fold/check line, an
+all-in bet, an all-in call (`C10'`, not `R10'` -- 95 of 236 all-ins
+here are calls), and the batch path the lists actually use.
+
+### Not this, on purpose
+
+No HUD. Blind posts, dead chips and a straddle are not tokens -- the
+line starts at the first voluntary action. Hole cards stay in the
+combo column. Early folds are kept. EP1–EP3 are not seats this
+project has. A six-way flop is not truncated.
+
+### What's next
+
+Unchanged from the reports work: richer pin, Call Profit Rate /
+Dispersion / EV diff, Multi-Player compare, squeeze as its own Faced
+Next verb, Missed 2nd/3rd barrel and Won$ in the Raise C-bet pack.
+
+---
+
 ## Smart Reports, related spots, and a report that matches its filter
 
 The tracking half of Hand2Note is a tree of named situations, a popup

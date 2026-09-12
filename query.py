@@ -47,6 +47,7 @@ import json
 import shlex
 import tempfile
 
+import compact
 import lines
 import players
 import sites
@@ -2559,10 +2560,11 @@ def hand_detail(con, hand_id, seat=None):
         return None
     seats = [dict(r) for r in con.execute(
         "SELECT * FROM seats WHERE hand_id=? ORDER BY seat", (hand_id,))]
-    pots = {r["n"]: (r["pot_before"], r["to_call"], r["pot_bb"])
+    pots = {r["n"]: (r["pot_before"], r["to_call"], r["pot_bb"],
+                    r["agg"], r["allin"])
             for r in con.execute(
-                "SELECT n, pot_before, to_call, pot_bb FROM decisions "
-                "WHERE hand_id=?", (hand_id,))}
+                "SELECT n, pot_before, to_call, pot_bb, agg, allin "
+                "FROM decisions WHERE hand_id=?", (hand_id,))}
     by_seat = {r["seat"]: r for r in seats}
 
     streets, order = [], {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
@@ -2577,7 +2579,8 @@ def hand_detail(con, hand_id, seat=None):
             continue
         lines = []
         for a in acts:
-            pot, to_call, pot_bb = pots.get(a["n"], (None, None, None))
+            pot, to_call, pot_bb, agg, dec_allin = pots.get(
+                a["n"], (None, None, None, None, None))
             who = by_seat.get(a["seat"], {})
             size = a["total"] if a["action"] in ("R", "A") and a["total"] \
                 else a["amount"]
@@ -2586,6 +2589,8 @@ def hand_detail(con, hand_id, seat=None):
                 "name": who.get("label"), "is_hero": who.get("is_hero"),
                 "verb": VERBS.get(a["action"], a["action"]),
                 "action": a["action"], "amount": size,
+                "allin": bool(a.get("allin") or dec_allin),
+                "agg": agg,
                 "pot_before": pot, "to_call": to_call, "pot_bb": pot_bb})
         streets.append({"street": st, "board": shown[st], "actions": lines})
 
@@ -2613,6 +2618,10 @@ def show_hand(con, hand_id, seat=None):
     stake = f"${d['sb']}/${d['bb']}" if d["bb"] else "-"
     print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {stake}  "
           f"{d['played_at']}  ({d['table']})")
+    line = compact.CompactHandRenderer(
+        d, fmt="ansi" if sys.stdout.isatty() else "text")
+    if line:
+        print(line)
     print("=" * 78)
     for s in d["seats"]:
         mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
@@ -2837,16 +2846,23 @@ def show_hands(con, where, label, limit=40, parts=()):
     print(f"  {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
           f"{'net bb':>7} {'act bb':>7}  board")
     print("  " + "-" * 82)
-    for r in rows[:limit]:
+    shown = rows[:limit]
+    compact.attach(con, shown,
+                   fmt="ansi" if sys.stdout.isatty() else "text")
+    for r in shown:
         when = (r["when"] or "")[:16]
         act = (f"{r['act']:+.1f}" if r["act"] is not None else "   –")
         net = r["net"] if r["net"] is not None else 0
         print(f"  {when:17} {r['site'] or '':10} {r['bb'] or 0:5.2f} "
               f"{r['pos'] or '?':4} {r['combo'] or '--':5} "
               f"{net:7.1f} {act:>7}  {r['board'] or ''}")
+        if r.get("compact"):
+            print(f"    {r['compact']}")
     print()
     print("  act bb is this action (v1); net bb is the whole hand. "
           "A dash is unpriced -- see action profit on --stats.")
+    print("  The second line is the compact hand: X check, B/C/R + bb, "
+          "' all-in. Marked actions are this row's seat.")
 
 
 def usage():
@@ -3175,6 +3191,7 @@ def check(db_path=DB):
     fails = []
     fails.extend(check_shape())
     fails.extend(check_fixture())
+    fails.extend(compact.check())
     if not Path(db_path).exists():
         print()
         print("FAIL: " + "; ".join(fails) if fails else

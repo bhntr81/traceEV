@@ -40,6 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import compact
 import query
 from stats import BY_KEY, STATS
 
@@ -175,14 +176,18 @@ def payload(con, params):
 
     if view == "hands":
         rows = query.matching_hands(con, where, limit=300)
+        compact.attach(con, rows, fmt="html")
         return {"label": label, "rows": rows,
                 "why": None if rows else nothing()}
 
     if view == "hand":
         hid = params.get("id", [""])[0]
         seat = params.get("seat", [""])[0]
-        return {"hand": query.hand_detail(
-            con, hid, int(seat) if seat.isdigit() else None)}
+        d = query.hand_detail(
+            con, hid, int(seat) if seat.isdigit() else None)
+        if d:
+            d["compact"] = compact.CompactHandRenderer(d, fmt="html")
+        return {"hand": d}
 
     if view == "graph":
         pairs = query.matching_seats(con, where)
@@ -278,6 +283,10 @@ th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
   letter-spacing:.05em}
 tbody tr:hover{background:var(--panel)}
 tr.click{cursor:pointer}
+.compact{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;letter-spacing:0;text-align:left}
+.compact u{text-underline-offset:2px}
+td.compact{text-align:left;font-weight:500}
 .link{color:var(--accent);cursor:pointer}
 .thin{color:var(--dim)}
 .thin::after{content:' ?';color:#b8892a}
@@ -669,16 +678,16 @@ function render(d){
 
   } else {
     if (!d.rows.length){ out.innerHTML = nope(); return; }
-    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Click a hand to replay it.</p>'
+    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Underlined actions are this row\'s seat. Click a hand to replay it.</p>'
       + '<table><thead><tr><th>when</th><th>site</th><th>bb</th><th>pos</th>'
-      + '<th>hand</th><th>net bb</th><th>act bb</th><th>board</th></tr></thead><tbody>';
+      + '<th>hand</th><th>net bb</th><th>act bb</th><th>compact</th></tr></thead><tbody>';
     for (const r of d.rows)
       h += `<tr class="click" data-id="${r.id}" data-seat="${r.seat}">`
         + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site}</td>`
         + `<td class="n">${r.bb??''}</td><td>${r.pos||''}</td>`
         + `<td>${r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
         + `<td>${r.act==null?'–':money(r.act)}</td>`
-        + `<td class="n">${r.board||''}</td></tr>`;
+        + `<td class="compact">${r.compact||r.board||''}</td></tr>`;
     out.innerHTML = h + '</tbody></table>';
   }
 }
@@ -697,6 +706,7 @@ function renderHand(d){
   let h = `<p><span class="link" id="back">&larr; back to hands</span></p>`
     + `<p class="filter">${d.hand_id} · ${d.site} · ${d.fmt} · ${stake}`
     + ` · ${d.played_at} · ${d.table}</p>`
+    + (d.compact ? `<p class="compact">${d.compact}</p>` : '')
     + '<table><thead><tr><th>seat</th><th>player</th><th>stack</th>'
     + '<th>cards</th><th>net</th></tr></thead><tbody>';
   for (const s of d.seats){

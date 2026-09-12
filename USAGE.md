@@ -658,8 +658,25 @@ hard and you will be looking at frequencies, which is the right thing to
 look at anyway.
 
 **`--hands`** lists the hands themselves, newest first, with the board and
-what each one made. In the interface a row opens; on the command line you
-open one by id:
+what each one made. Under each row is a **compact hand** -- the same
+single-line encoding Hand2Note puts in a report list: position, then
+`X` / `B` / `C` / `R` and a size in bb, with `'` for all-in. Street
+cuts show the flop (three cards) or the card that arrived, and the pot
+in bb. The marked action (`_R3_` on the command line and in the
+window; underlined on the page) is the seat that row is about, not
+always the session hero. Double-click a row (or click it on the page)
+to open the full replay; that path is unchanged.
+
+```
+  2024-03-01 12:04  acr         0.50  BTN  AhKd    +12.4    +3.0  7h Ks 8c 8d Th
+    BTN _R3_  BB C2 | 7h Ks 8c (6)  BB X  BTN X | 8d (6)  BB B4.5  BTN C4.5 | Th (15)  BB B86'  BTN C86
+```
+
+v1 does not write blind posts, hole cards (the combo column has those),
+or EP1–EP3 labels this project does not use. Early folds stay in the
+line. A six-way flop is not truncated.
+
+On the command line you open one hand by id:
 
 ```bash
 python query.py --hand 5331315698

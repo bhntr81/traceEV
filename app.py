@@ -43,6 +43,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import sqlite3
 
+import compact
 import diag
 import importer
 import players
@@ -1087,7 +1088,9 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = query.matching_hands(con, where, limit=500)
+                rows = query.matching_hands(con, where, limit=500)
+                compact.attach(con, rows, fmt="text")
+                out["rows"] = rows
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if not self._any(out):
@@ -1415,11 +1418,15 @@ class App(ImportMixin, ttk.Frame):
             "error on a win rate is about 1170/√n", ""))
 
     def _render_hands(self, tv, out):
+        # Compact replaces the board column: the board is already in
+        # the line, and a Treeview cannot underline a substring so the
+        # focus seat's action is marked _R3_. Double-click still opens
+        # the full replay -- that path is unchanged.
         self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb",
-                        "act bb", "board"),
-                   (140, 90, 60, 60, 70, 80, 80, 180),
+                        "act bb", "compact"),
+                   (140, 90, 60, 60, 70, 80, 80, 520),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
-                    "board": "w"})
+                    "compact": "w"})
         self._hand_ids = {}
         for r in out["rows"]:
             net, act = r.get("net"), r.get("act")
@@ -1429,7 +1436,7 @@ class App(ImportMixin, ttk.Frame):
                 r.get("pos") or "", r.get("combo") or "–",
                 f"{net:+.1f}" if net is not None else "",
                 f"{act:+.1f}" if act is not None else "–",
-                r.get("board") or ""),
+                r.get("compact") or r.get("board") or ""),
                 tags=("pos",) if (act or 0) > 0 else
                      ("neg",) if (act or 0) < 0 else ())
             self._hand_ids[iid] = (r["id"], r["seat"])
@@ -1437,7 +1444,8 @@ class App(ImportMixin, ttk.Frame):
             tv.insert("", "end", values=("", "", "", "", "", "", "", ""))
             tv.insert("", "end", tags=("note",),
                       values=("act bb is this action; net bb is the hand. "
-                              "– is unpriced. Double-click to replay.",
+                              "– is unpriced. _marked_ actions are this "
+                              "row's seat. Double-click to replay.",
                               "", "", "", "", "", "", ""))
 
     def _open_hand(self, _event):
@@ -2514,7 +2522,11 @@ class HandWindow(tk.Toplevel):
         stake = f"${d['sb']}/${d['bb']}" if d["bb"] else "-"
         text.insert("end", f"{d['hand_id']}\n", "head")
         text.insert("end", f"{d['site']}  {d['fmt']}  {stake}  "
-                           f"{d['played_at']}  {d['table']}\n\n", "dim")
+                           f"{d['played_at']}  {d['table']}\n", "dim")
+        line = compact.CompactHandRenderer(d, fmt="text")
+        if line:
+            text.insert("end", f"{line}\n", "hi")
+        text.insert("end", "\n")
         for s in d["seats"]:
             net = (s["won"] or 0) - (s["put_in"] or 0)
             mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
