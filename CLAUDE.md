@@ -134,6 +134,11 @@ Facts that stay true, and that have each been got wrong at least once:
   the same two-plus-three rule; the fifth card is another pair to
   choose from. Equity stays two-card and refuses four. The 13×13 is
   gated on a PLO filter -- 169 empty squares are not a range.
+- **The list 'hand' column is N hole cards, not a Hold'em combo.**
+  Omaha has no AKs. `compact.card_row` is the one row: N∈{2,4,5},
+  `??` for a muck, two-line wrap rather than dropped holes. Hold'em
+  still uses the combo column. The two cards that made a PLO hand
+  are `best_omaha`'s pair, not a second walk.
 - **Ignition, Bodog and Bovada are one HEADER.** Downloads-style
   files from any of the three brands are the same parser. A prefix
   that only accepted `Ignition Hand #` skipped the other two whole.

@@ -1036,9 +1036,13 @@ to open the full replay; that path is unchanged.
     BTN _R3_  BB C2 | 7h Ks 8c (6)  BB X  BTN X | 8d (6)  BB B4.5  BTN C4.5 | Th (15)  BB B86'  BTN C86
 ```
 
-v1 does not write blind posts, hole cards (the combo column has those),
-or EP1–EP3 labels this project does not use. Early folds stay in the
-line. A six-way flop is not truncated.
+v1 does not write blind posts, or EP1–EP3 labels this project does not
+use. Early folds stay in the line. Hold'em hole cards stay off the
+compact line -- the combo column has AhKd. Omaha has no combo, so
+four or five cards are prepended (`[As Ad Kh 7d]`); a muck keeps the
+slots (`[?? ?? ?? ??]`) so a PLO list cannot be scanned as Hold'em.
+A line that will not fit wraps to two lines rather than dropping
+the holes. A six-way flop is not truncated.
 
 On the command line you open one hand by id:
 
@@ -1047,10 +1051,12 @@ python query.py --hand 5331315698
 ```
 
 That replays it — who sat where, what they held, and the action street by
-street with the pot before each decision. On Ignition every player's cards
-are there including the folded ones, because the site shows them. On ACR a
-seat reads `--` when the hand was never shown, which is different from
-having been dealt nothing.
+street with the pot before each decision. PLO4 / PLO5 deal four or five
+hole cards; at showdown the two that made the hand are marked. On
+Ignition every player's cards are there including the folded ones,
+because the site shows them. On ACR a seat reads `?? ?? ?? ??` when
+the hand was never shown, which is different from having been dealt
+nothing.
 
 ---
 
@@ -1204,8 +1210,11 @@ the three defaults are NLHE Cash, PLO4 Cash and PLO5 Cash.
 Weak % then use Omaha labels: two hole cards and three board cards,
 never all four as Hold'em. The 13×13 is gated on a PLO filter -- it
 does not draw 169 empty squares. Compact prepends `[As Ad Kh 7d]`
-for four- and five-card hands. Rebuild derived tables after an Omaha
-import so `game` / `game_type` land on `spots` and `decisions`.
+for four- and five-card hands, keeps `??` slots for a muck, and
+wraps to two lines rather than dropping the holes. The replayer
+deals N∈{2,4,5} and marks the two hole cards that made the Omaha
+hand. Rebuild derived tables after an Omaha import so `game` /
+`game_type` land on `spots` and `decisions`.
 
 ### `stats.py` — the stat engine
 

@@ -1925,12 +1925,14 @@ def matching_hands(con, where, limit=None):
         if "spots" in {r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")} else set()
     cards_sql = "MAX(s.cards)" if "cards" in scols else "NULL"
+    dcols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    game_sql = "MAX(d.game)" if "game" in dcols else "NULL"
     sql = (
         f"SELECT d.hand_id, d.seat, MAX(d.played_at), MAX(d.site), "
         f"       MAX(d.bb), MAX(d.position), MAX(d.combo), MAX(d.board), "
         f"       MAX(s.net_bb), SUM({expr}), "
         f"       SUM({expr} IS NOT NULL), COUNT(*), SUM({call}), "
-        f"       {cards_sql} "
+        f"       {cards_sql}, {game_sql} "
         f"FROM (SELECT * FROM decisions WHERE {where}) d "
         f"LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
         f"GROUP BY d.hand_id, d.seat "
@@ -1940,13 +1942,15 @@ def matching_hands(con, where, limit=None):
         sql += f" LIMIT {int(limit)}"
     rows = []
     for (hid, seat, when, site, bb, pos, combo, board, net, act, priced,
-         hits, call_bb, cards) in con.execute(sql):
-        rows.append({
+         hits, call_bb, cards, game) in con.execute(sql):
+        row = {
             "id": hid, "seat": seat, "when": when, "site": site, "bb": bb,
             "pos": pos, "combo": combo, "board": board, "net": net,
             "act": act, "priced": priced or 0, "hits": hits or 0,
-            "call": call_bb, "cards": cards,
-        })
+            "call": call_bb, "cards": cards, "game": game,
+        }
+        row["hand"] = compact.hand_cell(row)
+        rows.append(row)
     return rows
 
 
@@ -4891,15 +4895,8 @@ def combo_at(i, j):
 
 
 def _hand_cell(row):
-    """Combo for Hold'em; the hole cards themselves when there are four or five."""
-    combo = row.get("combo")
-    if combo:
-        return combo
-    cards = row.get("cards") or ""
-    n = len(cards.split())
-    if n >= 4:
-        return cards
-    return "--"
+    """Combo for Hold'em; the N-card row when the game deals four or five."""
+    return compact.hand_cell(row)
 
 
 def chart_gate(con, where):
@@ -5835,6 +5832,8 @@ def hand_detail(con, hand_id, seat=None):
         "n_players": h["n_players"], "board": h["board"], "pot": h["pot"],
         "rake": (h["rake"] if "rake" in h.keys() else None),
         "focus": seat,
+        "hole_card_count": (h["hole_card_count"]
+                            if "hole_card_count" in h.keys() else None),
         "seats": [{"seat": r["seat"], "name": r["label"],
                    "position": r["position"], "stack": r["stack"],
                    "cards": r["cards"], "is_hero": r["is_hero"],
@@ -5849,19 +5848,21 @@ def show_hand(con, hand_id, seat=None):
     if d is None:
         print(f"no hand {hand_id!r}")
         return
+    compact.decorate_detail(
+        d, fmt="ansi" if sys.stdout.isatty() else "text")
     stake = f"${d['sb']}/${d['bb']}" if d["bb"] else "-"
     print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {d.get('game') or ''}  "
           f"{stake}  {d['played_at']}  ({d['table']})")
-    line = compact.CompactHandRenderer(
-        d, fmt="ansi" if sys.stdout.isatty() else "text")
+    line = d.get("compact") or ""
     if line:
         print(line)
     print("=" * 78)
     for s in d["seats"]:
         mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
         net = (s["won"] or 0) - s["put_in"]
+        holes = s.get("hand") or s.get("cards") or "--"
         print(f" {mark} {s['position'] or '?':4} {(s['name'] or '')[:16]:16} "
-              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>17}  "
+              f"{s['stack'] or 0:9.2f}  {holes:>17}  "
               f"{net:+8.2f}")
     for st in d["streets"]:
         head = st["street"].upper()
@@ -6381,7 +6382,7 @@ def show_hands(con, where, label, limit=40, parts=()):
     if not rows:
         print("  " + why_empty(con, parts))
         return
-        print(f"    {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':17} "
+        print(f"    {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':20} "
           f"{'net bb':>7} {'act bb':>7} {'call bb':>8}  board")
     print("    " + "-" * 104)
     shown = rows[:limit]
@@ -8411,6 +8412,50 @@ def check_detach():
     return fails
 
 
+def _check_hand_lists():
+    """Reports/Sessions/Marks/Notes all read `hand`, not a Hold'em combo."""
+    fails = []
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE decisions ("
+        "hand_id TEXT, seat INT, n INT, played_at TEXT, site TEXT, "
+        "bb REAL, position TEXT, combo TEXT, board TEXT, game TEXT, "
+        "action TEXT, agg INT, to_call REAL, amount REAL, "
+        "pot_before REAL, first_in INT, was_agg INT, pot_frac REAL, "
+        "street TEXT, allin INT);"
+        "CREATE TABLE spots ("
+        "hand_id TEXT, seat INT, cards TEXT, net_bb REAL, "
+        "fmt TEXT, wtsd INT, won REAL);")
+    con.executemany(
+        "INSERT INTO decisions VALUES "
+        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("p4", 2, 1, "2025-05-19", "ignition", 0.1, "BB", None, "Kc 2h 3s",
+          "OMAHA", "B", 1, 0, 0.2, 0.2, 1, 1, 1.0, "flop", 0),
+         ("h1", 1, 1, "2025-05-19", "acr", 0.1, "BTN", "AKs", "7h Ks 8c",
+          "HOLDEM", "R", 1, 0, 3, 1.5, 1, 1, 2.0, "preflop", 0),
+         ("p5", 1, 1, "2025-05-19", "ignition", 0.1, "BB", None, "",
+          "OMAHA5", "X", 0, 0, 0, 0.15, 0, 0, None, "preflop", 0)])
+    con.executemany(
+        "INSERT INTO spots VALUES (?,?,?,?,?,?,?)",
+        [("p4", 2, "As Ad Kh 7d", 1.0, "RING", 0, 0.2),
+         ("h1", 1, "Ah Kd", 2.0, "RING", 0, 0.3),
+         ("p5", 1, None, 0.05, "RING", 0, 0.1)])
+    rows = matching_hands(con, "1=1")
+    by = {r["id"]: r for r in rows}
+    if by["p4"].get("hand") != "As Ad Kh 7d":
+        fails.append(f"PLO4 list hand was {by['p4'].get('hand')!r}")
+    if by["h1"].get("hand") != "AKs":
+        fails.append(f"Hold'em list hand was {by['h1'].get('hand')!r}, not AKs")
+    if by["p5"].get("hand") != "?? ?? ?? ?? ??":
+        fails.append(f"PLO5 muck list hand was {by['p5'].get('hand')!r}")
+    con.close()
+    print(f"list hand cells / compact     "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check(db_path=DB):
     """
     Every filter is valid SQL, it filters, and it reaches an index.
@@ -8438,6 +8483,7 @@ def check(db_path=DB):
     fails.extend(check_hist())
     fails.extend(check_detach())
     fails.extend(compact.check())
+    fails.extend(_check_hand_lists())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:
         print()

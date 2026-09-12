@@ -804,9 +804,10 @@ def show_one(con, sid):
     print()
     rows = hands_of(con, session, limit=80)
     for r in rows[:40]:
-        line = r.get("compact") or r.get("combo") or ""
+        line = r.get("compact") or r.get("hand") or r.get("combo") or ""
+        line = line.replace("\n", "  ")
         print(f"  {(r.get('when') or '')[:16]}  "
-              f"{r.get('combo') or '–':>4}  "
+              f"{(r.get('hand') or r.get('combo') or '–'):>14}  "
               f"{(r.get('net') or 0):>+6.1f}  {line}")
     if len(rows) > 40:
         print(f"  … {len(rows) - 40} more")

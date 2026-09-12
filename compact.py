@@ -17,10 +17,14 @@ What this v1 does not encode, and why:
 
 - Blind posts, dead chips, a straddle. The line starts at the first
   voluntary action; posting is not a decision.
-- Hole cards, for Hold'em. The list already has a combo column;
-  repeating AhKd here crowds the action. Four- and five-card
-  Omaha has no combo, so those cards are prepended `[As Ad Kh 7d]`
-  -- otherwise the line is a board with nobody in it.
+- Hole cards, for Hold'em, on the compact line. The list already
+  has a combo column; repeating AhKd here crowds the action. The
+  card-row still knows N=2 (and `??` for a muck). Four- and
+  five-card Omaha has no combo, so those cards are prepended
+  `[As Ad Kh 7d]` -- otherwise the line is a board with nobody
+  in it. A muck keeps the slots (`[?? ?? ?? ??]`) so a PLO list
+  does not look like Hold'em. Overflow wraps to two lines
+  rather than dropping the holes.
 - Early folds. H2N sometimes drops them; we keep every voluntary
   action so a fold from UTG is still visible.
 - EP1–EP3. This project's seats are UTG/HJ/CO/BTN/SB/BB. STR is
@@ -36,10 +40,15 @@ against fixtures and does not need `hands.db`.
 """
 
 import html as html_lib
+import re
 import sqlite3
 import sys
+from pathlib import Path
 
+import games
 import lines
+import strength
+from equity import RANKS, SUITS
 
 STREETS = ("preflop", "flop", "turn", "river")
 VOLUNTARY = frozenset("FXCBRA")
@@ -80,16 +89,30 @@ POSITION_ANSI = {
 RESET = "\033[0m"
 UNDER = "\033[4m"
 UNDER_OFF = "\033[24m"
+BOLD = "\033[1m"
+BOLD_OFF = "\033[22m"
+
+# A mucked seat still occupies its N slots. Dropping them on ACR
+# (23% shown) made a PLO4 list look like Hold'em with an empty
+# combo, which is how a four-card hand disappears from a scan.
+MUCK = "??"
+
+# Longer than this and the holes wrap onto their own line. Cutting
+# the holes to keep one line is the failure the wrap exists to
+# refuse -- a PLO list without the four cards is a board.
+WRAP = 88
 
 
 def CompactHandRenderer(hand, fmt="text"):
     """
-    One hand as a single scannable line.
+    One hand as a scannable line, or two when the holes would be cut.
 
     `hand` is the dict `query.hand_detail` returns, or a slimmer fixture
     with `bb`, `board`, `focus` and `streets`. `fmt` is text, ansi or
     html. Text marks the focus seat as _R3_ because a Treeview cell
-    cannot underline a substring.
+    cannot underline a substring. Omaha prepends N∈{4,5} hole cards
+    (or `??` for a muck). Hold'em stays off the line -- the combo
+    column already has AhKd.
     """
     if not hand:
         return ""
@@ -121,22 +144,128 @@ def CompactHandRenderer(hand, fmt="text"):
         chunk = "  ".join(([head] if head else []) + tokens)
         if chunk:
             parts.append(chunk)
-    line = " | ".join(parts)
-    cards = _focus_cards(hand)
-    if cards:
-        shown = f"[{cards}]"
-        if fmt == "html":
-            shown = f"<span class=\"hole\">{html_lib.escape(shown)}</span>"
-        line = f"{shown} {line}" if line else shown
-    return line
+    action = " | ".join(parts)
+    shown = _hole_prefix(hand, fmt)
+    if not shown:
+        return action
+    sep = "<br>" if fmt == "html" else "\n"
+    glued = f"{shown} {action}" if action else shown
+    # Measure the text form. HTML tags and ANSI would make a short
+    # Hold'em line look like overflow and wrap a line that fits.
+    if _visible_len(shown, fmt) + (1 if action else 0) + _visible_len(action, fmt) > WRAP and action:
+        return f"{shown}{sep}{action}"
+    return glued
+
+
+def card_row(cards, n=None, used=None, fmt="text"):
+    """
+    N hole-card slots. Missing ones stay `??`, never disappear.
+
+    N is 2, 4 or 5. A Hold'em muck is `?? ??`; a PLO4 muck is
+    four of them. `used` is the exactly-two hole cards that made
+    the Omaha hand -- the replayer highlights those, and only
+    those. Scoring all four as Hold'em is the lie `best_omaha`
+    exists to refuse.
+    """
+    n = _holes_n(n, cards)
+    parts = [p for p in str(cards or "").split() if p]
+    slots = []
+    for i in range(n):
+        c = parts[i] if i < len(parts) else MUCK
+        slots.append(_paint_card(c, used, fmt))
+    return " ".join(slots)
+
+
+def hand_cell(row, fmt="text"):
+    """
+    What the list 'hand' column shows.
+
+    Hold'em keeps the combo (AKs) -- repeating AhKd next to a
+    combo column is how the compact line got crowded. Omaha has
+    no combo, so the column is the N-card row, with `??` for a
+    muck. One function, so Reports / Sessions / Marks / Notes
+    cannot drift.
+    """
+    combo = row.get("combo")
+    n = holes_of(row)
+    if n <= 2 and combo:
+        return combo
+    if n >= 4:
+        return card_row(row.get("cards"), n, fmt=fmt)
+    cards = row.get("cards") or ""
+    if len(str(cards).split()) >= 4:
+        return cards
+    return "--"
+
+
+def holes_of(row):
+    """N∈{2,4,5} from the registry, then the cards, then Hold'em."""
+    n = row.get("hole_card_count") or row.get("holes")
+    if n in (2, 4, 5):
+        return int(n)
+    game = row.get("game")
+    if game:
+        try:
+            return games.holes(game)
+        except KeyError:
+            pass
+    cards = row.get("cards") or ""
+    got = len(str(cards).split()) if cards else 0
+    if got in (2, 4, 5):
+        return got
+    return 2
+
+
+def used_in_made(cards, board):
+    """
+    The two hole cards that made the Omaha hand, or ().
+
+    `best_omaha` already walked C(N,2)×C(board,3). Asking it
+    again here is the same answer; inventing a second walk is
+    how a highlight would disagree with the histogram.
+    """
+    hole = strength.parse(cards)
+    table = strength.parse(board)
+    if len(hole) < 4 or len(table) < 3:
+        return ()
+    picked = strength.best_omaha(hole, table)
+    if not picked:
+        return ()
+    _shape, h2, _b3 = picked
+    return tuple(_unparse(c) for c in h2)
+
+
+def decorate_detail(d, fmt="text"):
+    """Stamp compact, card-row, and used-two onto a hand_detail dict."""
+    if not d:
+        return d
+    n = holes_of(d)
+    board = d.get("board") or ""
+    d["hole_card_count"] = n
+    d["compact"] = CompactHandRenderer(d, fmt=fmt)
+    for s in d.get("seats") or []:
+        used = used_in_made(s.get("cards"), board) if n >= 4 else ()
+        s["used"] = list(used)
+        s["hand"] = card_row(s.get("cards"), n, used=used, fmt=fmt)
+    return d
 
 
 def attach(con, rows, fmt="text"):
-    """Write `compact` onto matching-hand rows. No-op without `actions`."""
+    """Write `compact` and the card-row onto matching-hand rows."""
     pairs = [(r.get("id"), r.get("seat")) for r in rows if r.get("id") is not None]
     got = lines_for(con, pairs, fmt=fmt)
+    meta = _row_meta(con, pairs)
     for r in rows:
-        r["compact"] = got.get((r.get("id"), r.get("seat")), "")
+        key = (r.get("id"), r.get("seat"))
+        r["compact"] = got.get(key, "")
+        info = meta.get(key) or {}
+        if info.get("game") and not r.get("game"):
+            r["game"] = info["game"]
+        if info.get("hole_card_count") and not r.get("hole_card_count"):
+            r["hole_card_count"] = info["hole_card_count"]
+        if info.get("cards") and not r.get("cards"):
+            r["cards"] = info["cards"]
+        r["hand"] = hand_cell(r, fmt=fmt)
     return rows
 
 
@@ -168,7 +297,9 @@ def lines_for(con, pairs, fmt="text"):
             continue
         cards = (raw.get("seat_cards") or {}).get(seat)
         out[(hid, seat)] = CompactHandRenderer(
-            dict(raw, focus=seat, cards=cards), fmt=fmt)
+            dict(raw, focus=seat, cards=cards,
+                 game=raw.get("game"),
+                 hole_card_count=raw.get("hole_card_count")), fmt=fmt)
     return out
 
 
@@ -208,6 +339,86 @@ def check():
         ]})
     if not plo5.startswith("[Qh Jh Qd Kc 2c]"):
         fails.append(f"PLO5 compact hid the five cards: {plo5!r}")
+
+    # N∈{2,4,5}. Hold'em stays two slots; Omaha never collapses to a combo.
+    if card_row("Ah Kd", 2) != "Ah Kd":
+        fails.append(f"N=2 card-row was {card_row('Ah Kd', 2)!r}")
+    if card_row("As Ad Kh 7d", 4) != "As Ad Kh 7d":
+        fails.append(f"N=4 card-row was {card_row('As Ad Kh 7d', 4)!r}")
+    if card_row("Qh Jh Qd Kc 2c", 5) != "Qh Jh Qd Kc 2c":
+        fails.append(f"N=5 card-row was {card_row('Qh Jh Qd Kc 2c', 5)!r}")
+    if card_row(None, 2) != "?? ??":
+        fails.append(f"N=2 muck was {card_row(None, 2)!r}, not ?? ??")
+    if card_row("", 4) != "?? ?? ?? ??":
+        fails.append(f"N=4 muck was {card_row('', 4)!r}")
+    if card_row(None, 5) != "?? ?? ?? ?? ??":
+        fails.append(f"N=5 muck was {card_row(None, 5)!r}")
+
+    muck4 = CompactHandRenderer({
+        "bb": 0.10, "focus": 2, "game": "OMAHA", "hole_card_count": 4,
+        "streets": [
+            {"street": "preflop", "board": "", "actions": [
+                _act(2, "BB", "X", 0),
+            ]},
+        ]})
+    if not muck4.startswith("[?? ?? ?? ??]"):
+        fails.append(f"PLO4 muck hid the four slots: {muck4!r}")
+    hold_muck = CompactHandRenderer({
+        "bb": 1, "focus": 1, "game": "HOLDEM", "hole_card_count": 2,
+        "cards": "",
+        "streets": [
+            {"street": "preflop", "board": "", "actions": [
+                _act(1, "BB", "X", 0),
+            ]},
+        ]})
+    if hold_muck.startswith("["):
+        fails.append(f"Hold'em compact grew a hole prefix: {hold_muck!r}")
+
+    # Overflow wraps. Cutting the holes to keep one line is the
+    # failure a six-way PLO flop would have shipped.
+    wide = CompactHandRenderer({
+        "bb": 1, "focus": 2, "cards": "As Ad Kh 7d", "game": "OMAHA",
+        "hole_card_count": 4,
+        "streets": [
+            {"street": "preflop", "board": "", "actions": [
+                _act(1, "UTG", "F", 0),
+                _act(3, "HJ", "R", 3),
+                _act(4, "CO", "C", 3),
+                _act(5, "BTN", "C", 3),
+                _act(6, "SB", "F", 0),
+                _act(2, "BB", "C", 2),
+            ]},
+            {"street": "flop", "board": "7h Ks 8c", "actions": [
+                _act(2, "BB", "X", 0, pot_bb=12),
+                _act(3, "HJ", "B", 8, pot_bb=12),
+                _act(4, "CO", "C", 8),
+                _act(5, "BTN", "C", 8),
+                _act(2, "BB", "F", 0),
+            ]},
+        ]})
+    if "\n" not in wide:
+        fails.append(f"overflow stayed one line: {wide!r}")
+    first, rest = wide.split("\n", 1)
+    if first != "[As Ad Kh 7d]":
+        fails.append(f"overflow dropped the holes: {first!r}")
+    if "7h Ks 8c" not in rest or "BB _X_" not in rest:
+        fails.append(f"overflow dropped the action: {rest!r}")
+
+    used = used_in_made("As Ad Kh 7d", "Kc 2h 3s")
+    if set(used) != {"As", "Ad"}:
+        fails.append(f"used-two on aces over K23 was {used}, not As Ad")
+    painted = card_row("As Ad Kh 7d", 4, used=used)
+    if "*As*" not in painted or "*Ad*" not in painted:
+        fails.append(f"used-two was not marked: {painted!r}")
+    if "*Kh*" in painted or "*7d*" in painted:
+        fails.append(f"unused hole cards were marked: {painted!r}")
+
+    if hand_cell({"combo": "AKs", "game": "HOLDEM"}) != "AKs":
+        fails.append("Hold'em hand cell dropped the combo")
+    if hand_cell({"cards": "As Ad Kh 7d", "game": "OMAHA"}) != "As Ad Kh 7d":
+        fails.append("PLO4 hand cell hid the four cards")
+    if hand_cell({"game": "OMAHA5"}) != "?? ?? ?? ?? ??":
+        fails.append("PLO5 hand cell hid the muck slots")
 
     fold_check = CompactHandRenderer({
         "bb": 1, "focus": 2, "streets": [
@@ -317,6 +528,9 @@ def check():
     if orphan[0].get("compact"):
         fails.append("attach without actions wrote a line")
     bare.close()
+
+    fails.extend(_check_snapshots())
+    fails.extend(_check_smoke())
 
     print(f"compact hand encodings        "
           f"{'yes' if not fails else 'NO'}")
@@ -474,6 +688,9 @@ def _paint(pos, body, hero, fmt):
 def _load_hands(con, ids, acols, dcols):
     qs = ",".join("?" * len(ids))
     allin_sql = "a.allin" if "allin" in acols else "0"
+    hcols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
+    game_sql = "h.game" if "game" in hcols else "NULL"
+    holes_sql = "h.hole_card_count" if "hole_card_count" in hcols else "NULL"
     extra, join = "", ""
     if dcols:
         extra = (", d.pot_before, d.pot_bb, d.to_call, d.agg"
@@ -483,7 +700,8 @@ def _load_hands(con, ids, acols, dcols):
             join = (" LEFT JOIN decisions d ON d.hand_id = a.hand_id "
                     "AND d.n = a.n")
     sql = (f"SELECT a.hand_id, a.street, a.n, a.position, a.seat, a.action, "
-           f"a.amount, a.total, {allin_sql}, h.bb, h.board{extra} "
+           f"a.amount, a.total, {allin_sql}, h.bb, h.board, "
+           f"{game_sql}, {holes_sql}{extra} "
            f"FROM actions a JOIN hands h ON h.hand_id = a.hand_id{join} "
            f"WHERE a.hand_id IN ({qs}) ORDER BY a.hand_id, a.n")
     rows = con.execute(sql, ids).fetchall()
@@ -492,7 +710,8 @@ def _load_hands(con, ids, acols, dcols):
     for r in rows:
         hid = r[0]
         if hid not in grouped:
-            grouped[hid] = {"bb": r[9], "board": r[10], "actions": [],
+            grouped[hid] = {"bb": r[9], "board": r[10], "game": r[11],
+                            "hole_card_count": r[12], "actions": [],
                             "seat_cards": {}}
         action = {
             "street": r[1], "n": r[2], "position": r[3], "seat": r[4],
@@ -500,10 +719,10 @@ def _load_hands(con, ids, acols, dcols):
             "allin": bool(r[8]),
         }
         if has_dec:
-            action["pot_before"] = r[11]
-            action["pot_bb"] = r[12]
-            action["to_call"] = r[13]
-            action["agg"] = r[14]
+            action["pot_before"] = r[13]
+            action["pot_bb"] = r[14]
+            action["to_call"] = r[15]
+            action["agg"] = r[16]
         grouped[hid]["actions"].append(action)
     names = {r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -530,34 +749,282 @@ def _as_hand(raw):
             continue
         streets.append({"street": st, "board": shown[st], "actions": acts})
     return {"bb": raw.get("bb"), "board": raw.get("board"),
+            "game": raw.get("game"),
+            "hole_card_count": raw.get("hole_card_count"),
             "streets": streets, "seat_cards": raw.get("seat_cards") or {}}
 
 
-def _focus_cards(hand):
+def _hole_prefix(hand, fmt):
     """
-    Four or five hole cards for the focus seat, or None.
+    `[As Ad Kh 7d]` / `[?? ?? ?? ??]` for Omaha, or None.
 
     Two-card Hold'em stays off the line -- the combo column already
-    has AhKd. Omaha has no combo, so the cards have to live here.
+    has AhKd. A muck still keeps four or five slots so a PLO list
+    cannot be scanned as Hold'em with an empty combo.
     """
+    n = holes_of(hand)
+    if n < 4:
+        cards = _focus_hole_text(hand)
+        if cards and len(cards.split()) >= 4:
+            n = len(cards.split())
+        else:
+            return None
+    cards = _focus_hole_text(hand)
+    body = card_row(cards, n, fmt=fmt)
+    if fmt == "html":
+        return f"<span class=\"hole\">[{body}]</span>"
+    return f"[{body}]"
+
+
+def _focus_hole_text(hand):
     cards = hand.get("cards") or ""
-    if not cards:
-        focus = hand.get("focus")
-        if focus is None:
-            focus = hand.get("focus_seat")
-        for s in hand.get("seats") or []:
-            if s.get("seat") == focus and s.get("cards"):
-                cards = s["cards"]
-                break
-        if not cards and focus is not None:
-            cards = (hand.get("seat_cards") or {}).get(focus) or ""
+    if cards:
+        return cards
+    focus = hand.get("focus")
+    if focus is None:
+        focus = hand.get("focus_seat")
+    for s in hand.get("seats") or []:
+        if s.get("seat") == focus and s.get("cards"):
+            return s["cards"]
+    if focus is not None:
+        return (hand.get("seat_cards") or {}).get(focus) or ""
+    return ""
+
+
+def _focus_cards(hand):
+    """Four or five shown hole cards, or None. Kept for the old callers."""
+    cards = _focus_hole_text(hand)
     n = len(str(cards).split()) if cards else 0
     return cards if n >= 4 else None
+
+
+def _holes_n(n, cards):
+    if n in (2, 4, 5):
+        return int(n)
+    got = len(str(cards or "").split()) if cards else 0
+    if got in (2, 4, 5):
+        return got
+    return 2
+
+
+def _paint_card(c, used, fmt):
+    if c == MUCK:
+        if fmt == "html":
+            return f'<span class="muck">{MUCK}</span>'
+        return MUCK
+    mark = bool(used) and c in used
+    if fmt == "html":
+        body = html_lib.escape(c)
+        cls = "used" if mark else ""
+        return f'<span class="{cls}">{body}</span>' if cls else body
+    if fmt == "ansi":
+        return f"{BOLD}{c}{BOLD_OFF}" if mark else c
+    if mark:
+        return f"*{c}*"
+    return c
+
+
+def _unparse(c):
+    return RANKS[c[0]] + SUITS[c[1]]
+
+
+def _visible_len(s, fmt):
+    if not s:
+        return 0
+    if fmt == "html":
+        return len(re.sub(r"<[^>]+>", "", s))
+    if fmt == "ansi":
+        return len(re.sub(r"\033\[[0-9;]*m", "", s))
+    return len(s)
+
+
+def _strip_paint(s, fmt):
+    if fmt == "html":
+        return re.sub(r"<[^>]+>", "", s)
+    if fmt == "ansi":
+        return re.sub(r"\033\[[0-9;]*m", "", s)
+    return s.replace("*", "")
+
+
+def _row_meta(con, pairs):
+    """game / hole_card_count / cards for the listed (hand, seat) pairs."""
+    if not pairs:
+        return {}
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "hands" not in tables:
+        return {}
+    hcols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
+    ids = list({hid for hid, _s in pairs if hid is not None})
+    if not ids:
+        return {}
+    qs = ",".join("?" * len(ids))
+    game_sql = "game" if "game" in hcols else "NULL"
+    holes_sql = "hole_card_count" if "hole_card_count" in hcols else "NULL"
+    by_hand = {r[0]: (r[1], r[2]) for r in con.execute(
+        f"SELECT hand_id, {game_sql}, {holes_sql} FROM hands "
+        f"WHERE hand_id IN ({qs})", ids)}
+    cards = {}
+    if "seats" in tables:
+        for hid, seat, c in con.execute(
+                f"SELECT hand_id, seat, cards FROM seats "
+                f"WHERE hand_id IN ({qs})", ids):
+            cards[(hid, seat)] = c
+    out = {}
+    for hid, seat in pairs:
+        g, n = by_hand.get(hid, (None, None))
+        out[(hid, seat)] = {"game": g, "hole_card_count": n,
+                            "cards": cards.get((hid, seat))}
+    return out
 
 
 def _chunks(xs, n):
     for i in range(0, len(xs), n):
         yield xs[i:i + n]
+
+
+def from_parsed(parsed, focus=None):
+    """Parser dict → CompactHandRenderer input. Smoke, not a second pot."""
+    h = parsed["hand"]
+    game = h.get("game")
+    try:
+        n = games.holes(game) if game else None
+    except KeyError:
+        n = None
+    focus = h.get("hero_seat") if focus is None else focus
+    cards = None
+    for s in parsed.get("seats") or []:
+        if s.get("seat") == focus:
+            cards = s.get("cards")
+            break
+    by = {}
+    for a in parsed.get("actions") or []:
+        by.setdefault(a.get("street") or "preflop", []).append(a)
+    board = (h.get("board") or "").split()
+    shown = {"preflop": "", "flop": " ".join(board[:3]),
+             "turn": " ".join(board[:4]), "river": " ".join(board[:5])}
+    streets = []
+    for st in STREETS:
+        acts = by.get(st) or []
+        if not acts:
+            continue
+        streets.append({"street": st, "board": shown[st], "actions": acts})
+    return {
+        "bb": h.get("bb"), "board": h.get("board"), "game": game,
+        "hole_card_count": n, "focus": focus, "cards": cards,
+        "seats": parsed.get("seats") or [], "streets": streets,
+    }
+
+
+def _check_snapshots():
+    """Golden encodings on disk. A silent rewrite is a different product."""
+    fails = []
+    here = Path(__file__).parent / "fixtures" / "compact"
+    cases = {
+        "nlhe_h2n.txt": CompactHandRenderer(_h2n_example()),
+        "plo4.txt": CompactHandRenderer({
+            "bb": 0.10, "focus": 2, "cards": "As Ad Kh 7d",
+            "game": "OMAHA", "hole_card_count": 4,
+            "streets": [
+                {"street": "preflop", "board": "", "actions": [
+                    _act(1, "SB", "C", 0.05),
+                    _act(2, "BB", "X", 0),
+                ]},
+                {"street": "flop", "board": "Kc 2h 3s", "actions": [
+                    _act(1, "SB", "X", 0, pot_bb=2),
+                    _act(2, "BB", "B", 0.20, pot_bb=2),
+                ]},
+            ]}),
+        "plo5.txt": CompactHandRenderer({
+            "bb": 0.10, "focus": 1, "cards": "Qh Jh Qd Kc 2c",
+            "game": "OMAHA5", "hole_card_count": 5,
+            "streets": [
+                {"street": "preflop", "board": "", "actions": [
+                    _act(1, "BB", "X", 0),
+                ]},
+            ]}),
+        "plo4_muck.txt": CompactHandRenderer({
+            "bb": 0.10, "focus": 2, "game": "OMAHA", "hole_card_count": 4,
+            "streets": [
+                {"street": "preflop", "board": "", "actions": [
+                    _act(2, "BB", "X", 0),
+                ]},
+            ]}),
+        "card_row_n.txt": "\n".join((
+            card_row("Ah Kd", 2),
+            card_row("As Ad Kh 7d", 4),
+            card_row("Qh Jh Qd Kc 2c", 5),
+            card_row(None, 2),
+            card_row("", 4),
+            card_row(None, 5),
+        )),
+    }
+    if not here.is_dir():
+        here.mkdir(parents=True)
+    for name, got in cases.items():
+        path = here / name
+        if not path.exists():
+            path.write_text(got + "\n", encoding="utf-8")
+            fails.append(f"snapshot {name} was missing; wrote it")
+            continue
+        want = path.read_text(encoding="utf-8").rstrip("\n")
+        if got != want:
+            fails.append(f"snapshot {name} was {got!r}, not {want!r}")
+    return fails
+
+
+def _check_smoke():
+    """Ignition / ACR PLO histories through the renderer, no corpus."""
+    fails = []
+    import acr
+    import ignition
+
+    src = "HH - RING - $0.05-$0.10 - OMAHA.txt"
+    p4 = ignition.parse_hand(ignition.PLO4_PLAYED, source=src)
+    if p4 is None:
+        fails.append("Ignition PLO4_PLAYED did not parse")
+        return fails
+    h4 = from_parsed(p4, focus=2)
+    line4 = CompactHandRenderer(h4)
+    if "[As Ad Kh 7d]" not in line4.split("\n")[0]:
+        fails.append(f"Ignition PLO4 smoke hid the holes: {line4!r}")
+    if "C0.5" not in line4 and "C.5" not in line4:
+        fails.append(f"Ignition PLO4 smoke lost the limp: {line4!r}")
+    seats4 = decorate_detail(dict(h4, board=h4.get("board") or "Kc 2h 3s"),
+                             fmt="text")["seats"]
+    hero4 = next(s for s in seats4 if s.get("seat") == 2)
+    if "As" not in (hero4.get("hand") or ""):
+        fails.append(f"Ignition PLO4 replayer hid hero: {hero4.get('hand')!r}")
+    if set(hero4.get("used") or []) != {"As", "Ad"}:
+        fails.append(f"Ignition PLO4 used-two was {hero4.get('used')}")
+
+    p5 = ignition.parse_hand(ignition.PLO5, source=src.replace("OMAHA", "5CARD OMAHA"))
+    if p5 is None:
+        fails.append("Ignition PLO5 did not parse")
+    else:
+        h5 = from_parsed(p5, focus=2)
+        line5 = CompactHandRenderer(h5)
+        if "[Qh Jh Qd Kc 2c]" not in line5.split("\n")[0]:
+            fails.append(f"Ignition PLO5 smoke hid the five: {line5!r}")
+        if card_row(h5.get("cards"), 5).split() != [
+                "Qh", "Jh", "Qd", "Kc", "2c"]:
+            fails.append(f"Ignition PLO5 card-row was {h5.get('cards')!r}")
+
+    show = acr.parse_hand(acr.PLO4_SHOW, source="acr")
+    if show is None:
+        fails.append("ACR PLO4_SHOW did not parse")
+    else:
+        hs = from_parsed(show, focus=2)
+        line_s = CompactHandRenderer(hs)
+        if "[As Ad Kh 7d]" not in line_s.split("\n")[0]:
+            fails.append(f"ACR PLO4 showdown hid the holes: {line_s!r}")
+        used = used_in_made("As Ad Kh 7d", show["hand"].get("board") or "")
+        if set(used) != {"As", "Ad"}:
+            fails.append(f"ACR showdown used-two was {used}")
+        muck = card_row(None, holes_of(hs))
+        if muck != "?? ?? ?? ??":
+            fails.append(f"ACR muck row was {muck!r}")
+    return fails
 
 
 if __name__ == "__main__":

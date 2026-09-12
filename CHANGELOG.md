@@ -8,6 +8,27 @@ Newest first.
 
 ---
 
+## PLO Compact + Replayer: 4/5 hole cards, muck slots, two-line wrap
+
+The list 'hand' column was still a Hold'em combo. Omaha has none, so
+PLO4/PLO5 rows printed `–` and the four cards lived only on a compact
+line a Treeview then clipped. A muck looked like Hold'em with an
+empty combo.
+
+- **`compact.card_row`** — N∈{2,4,5} slots. Missing ones stay `??`.
+- **Compact** — `[As Ad Kh 7d]` / five cards on the line; `[?? ?? ?? ??]`
+  for a muck. Overflow wraps to two lines. Hold'em still omits holes
+  (the combo column has AhKd). Same X/B/C/R, boards, pot, `'`, underline.
+- **Replayer** — deals PLO4/PLO5 end-to-end. Optional mark of the
+  exactly-two hole cards `best_omaha` used. No invented EV.
+- **Lists** — Reports / Sessions / Marks / Notes use the same card-row.
+- **Snapshots** in `fixtures/compact/`; Ignition/ACR PLO smoke in
+  `compact --check`. NLHE A–I unchanged.
+
+Deferred: Stars/GG Omaha parse, Game Type GUI, pot-limit bet chrome.
+
+---
+
 ## PLO hand-strength: Omaha groups, not Hold'em bars
 
 The histogram on `--game plo` was honest labels on Hold'em bars —

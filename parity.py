@@ -542,6 +542,16 @@ def check_J(con):
         ("2459808911", 2), "")
     if "[As Ad Kh 7d]" not in line:
         fails.append(f"J: compact hid the four cards: {line!r}")
+    line5 = compact.lines_for(con, [("2459651457", 2)], fmt="text").get(
+        ("2459651457", 2), "")
+    if "[Qh Jh Qd Kc 2c]" not in line5.split("\n")[0]:
+        fails.append(f"J: PLO5 compact hid the five cards: {line5!r}")
+    hands = query.matching_hands(con, "hand_id = '2459808911' AND seat = 2")
+    if not hands or hands[0].get("hand") != "As Ad Kh 7d":
+        fails.append(f"J: list hand cell was {hands[0].get('hand') if hands else None!r}")
+    used = compact.used_in_made("As Ad Kh 7d", "Kc 2h 3s")
+    if set(used) != {"As", "Ad"}:
+        fails.append(f"J: used-two on the ACR overpair was {used}")
 
     made = con.execute(
         "SELECT made FROM decisions WHERE hand_id='cp-2459808999' "

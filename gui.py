@@ -460,7 +460,7 @@ def payload(con, params):
         d = query.hand_detail(
             con, hid, int(seat) if seat.isdigit() else None)
         if d:
-            d["compact"] = compact.CompactHandRenderer(d, fmt="html")
+            compact.decorate_detail(d, fmt="html")
         return {"hand": d}
 
     if view == "graph":
@@ -545,9 +545,12 @@ th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
 tbody tr:hover{background:var(--panel)}
 tr.click{cursor:pointer}
 .compact{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:12px;letter-spacing:0;text-align:left}
+  font-size:12px;letter-spacing:0;text-align:left;white-space:pre-wrap}
 .compact u{text-underline-offset:2px}
-td.compact{text-align:left;font-weight:500}
+td.compact{text-align:left;font-weight:500;white-space:pre-wrap;max-width:52em}
+.compact .hole,.holes{letter-spacing:0}
+.used{font-weight:700;text-decoration:underline;text-underline-offset:2px}
+.muck{color:var(--dim)}
 .link{color:var(--accent);cursor:pointer}
 .thin{color:var(--dim)}
 .thin::after{content:' ?';color:#b8892a}
@@ -1583,7 +1586,7 @@ function renderStudyHands(rows){
     h += `<tr class="click handrow" data-id="${r.id}" data-seat="${r.seat}">`
       + `<td><button type="button" class="mark" data-id="${r.id}" data-unmark="${r.marked?1:0}">${r.marked?'★':'☆'}</button></td>`
       + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site||''}</td>`
-      + `<td>${r.pos||''}</td><td>${r.combo||'–'}</td>`
+      + `<td>${r.pos||''}</td><td>${r.hand||r.combo||'–'}</td>`
       + `<td>${r.net==null?'':money(r.net)}</td>`
       + `<td>${r.act==null?'–':money(r.act)}</td>`
       + `<td class="compact">${tags?('['+tags+'] '):''}${r.compact||r.board||''}</td></tr>`;
@@ -1981,7 +1984,7 @@ function render(d){
         + `<td><button type="button" class="mark" data-id="${r.id}" data-unmark="${r.marked?1:0}">${r.marked?'★':'☆'}</button></td>`
         + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site}</td>`
         + `<td class="n">${r.bb??''}</td><td>${r.pos||''}</td>`
-        + `<td>${r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
+        + `<td>${r.hand||r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
         + `<td>${r.act==null?'–':money(r.act)}</td>`
         + `<td>${r.call==null?'–':money(r.call)}</td>`
         + `<td class="compact">${tags?('['+tags+'] '):''}${r.compact||r.board||''}</td></tr>`;
@@ -2023,7 +2026,7 @@ function renderHand(d){
     const me = s.seat === d.focus ? ' style="background:#232833"' : '';
     h += `<tr${me}><td>${s.position||'?'}${s.is_hero?' <span class="n">(you)</span>':''}</td>`
       + `<td>${s.name||''}</td><td class="n">${(s.stack||0).toFixed(2)}</td>`
-      + `<td>${s.cards?CARDS(s.cards):'<span class="n">not shown</span>'}</td>`
+      + `<td>${s.hand||(s.cards?CARDS(s.cards):'<span class="n">not shown</span>')}</td>`
       + `<td>${money(net)}</td></tr>`;
   }
   h += '</tbody></table>';

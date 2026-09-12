@@ -3243,7 +3243,7 @@ class App(ImportMixin, ttk.Frame):
         # the full replay -- that path is unchanged.
         self._cols(tv, ("*", "when", "site", "bb", "pos", "hand", "net bb",
                         "act bb", "call bb", "compact"),
-                   (36, 140, 90, 60, 60, 70, 80, 80, 80, 440),
+                   (36, 140, 90, 60, 60, 130, 80, 80, 80, 440),
                    {"*": "w", "when": "w", "site": "w", "pos": "w", "hand": "w",
                     "compact": "w"})
         self._hand_ids = {}
@@ -3253,13 +3253,14 @@ class App(ImportMixin, ttk.Frame):
             star = "*" if r.get("marked") else ""
             extra = ",".join(r.get("tags") or [])
             compact_line = r.get("compact") or r.get("board") or ""
+            compact_line = compact_line.replace("\n", "  ").replace("<br>", "  ")
             if extra:
                 compact_line = f"[{extra}]  {compact_line}"
             iid = tv.insert("", "end", values=(
                 star,
                 (r.get("when") or "")[:16], r.get("site") or "",
                 f"{r['bb']:g}" if r.get("bb") else "",
-                r.get("pos") or "", r.get("combo") or "–",
+                r.get("pos") or "", r.get("hand") or r.get("combo") or "–",
                 f"{net:+.1f}" if net is not None else "",
                 f"{act:+.1f}" if act is not None else "–",
                 f"{call:+.1f}" if call is not None else "–",
@@ -5040,17 +5041,19 @@ class HandWindow(tk.Toplevel):
         text.insert("end", f"{d['hand_id']}\n", "head")
         text.insert("end", f"{d['site']}  {d['fmt']}  {stake}  "
                            f"{d['played_at']}  {d['table']}\n", "dim")
-        line = compact.CompactHandRenderer(d, fmt="text")
+        compact.decorate_detail(d, fmt="text")
+        line = d.get("compact") or ""
         if line:
             text.insert("end", f"{line}\n", "hi")
         text.insert("end", "\n")
         for s in d["seats"]:
             net = (s["won"] or 0) - (s["put_in"] or 0)
             mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
+            holes = s.get("hand") or s.get("cards") or "not shown"
             text.insert("end", f" {mark} {s['position'] or '?':4} "
                                f"{(s['name'] or '')[:18]:18} "
                                f"{s['stack'] or 0:9.2f}  "
-                               f"{s['cards'] or 'not shown':>10}  ")
+                               f"{holes:<17}  ")
             text.insert("end", f"{net:+9.2f}\n", "good" if net > 0 else "bad")
         for st in d["streets"]:
             head = st["street"].upper()
@@ -5684,6 +5687,38 @@ def check(db_path=DB):
     print(f"theme in use                   {theme}")
     if theme != "clam":
         fails.append(f"theme is {theme}, which will not honour dark colours")
+
+    # PLO list / replayer: the hand column is N cards, not a Hold'em
+    # combo. A missing combo used to print – and the four cards sat
+    # only on the compact line, which a Treeview then clipped.
+    app._render_hands(app.study_hands, {"rows": [
+        {"id": "p1", "seat": 2, "when": "2025-05-19", "site": "ignition",
+         "bb": 0.1, "pos": "BB", "combo": None,
+         "hand": "As Ad Kh 7d", "cards": "As Ad Kh 7d",
+         "net": 1.0, "act": 0.2,
+         "compact": "[As Ad Kh 7d]\nBB _X_"}]})
+    kids = app.study_hands.get_children()
+    shown = str(app.study_hands.item(kids[0])["values"]) if kids else ""
+    if "As Ad Kh 7d" not in shown:
+        fails.append(f"PLO hand list hid the four cards: {shown!r}")
+    if "BB _X_" not in shown:
+        fails.append(f"two-line compact lost the action in the tree: {shown!r}")
+    replay = compact.decorate_detail({
+        "bb": 0.10, "focus": 2, "game": "OMAHA", "hole_card_count": 4,
+        "board": "Kc 2h 3s", "cards": "As Ad Kh 7d",
+        "seats": [{"seat": 2, "cards": "As Ad Kh 7d", "position": "BB",
+                   "name": "hero", "stack": 10, "is_hero": 1,
+                   "won": 0.2, "put_in": 0.1}],
+        "streets": [{"street": "flop", "board": "Kc 2h 3s", "actions": [
+            {"seat": 2, "position": "BB", "action": "B", "amount": 0.20,
+             "allin": False, "pot_bb": 2}]}],
+    })
+    if "[As Ad Kh 7d]" not in (replay.get("compact") or ""):
+        fails.append("replayer compact hid the PLO4 holes")
+    if set((replay["seats"][0].get("used") or [])) != {"As", "Ad"}:
+        fails.append(f"replayer used-two was {replay['seats'][0].get('used')}")
+    print(f"PLO list + replayer card-row  "
+          f"{'yes' if not [f for f in fails if 'PLO' in f or 'replayer' in f or 'two-line' in f] else 'NO'}")
 
     con.close()
     root.destroy()

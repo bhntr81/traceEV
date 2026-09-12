@@ -85,7 +85,7 @@ python query.py --player dblj32 --pos BTN --hands
 python query.py --pot 3bet --ip --street river --define river_barrel3 --do bet
 python query.py --site ignition --quick threebet --chart
 python query.py --game plo --street flop --action bet --hist-postflop
-python query.py --game-type plo4-cash --hands
+python query.py --game-type plo4-cash --hands   # 4-card compact; muck is ?? ?? ?? ??
 python query.py --game-type plo4-cash --chart   # gated; Hands still lists cards
 python query.py --statistics --fmt cash --exclude-reg-vs-fish
 python query.py stats save "regs last 10" --hero --fmt cash --last-sessions 10
