@@ -8,6 +8,80 @@ Newest first.
 
 ---
 
+## Smart Reports, related spots, and a report that matches its filter
+
+The tracking half of Hand2Note is a tree of named situations, a popup
+that says what happened *here*, and a click to the neighbouring spot.
+This had the engine for all three and the surface of none of them:
+five guessed-at presets, a stats dump of whatever still had `n > 0`,
+and a report tab that led with VPIP under every filter.
+
+### Added — a Smart Reports tree, not five guesses
+
+`SMART_REPORTS` is the spots a tracker user actually clicks between:
+steal and blind defense, facing a 3-bet / 4-bet, the pot types, flop
+c-bet and the other seat, donk and check-raise, turn and river barrels,
+the same ideas in a 3-bet pot. Family and related sit beside the argv
+so `--presets`, the window's report box and the page's report menu
+draw the same tree. Saved reports still land at the end, under *saved*.
+
+Opening one **replaces the situation and keeps the person**. Leftover
+river chips AND-ed onto "Flop c-bets" used to match nothing and look
+like a broken report. The window, the page and `--preset` agree on
+that split; a cohort is still not a report, for the reason it never
+was.
+
+### Added — what they did in this spot
+
+`--stats` (and the stats tab, and the page) now leads with fold /
+check / call / bet / raise of the decisions the filter already
+selected, each with its `n` and a Wilson interval. A named stat asks
+a different question -- "of the times a cbet was possible" -- and
+stays the table underneath. The five verbs partition `decisions`;
+`--check` asserts the counts sum to the row count, because a missing
+verb would shrink every percentage and look like a tight pool. All-in
+is counted beside them: 95 of 236 here are calls.
+
+### Added — related spots
+
+From a flop c-bet: the other seat, IP / OOP, the turn, the 3-bet-pot
+version. CLI prints them under `--stats` as `--preset` lines you can
+paste; `--related` prints only those. The window draws them as
+clicks under the filter line; the page does the same. Generated
+variants that are already a named report use that name, so the box
+and the clicks stay one list.
+
+`--hero` is not part of the situation. A report opened on your own
+hands still recognises itself and still offers neighbours.
+
+### Changed — report columns follow the spot
+
+`columns_for` picks the stats the filter is about. A river filter
+that still leads with VPIP is a report of a different street: VPIP's
+chance is preflop, so every cell was empty and the `n` column --
+which was VPIP's denominator -- printed as zero. That was the report
+tab on "River bets". `--show` still wins; without it, flop spots
+show flop stats. The row `n` is now how many decisions the filter
+selected in that bucket, not VPIP's chance.
+
+### Checked
+
+`query.py --check` holds every built-in report to the same "builds
+and narrows" test as a flag, asserts every related name is a report,
+that `columns_for` drops VPIP on a river filter, that the action mix
+covers every decision, and that a report opened on hero is still
+that report. `app.py --check` asserts applying a spot rebuilds its
+flags and that opening a report drops the previous street.
+`gui.py --check` opens a preset the same way the command line does.
+
+### Not this, on purpose
+
+No HUD. No solver. No second filter language -- every new report is
+argv `build` already understands. Custom stats and saved reports are
+untouched.
+
+---
+
 ## PokerStars, the third site -- one parser and one registry entry
 
 9,961 hands of NL100 6-max from `Downloads

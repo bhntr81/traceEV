@@ -31,6 +31,7 @@ disagree eventually, and the disagreement will be silent.
 """
 
 import json
+import shlex
 import sqlite3
 import sys
 import threading
@@ -50,7 +51,8 @@ PORT = 8765
 # a flag to `query.py` is the only place a filter is ever defined.
 SWITCH_FIELDS = {
     "hero": "--hero", "pool": "--pool", "ip": "--ip", "oop": "--oop",
-    "pfa": "--pfa", "multiway": "--multiway", "headsup": "--headsup",
+    "pfa": "--pfa", "not_pfa": "--not-pfa",
+    "multiway": "--multiway", "headsup": "--headsup",
     "vs_pfa": "--vs-pfa", "standard": "--standard", "allin": "--allin",
     "vs_hero": "--vs-hero", "vs_pool": "--vs-pool",
 }
@@ -67,6 +69,16 @@ VALUE_FIELDS = {
 def argv_from(params):
     """A form's fields as the argument list `query.build` already understands."""
     argv = []
+    preset = (params.get("preset", [""])[0] or "").strip()
+    if preset:
+        argv += list(query.preset_argv(preset))
+    spot = (params.get("spot", [""])[0] or "").strip()
+    if spot:
+        # A neighbouring spot that is not a named report -- same flags
+        # the command line would take, written as one string so the page
+        # does not have to grow a control for every flag a report uses
+        # (`--facing` has no chip).
+        argv += shlex.split(spot)
     for field, flag in SWITCH_FIELDS.items():
         if params.get(field, [""])[0] in ("1", "true", "on"):
             argv.append(flag)
@@ -80,15 +92,17 @@ def argv_from(params):
 def payload(con, params):
     """Whatever the page asked for, as plain data."""
     view = params.get("view", ["stats"])[0]
-    where, label, parts = query.build(argv_from(params))
+    argv = argv_from(params)
+    where, label, parts = query.build(argv)
 
     def nothing():
         """Why this filter is empty, so the page never just goes blank."""
         return query.why_empty(con, parts)
-
     if view == "stats":
         n_dec, rows = query.stats_of(con, where)
         return {"label": label, "decisions": n_dec, "rows": rows,
+                "actions": query.actions_of(con, where),
+                "related": query.related_spots(argv),
                 "why": None if n_dec else nothing()}
 
     if view == "report":
@@ -97,17 +111,18 @@ def payload(con, params):
             return {"error": f"unknown dimension {dim}"}
         expr, order = query.DIMENSIONS[dim]
         cols = [c for c in (params.get("show", [""])[0] or "").split(",") if c]
-        cols = [c for c in cols if c in BY_KEY] or query.DEFAULT_COLUMNS
+        cols = [c for c in cols if c in BY_KEY] or query.columns_for(argv)
         grid = {c: query.rates_by(con, BY_KEY[c], expr, where) for c in cols}
-        counts = query.rates_by(con, BY_KEY["vpip"], expr, where)
-        keys = sorted({k for g in grid.values() for k in g},
+        counts = query.counts_by(con, expr, where)
+        keys = sorted({k for g in grid.values() for k in g} | set(counts),
                       key=lambda k: order(k) if k is not None else "")
         return {
             "label": label, "dim": dim,
             "columns": [{"key": c, "label": BY_KEY[c].label} for c in cols],
+            "related": query.related_spots(argv),
             "why": None if keys else nothing(),
             "rows": [{
-                "key": str(k), "n": counts.get(k, (0, 0))[0],
+                "key": str(k), "n": counts.get(k, 0),
                 "cells": [
                     None if not grid[c].get(k, (0, 0))[0] else {
                         "pct": 100 * grid[c][k][1] / grid[c][k][0],
@@ -197,6 +212,9 @@ def options(con):
         "stats": [{"key": s.key, "label": s.label, "group": s.group,
                    "note": s.note} for s in STATS],
         "defaults": query.DEFAULT_COLUMNS,
+        "reports": [{"name": n, "family": fam}
+                    for fam, names in query.reports_by_family()
+                    for n in names],
     }
 
 
@@ -261,6 +279,9 @@ tr.click{cursor:pointer}
 </header>
 <main>
 <aside>
+  <fieldset><legend>smart reports</legend>
+    <label><select id="preset"><option value="">no report</option></select></label>
+  </fieldset>
   <fieldset><legend>who</legend>
     <div class="chips" id="who">
       <span class="chip" data-f="hero">hero</span>
@@ -293,6 +314,7 @@ tr.click{cursor:pointer}
       <span class="chip" data-f="ip">in position</span>
       <span class="chip" data-f="oop">out of position</span>
       <span class="chip" data-f="pfa">was the raiser</span>
+      <span class="chip" data-f="not_pfa">was not the raiser</span>
       <span class="chip" data-f="vs_pfa">facing the raiser</span>
       <span class="chip" data-f="multiway">multiway</span>
       <span class="chip" data-f="headsup">heads up</span>
@@ -325,12 +347,13 @@ tr.click{cursor:pointer}
     <select id="by" style="width:auto;min-width:150px"></select>
   </div>
   <p class="filter" id="filter"></p>
+  <p class="filter" id="related"></p>
   <div id="out"><p class="empty">…</p></div>
 </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
-const state = {view:'stats', by:'position', flags:{}, multi:{}};
+const state = {view:'stats', by:'position', flags:{}, multi:{}, preset:'', spot:''};
 let OPT = {};
 
 const POSITIONS = ['UTG','HJ','CO','BTN','SB','BB'];
@@ -355,6 +378,7 @@ document.addEventListener('click', e => {
     // hero and pool are opposites, as are in and out of position; turning
     // one on has to turn its twin off or the filter selects nothing.
     const twins = {hero:'pool', pool:'hero', ip:'oop', oop:'ip',
+                   pfa:'not_pfa', not_pfa:'pfa',
                    multiway:'headsup', headsup:'multiway',
                    vs_hero:'vs_pool', vs_pool:'vs_hero'};
     state.flags[c.dataset.f] = !state.flags[c.dataset.f];
@@ -376,9 +400,19 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by']
+['site','stake','player','deep','short','since','until','where','by','preset']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
+    if (id === 'preset'){
+      state.preset = $('#preset').value;
+      state.spot = '';
+      // Opening a report replaces leftover situation chips.
+      ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin'].forEach(f => {
+        state.flags[f] = false;
+      });
+      ['pos','vs','street','pot','board'].forEach(g => { state.multi[g] = []; });
+      paintChips();
+    }
     load();
   }));
 $('#where').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
@@ -387,6 +421,8 @@ function params(){
   const p = new URLSearchParams();
   p.set('view', state.view);
   if (state.view === 'report' || state.view === 'results') p.set('by', state.by);
+  if (state.preset) p.set('preset', state.preset);
+  if (state.spot) p.set('spot', state.spot);
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
@@ -399,19 +435,60 @@ function params(){
 const money = v => `<span class="${v>=0?'pos':'neg'}">${v>=0?'+':''}${
   v.toLocaleString(undefined,{maximumFractionDigits:1})}</span>`;
 
+function paintRelated(items){
+  const host = $('#related');
+  if (!items || !items.length){ host.innerHTML = ''; return; }
+  host.innerHTML = 'related: ' + items.map((s,i) =>
+    `<a href="#" data-i="${i}" style="color:var(--accent);margin-right:10px">${s.name}</a>`
+  ).join('');
+  host.querySelectorAll('a').forEach(a => {
+    a.onclick = e => {
+      e.preventDefault();
+      const s = items[+a.dataset.i];
+      openSpot(s);
+    };
+  });
+}
+function openSpot(s){
+  // A report replaces the situation and keeps who, the same way the
+  // window's report box does -- leftover street chips AND-ed onto a
+  // flop report are how those reports used to open empty.
+  const keep = {hero: state.flags.hero, pool: state.flags.pool,
+                vs_hero: state.flags.vs_hero, vs_pool: state.flags.vs_pool};
+  state.flags = keep;
+  state.multi = {};
+  state.spot = '';
+  state.preset = s.preset || '';
+  if (!s.preset && s.argv && s.argv.length)
+    state.spot = s.argv.map(x => /\\s/.test(x) ? JSON.stringify(x) : x).join(' ');
+  const box = $('#preset');
+  if (box) box.value = state.preset;
+  paintChips();
+  load();
+}
+
 function render(d){
   const out = $('#out');
   $('#filter').textContent = 'filter: ' + (d.label || 'everything');
+  paintRelated(d.related);
   if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
   const nope = msg => `<p class="empty">nothing matches<br><span class="n">${
     d.why || msg || ''}</span></p>`;
 
   if (state.view === 'stats'){
-    if (!d.rows.length){
+    if (!d.rows.length && !(d.actions && d.actions.mix && d.actions.mix.length)){
       out.innerHTML = d.decisions
         ? `<p class="empty">no stat can occur inside this filter<br><span class="n">asking for a preflop stat inside street=flop does this</span></p>`
         : nope(); return; }
     let g = null, h = `<p class="n">${d.decisions.toLocaleString()} decisions match</p><table><tbody>`;
+    if (d.actions && d.actions.mix && d.actions.mix.length){
+      h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
+      for (const r of d.actions.mix.concat(d.actions.extra || []))
+        h += `<tr><td>${r.label}</td>`
+          + `<td class="${r.n<30?'thin':''}">${r.pct.toFixed(1)}%</td>`
+          + `<td class="n">±${r.band.toFixed(0)}</td>`
+          + `<td class="n">n=${r.n.toLocaleString()}</td></tr>`;
+    }
     for (const r of d.rows){
       if (r.group !== g){ g = r.group;
         h += `<tr><td colspan="4" class="group">${g}</td></tr>`; }
@@ -556,6 +633,19 @@ async function load(){
   chips('street', STREETS, 'street');
   chips('pot', POTS, 'pot');
   chips('board', OPT.boards, 'board');
+  if (OPT.reports){
+    let fam = null, html = '<option value="">no report</option>';
+    for (const r of OPT.reports){
+      if (r.family !== fam){
+        if (fam) html += '</optgroup>';
+        fam = r.family;
+        html += `<optgroup label="${fam}">`;
+      }
+      html += `<option>${r.name}</option>`;
+    }
+    if (fam) html += '</optgroup>';
+    $('#preset').innerHTML = html;
+  }
   $('#sub').textContent = OPT.sites.join(' · ');
   paintChips();
   load();
@@ -626,6 +716,7 @@ def check(db_path=DB):
           "--pot", "3bet"]),
         ({"where": ["eff_bb > 150"]}, ["--where", "eff_bb > 150"]),
         ({}, []),
+        ({"preset": ["3-bet pots"]}, list(query.SMART_REPORTS["3-bet pots"])),
     ]
     for form, argv in cases:
         a, _label_a, _pa = query.build(argv_from(form))
@@ -660,7 +751,8 @@ def check(db_path=DB):
     # The dropdowns must offer things this database actually has, or the
     # first click produces an empty page and looks broken.
     opt = options(con)
-    for name in ("sites", "stakes", "players", "boards", "dimensions", "stats"):
+    for name in ("sites", "stakes", "players", "boards", "dimensions", "stats",
+                 "reports"):
         if not opt[name]:
             fails.append(f"no {name} offered")
     print(f"dropdowns are populated      "

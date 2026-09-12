@@ -133,7 +133,8 @@ WHO = [("--reg", "the player is a reg"), ("--fish", "the player is a fish"),
        ("--regs-only", "everyone left is a reg"),
        ("--with-fish", "a fish is in the pot")]
 SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
-              ("--pfa", "was the raiser"), ("--vs-pfa", "facing the raiser"),
+              ("--pfa", "was the raiser"), ("--not-pfa", "was not the raiser"),
+              ("--vs-pfa", "facing the raiser"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
 # Turning one of these on turns its opposite off, or the filter selects
@@ -141,6 +142,7 @@ SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
 OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--oop": "--ip", "--multiway": "--headsup",
              "--headsup": "--multiway",
+             "--pfa": "--not-pfa", "--not-pfa": "--pfa",
              "--reg": "--fish", "--fish": "--reg",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
              "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero"}
@@ -669,10 +671,10 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box = ttk.Combobox(
             bar, textvariable=self.preset,
             values=["" ] + list(query.reports()), state="readonly",
-            width=22)
+            width=28)
         self.preset_box.pack(side="left")
         self.preset_box.bind("<<ComboboxSelected>>",
-                             lambda _e: self.refresh())
+                             lambda _e: self._on_preset())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
@@ -696,6 +698,91 @@ class App(ImportMixin, ttk.Frame):
         self.cohort_btn.configure(text="Players")
         self.preset.set("")
         self.refresh()
+
+    # Who is being measured, as opposed to the situation they are in. A
+    # Smart Report replaces the situation and keeps the person -- opening
+    # "Flop c-bets" while hero is selected would otherwise AND the leftover
+    # street/pot clicks onto the report and often match nothing.
+    WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
+                    "--reg", "--fish", "--vs-reg", "--vs-fish",
+                    "--with-fish", "--regs-only")
+    WHO_VALS = ("site", "stake", "player", "since", "until")
+
+    def clear_situation(self, keep_preset=False):
+        """Drop the situation filters; keep the player, the site, the cohort."""
+        for flag, var in self.flags.items():
+            if flag not in self.WHO_SWITCHES:
+                var.set(False)
+        for group in self.multi:
+            self.multi[group] = set()
+        for name, var in self.vals.items():
+            if name not in self.WHO_VALS:
+                var.set("")
+        if not keep_preset:
+            self.preset.set("")
+
+    def _on_preset(self):
+        """Opening a named report replaces the situation, the way H2N does."""
+        if self.preset.get():
+            self.clear_situation(keep_preset=True)
+        self.refresh()
+
+    def apply_report(self, name):
+        """Open a named Smart Report and keep who is being measured."""
+        self.clear_situation()
+        self.preset.set(name)
+        self.refresh()
+
+    def apply_spot(self, name, argv):
+        """
+        Open a neighbouring spot. A named report goes through the box;
+        a generated variant (same filter, in position) is written onto
+        the widgets so it is the filter you would have built by hand.
+        """
+        self.clear_situation()
+        if name in query.reports():
+            self.preset.set(name)
+        else:
+            self._apply_argv(argv)
+        self.refresh()
+
+    def _apply_argv(self, argv):
+        """Set the widgets from a flag list. The inverse of `argv`."""
+        i = 0
+        argv = query.situation_only(list(argv))
+        while i < len(argv):
+            a = argv[i]
+            if a in self.flags:
+                self.flags[a].set(True)
+                twin = OPPOSITES.get(a)
+                if twin:
+                    self.flags[twin].set(False)
+                i += 1
+                continue
+            if a in query.VALUE_FLAGS and i + 1 < len(argv):
+                v = argv[i + 1]
+                group = {"--pos": "pos", "--vs": "vs", "--street": "street",
+                         "--pot": "pot", "--board": "board", "--quick": "quick",
+                         "--made": "made", "--kicker": "kicker",
+                         "--fd": "fd", "--sd": "sd",
+                         "--turn-card": "turn_card",
+                         "--river-card": "river_card"}.get(a)
+                if group:
+                    self.multi[group] = set(x.strip() for x in v.split(",")
+                                            if x.strip())
+                else:
+                    name = {"--site": "site", "--stake": "stake",
+                            "--player": "player", "--deep": "deep",
+                            "--short": "short", "--since": "since",
+                            "--until": "until", "--where": "where",
+                            "--line": "line", "--node": "node",
+                            "--pre": "pre", "--flop": "flop",
+                            "--turn": "turn", "--river": "river"}.get(a)
+                    if name:
+                        self.vals[name].set(v)
+                i += 2
+                continue
+            i += 1
 
     def open_cohort(self):
         CohortDialog(self)
@@ -741,7 +828,12 @@ class App(ImportMixin, ttk.Frame):
         self.bar = bar
 
         self.filter_line = ttk.Label(right, text="", style="Dim.TLabel")
-        self.filter_line.pack(anchor="w", padx=14, pady=(0, 8))
+        self.filter_line.pack(anchor="w", padx=14, pady=(0, 4))
+        # Neighbouring spots, the way Hand2Note's report tree lets you
+        # walk from a flop c-bet to the other seat and the next street
+        # without rebuilding the filter. Built empty; `refresh` fills it.
+        self.related_bar = ttk.Frame(right)
+        self.related_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         self.tabs = {}
         for name in ("stats", "range", "chart", "report", "results", "graph",
@@ -862,6 +954,7 @@ class App(ImportMixin, ttk.Frame):
         diag.event("refresh", view=view, filter=label)
         self.filter_line.configure(text="filter: " + label)
         self.summary.configure(text=self.describe_filter())
+        self._paint_related(query.related_spots(query_argv))
         if self.argv():
             self.clear_btn.pack(side="left", padx=(6, 0))
         else:
@@ -871,8 +964,29 @@ class App(ImportMixin, ttk.Frame):
         self.status.configure(text="working…")
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
-                               self.by.get(), cohort_spec, self.chart_stat())
+                               self.by.get(), cohort_spec, self.chart_stat(),
+                               query_argv)
                          ).start()
+
+    def _paint_related(self, related):
+        """Clickable neighbours under the filter line."""
+        for kid in self.related_bar.winfo_children():
+            kid.destroy()
+        if not related:
+            return
+        ttk.Label(self.related_bar, text="related",
+                  style="Dim.TLabel").pack(side="left", padx=(0, 8))
+        for spot in related:
+            lab = tk.Label(self.related_bar, text=spot["name"],
+                           bg=BG, fg=ACCENT, cursor="hand2",
+                           font=(UI, 9), padx=6)
+            lab.pack(side="left")
+            if spot.get("why"):
+                lab.configure(text=spot["name"])
+            lab.bind("<Button-1>",
+                     lambda _e, s=spot: self.apply_spot(s["name"], s["argv"]))
+            lab.bind("<Enter>", lambda _e, w=lab: w.configure(fg=INK))
+            lab.bind("<Leave>", lambda _e, w=lab: w.configure(fg=ACCENT))
 
     def chart_stat(self):
         """Which stat the chart is of, or None for the range itself."""
@@ -883,7 +997,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None):
+              stat=None, argv=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -893,6 +1007,7 @@ class App(ImportMixin, ttk.Frame):
         through a queue, with a token so that a slow answer to a filter the
         user has already changed is discarded rather than drawn.
         """
+        argv = list(argv or [])
         con = sqlite3.connect(DB)
         try:
             if cohort_spec is not None:
@@ -906,17 +1021,18 @@ class App(ImportMixin, ttk.Frame):
             out = {"view": view}
             if view == "stats":
                 out["n"], out["rows"] = query.stats_of(con, where)
+                out["actions"] = query.actions_of(con, where)
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "chart":
                 out.update(query.chart_of(con, where, stat))
             elif view == "report":
                 expr, order = query.DIMENSIONS[dim]
-                cols = query.DEFAULT_COLUMNS
+                cols = query.columns_for(argv)
                 grid = {c: query.rates_by(con, BY_KEY[c], expr, where)
                         for c in cols}
-                counts = query.rates_by(con, BY_KEY["vpip"], expr, where)
-                keys = sorted({k for g in grid.values() for k in g},
+                counts = query.counts_by(con, expr, where)
+                keys = sorted({k for g in grid.values() for k in g} | set(counts),
                               key=lambda k: order(k) if k is not None else "")
                 out.update(dim=dim, cols=cols, grid=grid, counts=counts,
                            keys=keys)
@@ -1038,6 +1154,22 @@ class App(ImportMixin, ttk.Frame):
     def _render_stats(self, tv, out):
         self._cols(tv, ("stat", "value", "±", "n"), (230, 90, 70, 100),
                    {"stat": "w"})
+        acts = out.get("actions") or {}
+        if acts.get("mix"):
+            tv.insert("", "end", values=("THIS SPOT", "", "", ""),
+                      tags=("group",))
+            for r in acts["mix"]:
+                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['n']:,}"))
+            for r in acts.get("extra") or []:
+                tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+                          values=(r["label"], f"{r['pct']:.1f}%",
+                                  f"±{r['band']:.1f}" if r["band"] < 1
+                                  else f"±{r['band']:.0f}",
+                                  f"{r['n']:,}"))
         group = None
         for r in out["rows"]:
             if r["group"] != group:
@@ -1112,7 +1244,10 @@ class App(ImportMixin, ttk.Frame):
                 n, kk = out["grid"][c].get(k, (0, 0))
                 row.append("–" if not n else f"{100 * kk / n:.1f}%")
                 thin = thin or (0 < n < 30)
-            row.append(f"{out['counts'].get(k, (0, 0))[0]:,}")
+            n_here = out["counts"].get(k, 0)
+            if isinstance(n_here, tuple):
+                n_here = n_here[0]
+            row.append(f"{n_here:,}")
             tv.insert("", "end", values=row, tags=("thin",) if thin else ())
 
     def _render_results(self, tv, out):
@@ -1725,6 +1860,7 @@ class FilterDialog(tk.Toplevel):
 
         nb = ttk.Notebook(self, style="Big.TNotebook")
         nb.pack(fill="both", expand=True, padx=16, pady=(14, 0))
+        self._reports_tab(nb)
         self._quick_tab(nb)
         self._positions_tab(nb)
         self._actions_tab(nb)
@@ -1876,6 +2012,33 @@ class FilterDialog(tk.Toplevel):
         return on, (lambda: v.set(False)), (lambda: bool(v.get()))
 
     # ---- the tabs ------------------------------------------------------
+    def _reports_tab(self, nb):
+        """Hand2Note's Smart Reports tree: named spots, grouped by street."""
+        page = self._page(nb, "Reports")
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="A report is a situation, not a stat. Opening one "
+                       "replaces the street / pot / facing you have clicked "
+                       "and keeps who you are measuring -- the same split "
+                       "the command line already makes between --preset and "
+                       "--hero."
+                  ).pack(anchor="w", padx=18, pady=(12, 0))
+        for family, names in query.reports_by_family():
+            self._heading(page, family)
+            self._grid(page, [
+                (lambda parent, n=n: self._pick(
+                    parent, n, *self._report_item(n),
+                    note=" ".join(query.reports()[n])))
+                for n in names])
+
+    def _report_item(self, name):
+        def on():
+            self.app.clear_situation()
+            self.app.preset.set(name)
+        def off():
+            if self.app.preset.get() == name:
+                self.app.preset.set("")
+        return on, off, (lambda n=name: self.app.preset.get() == n)
+
     def _quick_tab(self, nb):
         page = self._page(nb, "Quick Filters")
         by_group = {}
@@ -2389,6 +2552,34 @@ def check(db_path=DB):
     if not known_reports <= offered_reports:
         fails.append("the report box is missing "
                      f"{sorted(known_reports - offered_reports)}")
+
+    # Applying a neighbouring spot must produce the same filter the
+    # command line would. The leftover street/pot clicks used to stay
+    # set, so opening "Flop c-bets" while river was still clicked
+    # matched nothing and looked like a broken report.
+    for f, var in app.flags.items():
+        var.set(False)
+    for g in app.multi:
+        app.multi[g] = set()
+    for _n, var in app.vals.items():
+        var.set("")
+    app.preset.set("")
+    app._apply_argv(["--street", "flop", "--pfa", "--facing", "check"])
+    a, _la, _ = query.build(app.argv())
+    b, _lb, _ = query.build(list(query.SMART_REPORTS["Flop c-bets"]))
+    print(f"applying a spot matches its flags  "
+          f"{'yes' if a == b else 'NO -- ' + a}")
+    if a != b:
+        fails.append("apply_argv does not rebuild the filter it was given")
+    app.multi["street"] = {"river"}
+    app.apply_report("Flop vs c-bet")
+    leftover = bool(app.multi["street"])
+    same = query._canonical(app.argv()) == query._canonical(
+        query.SMART_REPORTS["Flop vs c-bet"])
+    print(f"opening a report drops the old street  "
+          f"{'yes' if same and not leftover else 'NO'}")
+    if leftover or not same:
+        fails.append("opening a Smart Report left the previous situation on")
 
     theme = ttk.Style(root).theme_use()
     print(f"theme in use                   {theme}")

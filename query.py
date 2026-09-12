@@ -230,13 +230,102 @@ DIMENSIONS = {
     "straight_draw": ("sd", str),
 }
 
+# A Smart Report is a named situation, the way Hand2Note's tree is: not
+# "how often did they 3-bet" (that is a stat) but "we are in a 3-bet pot"
+# (that is a filter you can open, split, and walk away from). The five
+# this project first guessed at are still here under the same names -- a
+# saved report or a check that says `3-bet pots` has to keep meaning that
+# -- and the rest are the spots a tracker user actually clicks between.
+#
+# `family` is the tree heading. `related` is the spots you would open next
+# from here: the other seat, the next street, the same idea in a fatter
+# or thinner pot. Generated variants (IP/OOP, the neighbouring street)
+# sit on top of this list in `related_spots`; these are the ones that
+# have a name of their own and belong in the report box.
 SMART_REPORTS = {
-    "3-bet pots": ("--pot", "3bet"),
-    "Flop c-bets": ("--street", "flop", "--pfa", "--facing", "check"),
+    "Steal attempts": ("--street", "preflop", "--pos", "CO,BTN,SB",
+                       "--facing", "unopened"),
     "Blind defense": ("--pos", "SB,BB", "--facing", "open"),
+    "Facing a 3-bet": ("--street", "preflop", "--facing", "3bet"),
+    "Facing a 4-bet": ("--street", "preflop", "--facing", "4bet"),
+    "Single-raised pots": ("--pot", "raised"),
+    "3-bet pots": ("--pot", "3bet"),
+    "4-bet pots": ("--pot", "4bet"),
+    "Limped pots": ("--pot", "limped"),
+    "Flop c-bets": ("--street", "flop", "--pfa", "--facing", "check"),
+    "Flop c-bets IP": ("--street", "flop", "--pfa", "--facing", "check",
+                       "--ip"),
+    "Flop c-bets OOP": ("--street", "flop", "--pfa", "--facing", "check",
+                        "--oop"),
+    "Flop vs c-bet": ("--street", "flop", "--not-pfa", "--facing", "bet",
+                      "--vs-pfa"),
+    "Donk flop": ("--street", "flop", "--not-pfa", "--facing", "check",
+                  "--pot", "raised,3bet,4bet,5bet+"),
+    "Check-raise flop": ("--street", "flop", "--oop", "--facing", "bet"),
+    "Flop in 3-bet pots": ("--pot", "3bet", "--street", "flop"),
+    "Turn c-bets": ("--street", "turn", "--pfa", "--facing", "check"),
+    "Turn vs bet": ("--street", "turn", "--facing", "bet"),
+    "Probe turn": ("--street", "turn", "--not-pfa", "--facing", "check"),
     "River bets": ("--street", "river", "--facing", "bet"),
+    "River c-bets": ("--street", "river", "--pfa", "--facing", "check"),
+    "River in 3-bet pots": ("--pot", "3bet", "--street", "river"),
     "All-in decisions": ("--allin",),
 }
+
+# The tree Hand2Note draws on the left of a Smart Report. A report with
+# no entry here still works; it just has no siblings to offer.
+REPORT_FAMILY = {
+    "Steal attempts": "preflop",
+    "Blind defense": "preflop",
+    "Facing a 3-bet": "preflop",
+    "Facing a 4-bet": "preflop",
+    "Single-raised pots": "pots",
+    "3-bet pots": "pots",
+    "4-bet pots": "pots",
+    "Limped pots": "pots",
+    "Flop c-bets": "flop",
+    "Flop c-bets IP": "flop",
+    "Flop c-bets OOP": "flop",
+    "Flop vs c-bet": "flop",
+    "Donk flop": "flop",
+    "Check-raise flop": "flop",
+    "Flop in 3-bet pots": "flop",
+    "Turn c-bets": "turn",
+    "Turn vs bet": "turn",
+    "Probe turn": "turn",
+    "River bets": "river",
+    "River c-bets": "river",
+    "River in 3-bet pots": "river",
+    "All-in decisions": "other",
+}
+
+REPORT_RELATED = {
+    "Steal attempts": ("Blind defense", "Single-raised pots"),
+    "Blind defense": ("Steal attempts", "Facing a 3-bet"),
+    "Facing a 3-bet": ("Facing a 4-bet", "3-bet pots", "Blind defense"),
+    "Facing a 4-bet": ("Facing a 3-bet", "4-bet pots"),
+    "Single-raised pots": ("3-bet pots", "Flop c-bets", "Limped pots"),
+    "3-bet pots": ("4-bet pots", "Single-raised pots", "Flop in 3-bet pots"),
+    "4-bet pots": ("3-bet pots", "Facing a 4-bet"),
+    "Limped pots": ("Single-raised pots", "Donk flop"),
+    "Flop c-bets": ("Flop vs c-bet", "Flop c-bets IP", "Flop c-bets OOP",
+                    "Turn c-bets", "Flop in 3-bet pots"),
+    "Flop c-bets IP": ("Flop c-bets OOP", "Flop c-bets", "Flop vs c-bet"),
+    "Flop c-bets OOP": ("Flop c-bets IP", "Flop c-bets", "Check-raise flop"),
+    "Flop vs c-bet": ("Flop c-bets", "Check-raise flop", "Turn vs bet"),
+    "Donk flop": ("Flop c-bets", "Check-raise flop", "Limped pots"),
+    "Check-raise flop": ("Flop vs c-bet", "Flop c-bets OOP", "Turn vs bet"),
+    "Flop in 3-bet pots": ("3-bet pots", "Flop c-bets", "River in 3-bet pots"),
+    "Turn c-bets": ("Flop c-bets", "Turn vs bet", "Probe turn", "River c-bets"),
+    "Turn vs bet": ("Turn c-bets", "Flop vs c-bet", "River bets"),
+    "Probe turn": ("Turn c-bets", "Turn vs bet", "Flop c-bets"),
+    "River bets": ("River c-bets", "Turn vs bet", "River in 3-bet pots"),
+    "River c-bets": ("Turn c-bets", "River bets", "River in 3-bet pots"),
+    "River in 3-bet pots": ("Flop in 3-bet pots", "3-bet pots", "River bets"),
+    "All-in decisions": ("River bets", "Facing a 4-bet"),
+}
+
+FAMILY_ORDER = ("preflop", "pots", "flop", "turn", "river", "other")
 
 # Where a filter somebody built keeps its name.
 #
@@ -395,10 +484,386 @@ def forget_filter(name, path=None):
     del saved[name]
     write_saved(saved, path)
 
+
+def reports_by_family(path=None):
+    """
+    Named reports grouped the way Hand2Note's tree is, built-ins first.
+
+    Saved reports have no family of their own -- they are whatever you
+    were looking at -- so they land under 'saved' at the end rather than
+    being guessed into a heading that will be wrong the first time the
+    filter is something this list did not anticipate.
+    """
+    grouped = {fam: [] for fam in FAMILY_ORDER}
+    grouped["saved"] = []
+    for name in reports(path):
+        if name in SMART_REPORTS:
+            grouped.setdefault(REPORT_FAMILY.get(name, "other"), []).append(name)
+        else:
+            grouped["saved"].append(name)
+    return [(fam, names) for fam, names in grouped.items() if names]
+
+
+# Who / when / which site -- not the situation. A Smart Report is a
+# spot; `--hero` is who you are measuring in it. Related-spot matching
+# that kept `--hero` would fail to recognise "Flop c-bets" the moment
+# you opened it on your own hands, and offer no neighbours.
+WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
+                "--reg", "--fish", "--vs-reg", "--vs-fish",
+                "--with-fish", "--regs-only")
+WHO_VALUES = ("--player", "--vs-player", "--site", "--stake",
+              "--since", "--until")
+
+
+def without_who(argv):
+    """The situation flags alone, with the person taken off."""
+    out = []
+    i = 0
+    argv = situation_only(list(argv))
+    while i < len(argv):
+        a = argv[i]
+        if a in WHO_SWITCHES:
+            i += 1
+            continue
+        if a in WHO_VALUES:
+            i += 2
+            continue
+        if a in VALUE_FLAGS or a in OPTIONS:
+            out += argv[i:i + 2]
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    return out
+
+
+def flag_values(argv, flag):
+    """Every value given to this flag, split on commas the way `build` does."""
+    out = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == flag and i + 1 < len(argv):
+            out.extend(x.strip() for x in str(argv[i + 1]).split(",") if x.strip())
+            i += 2
+        elif a in VALUE_FLAGS or a in OPTIONS:
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+def _canonical(argv):
+    """A filter as a set of (flag, value) pairs, so two writings of the
+    same situation compare equal. `--pos BTN,CO` and `--pos CO,BTN` are
+    the same report; comparing the raw lists would say they are not, and
+    related-spot navigation would offer you the spot you are already in."""
+    parts = []
+    i = 0
+    argv = situation_only(argv)
+    while i < len(argv):
+        a = argv[i]
+        if a in VALUE_FLAGS and i + 1 < len(argv):
+            v = str(argv[i + 1])
+            if "{list}" in (VALUE_FLAGS[a] or "") or a in (
+                    "--quick", "--board", "--turn-card", "--river-card"):
+                v = ",".join(sorted(x.strip() for x in v.split(",") if x.strip()))
+            parts.append((a, v))
+            i += 2
+        else:
+            parts.append((a, None))
+            i += 1
+    return frozenset(parts)
+
+
+def matching_report(argv, path=None):
+    """The built-in or saved report this filter already is, or None."""
+    want = _canonical(without_who(argv))
+    if not want:
+        return None
+    for name, flags in reports(path).items():
+        if _canonical(flags) == want:
+            return name
+    return None
+
+
 # Eight columns is what fits and what gets read. Anything else is available
-# with --show.
+# with --show. This is the UNFILTERED view -- VPIP and PFR, because that is
+# what a HUD-less tracker opens on. A river filter that still leads with
+# VPIP is a report of a different street than the one you asked about:
+# VPIP's chance is preflop, so every cell under a `--street river` filter
+# is empty and the n column prints as zero. `columns_for` is what stops
+# that, and this list is what it returns when the filter names no street.
 DEFAULT_COLUMNS = ["vpip", "pfr", "rfi", "threebet", "fold_to_3bet",
                    "cbet_flop", "fold_to_cbet", "flop_agg"]
+
+# Situation -> the stats that situation is actually about. Street wins
+# over pot type because "flop in a 3-bet pot" is a flop report; the pot
+# is already in the filter.
+_STREET_COLUMNS = {
+    "preflop": ["vpip", "pfr", "rfi", "threebet", "fold_to_3bet",
+                "fourbet", "steal", "fold_to_steal", "bb_defend", "squeeze"],
+    "flop": ["cbet_flop", "fold_to_cbet", "raise_cbet", "donk_flop",
+             "checkraise_flop", "fold_to_donk", "flop_agg"],
+    "turn": ["cbet_turn", "delayed_cbet", "probe_turn", "float_turn",
+             "fold_to_turn_bet"],
+    "river": ["cbet_river", "fold_to_river_bet", "river_agg", "overbet",
+              "small_bet", "faces_overbet"],
+}
+
+
+def _known_columns(keys):
+    """Drop names the registry does not have, keep the order, cap at eight."""
+    out = []
+    for key in keys:
+        if key in BY_KEY and key not in out:
+            out.append(key)
+        if len(out) == 8:
+            break
+    return out or list(DEFAULT_COLUMNS)
+
+
+def columns_for(argv):
+    """
+    The report columns this situation is about.
+
+    `--show` still wins when the caller named the columns. Without it, a
+    flop filter that prints VPIP is answering a preflop question under a
+    flop heading -- and because the two streets cannot both be true, the
+    cells come back empty. That is the report tab on 'Flop c-bets' today.
+    Hand2Note's Smart Reports change the columns when the spot changes;
+    this is that, over the registry we already have.
+    """
+    argv = situation_only(argv)
+    streets = set(flag_values(argv, "--street"))
+    pots = set(flag_values(argv, "--pot"))
+    facing = set(flag_values(argv, "--facing"))
+    quick = set(flag_values(argv, "--quick"))
+    # A line flag is a street even when `--street` was not said.
+    for flag, street in (("--pre", "preflop"), ("--flop", "flop"),
+                         ("--turn", "turn"), ("--river", "river")):
+        if flag in argv:
+            streets.add(street)
+    # A named stat used as a filter carries its own street. `--quick
+    # cbet_flop` is a flop report; leaving it on DEFAULT_COLUMNS would
+    # put VPIP next to a filter that already answered "they cbet".
+    for key in quick:
+        st = BY_KEY.get(key) or BY_KEY.get(key[:-4] if key.endswith("_not") else "")
+        if st and st.group in _STREET_COLUMNS:
+            streets.add(st.group)
+
+    if "river" in streets:
+        return _known_columns(_STREET_COLUMNS["river"])
+    if "turn" in streets:
+        return _known_columns(_STREET_COLUMNS["turn"])
+    if "flop" in streets:
+        return _known_columns(_STREET_COLUMNS["flop"])
+    if "preflop" in streets or facing & {"unopened", "open", "3bet", "4bet", "5bet+"}:
+        return _known_columns(_STREET_COLUMNS["preflop"])
+    if pots & {"3bet", "4bet", "5bet+"}:
+        return _known_columns(
+            ["threebet", "fold_to_3bet", "fourbet", "cbet_flop",
+             "fold_to_cbet", "cbet_turn", "fold_to_river_bet"])
+    if "limped" in pots:
+        return _known_columns(
+            ["limp", "iso", "donk_flop", "flop_agg", "vpip", "pfr"])
+    if "--pfa" in argv:
+        return _known_columns(
+            ["cbet_flop", "cbet_turn", "cbet_river", "delayed_cbet",
+             "fold_to_donk"])
+    if "--allin" in argv:
+        return _known_columns(
+            ["fourbet", "fold_to_4bet", "overbet", "faces_overbet",
+             "river_agg"])
+    return list(DEFAULT_COLUMNS)
+
+
+# What they DID in the rows the filter already selected. A named stat asks
+# a different question -- "of the times a cbet was possible" -- and is the
+# table underneath. Hand2Note puts this mix at the top of a popup report
+# because it is the answer to "what happens here", and without it a
+# filtered stats page is a dump of leftover frequencies.
+#
+# The five verbs partition `decisions.action`. All-in is counted beside
+# them rather than among them: 95 of 236 all-ins here are calls, and
+# folding them into "raise" is the defect `lines.letter` exists to stop.
+ACTION_MIX = (
+    ("fold", "action = 'F'"),
+    ("check", "action = 'X'"),
+    ("call", "action IN ('C','A') AND agg = 0"),
+    ("bet", "agg = 1 AND to_call = 0"),
+    ("raise", "agg = 1 AND to_call > 0"),
+)
+
+
+def actions_of(con, where):
+    """
+    Fold / check / call / bet / raise of the filtered decisions, one pass.
+
+    Each rate carries its n (the same n -- how many decisions the filter
+    selected) and a Wilson interval. The mix is a partition: the five
+    counts sum to the row count, which `query.py --check` asserts, because
+    a sixth verb slipping through would silently shrink every percentage
+    and look like a tight pool.
+    """
+    # Aliases quoted: `check` is a SQLite keyword, and an unquoted
+    # `AS check` is a syntax error -- the mix then never runs, which
+    # is a blank "this spot" heading rather than a wrong number.
+    bits = ", ".join(f'SUM({sql}) AS "{name}"' for name, sql in ACTION_MIX)
+    row = con.execute(
+        f'SELECT COUNT(*) AS n, {bits}, SUM(allin = 1) AS shove '
+        f"FROM decisions WHERE {where}").fetchone()
+    n = row[0] or 0
+    mix = []
+    for i, (name, _sql) in enumerate(ACTION_MIX):
+        k = row[i + 1] or 0
+        if not n:
+            continue
+        p, lo, hi = wilson(k, n)
+        mix.append({"key": name, "label": name, "n": n, "k": k,
+                    "pct": 100 * p, "band": 100 * (hi - lo) / 2})
+    shove = row[-1] or 0
+    extra = []
+    if n and shove:
+        p, lo, hi = wilson(shove, n)
+        extra.append({"key": "allin", "label": "all-in (of these)",
+                      "n": n, "k": shove, "pct": 100 * p,
+                      "band": 100 * (hi - lo) / 2})
+    return {"n": n, "mix": mix, "extra": extra}
+
+
+def counts_by(con, expr, where):
+    """Decisions per bucket of a dimension -- the n of a situational report."""
+    return dict(con.execute(
+        f"SELECT {expr}, COUNT(*) FROM decisions WHERE ({where}) "
+        f"AND ({expr}) IS NOT NULL GROUP BY 1"))
+
+
+def _replace_flag(argv, flag, value=None):
+    """argv with this flag removed, or replaced by a new value."""
+    out = []
+    i = 0
+    argv = situation_only(list(argv))
+    while i < len(argv):
+        a = argv[i]
+        if a == flag:
+            i += 2 if (a in VALUE_FLAGS or a in OPTIONS) else 1
+            continue
+        if a in VALUE_FLAGS or a in OPTIONS:
+            out += argv[i:i + 2]
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    if value is None:
+        if flag in SWITCHES:
+            out.append(flag)
+    else:
+        out += [flag, value]
+    return out
+
+
+def related_spots(argv, path=None, limit=8):
+    """
+    Spots a Hand2Note user would click next from this filter.
+
+    Two sources, on purpose the same two H2N has: the named reports that
+    sit next to this one in the tree, and a handful of generated variants
+    (the other seat, in or out of position, the next street). Each item
+    is a filter that `build` already understands, so clicking one is
+    opening a report rather than inventing a second vocabulary.
+
+    `why` is the reason it was offered -- "the other seat", "the next
+    street" -- because a list of report names with no relation to the
+    page you are on is just a shorter report box.
+    """
+    argv = without_who(argv)
+    here = matching_report(argv, path)
+    seen = {_canonical(argv)}
+    out = []
+
+    def add(name, flags, why):
+        key = _canonical(flags)
+        if not key or key in seen:
+            return
+        try:
+            build(list(flags))
+        except SystemExit:
+            return
+        seen.add(key)
+        out.append({"name": name, "argv": list(flags), "why": why,
+                    "preset": name if name in reports(path) else ""})
+
+    if here:
+        for name in REPORT_RELATED.get(here, ()):
+            if name in SMART_REPORTS:
+                add(name, SMART_REPORTS[name], "related report")
+        family = REPORT_FAMILY.get(here)
+        if family:
+            for name, flags in SMART_REPORTS.items():
+                if name != here and REPORT_FAMILY.get(name) == family:
+                    add(name, flags, f"same street" if family in STREETS
+                        else "same family")
+
+    streets = flag_values(argv, "--street")
+    street = streets[0] if len(streets) == 1 else None
+    facing = set(flag_values(argv, "--facing"))
+    # 'check' / 'bet' / 'raise' are postflop words; 'open' / '3bet' are
+    # preflop ones. Offering the neighbouring street without dropping a
+    # facing that cannot occur there is how "related" used to open an
+    # empty page -- the thing `why_empty` already has a sentence for.
+    pre_face = bool(facing & set(PREFLOP_FACING))
+    post_face = bool(facing & set(POSTFLOP_FACING))
+    if street in STREETS:
+        i = STREETS.index(street)
+        if i + 1 < len(STREETS) and not pre_face:
+            nxt = STREETS[i + 1]
+            flags = _replace_flag(argv, "--street", nxt)
+            name = matching_report(flags, path) or f"this spot, on the {nxt}"
+            add(name, flags, "the next street")
+        if i > 0:
+            prev = STREETS[i - 1]
+            if not (prev == "preflop" and post_face):
+                flags = _replace_flag(argv, "--street", prev)
+                name = matching_report(flags, path) or f"this spot, on the {prev}"
+                add(name, flags, "the previous street")
+
+    # In and out of position only exist after the flop. Offering them on
+    # a preflop filter produces the empty page `why_empty` already has a
+    # sentence for, which is the opposite of navigation.
+    postflop = (street in ("flop", "turn", "river")
+                or "--ip" in argv or "--oop" in argv)
+    if postflop:
+        if "--ip" in argv:
+            flags = _replace_flag([a for a in argv if a != "--ip"], "--oop")
+            name = matching_report(flags, path) or "same spot, out of position"
+            add(name, flags, "the other seat")
+        elif "--oop" in argv:
+            flags = _replace_flag([a for a in argv if a != "--oop"], "--ip")
+            name = matching_report(flags, path) or "same spot, in position"
+            add(name, flags, "the other seat")
+        else:
+            for flag, label in (("--ip", "in position"),
+                                ("--oop", "out of position")):
+                flags = _replace_flag(argv, flag)
+                name = matching_report(flags, path) or f"same spot, {label}"
+                add(name, flags, label)
+
+    pots = flag_values(argv, "--pot")
+    pot = pots[0] if len(pots) == 1 else None
+    if pot == "raised":
+        flags = _replace_flag(argv, "--pot", "3bet")
+        name = matching_report(flags, path) or "this spot, in a 3-bet pot"
+        add(name, flags, "a fatter pot")
+    elif pot == "3bet":
+        flags = _replace_flag(argv, "--pot", "raised")
+        name = matching_report(flags, path) or "this spot, in a single-raised pot"
+        add(name, flags, "a thinner pot")
+        flags = _replace_flag(argv, "--pot", "4bet")
+        name = matching_report(flags, path) or "this spot, in a 4-bet pot"
+        add(name, flags, "a fatter pot")
+
+    return out[:limit]
 
 BOARDS = {
     "mono": "fl_mono = 1",
@@ -1065,15 +1530,45 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3):
               f"one hand dealt twice is not a frequency)")
 
 
-def show_stats(con, where, label, parts=()):
+def _print_related(related):
+    """The spots you would open next, as flags you can paste."""
+    if not related:
+        return
+    print("related spots:")
+    for r in related:
+        how = f"--preset {r['name']!r}" if r.get("preset") else " ".join(r["argv"])
+        print(f"  {r['name']:28} {r['why']}")
+        print(f"    {how}")
+    print()
+
+
+def show_stats(con, where, label, parts=(), related=None):
     """Every stat that has anything to say under this filter."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
     n_dec, rows = stats_of(con, where)
-    print(f"{n_dec} decisions match\n")
+    print(f"{n_dec} decisions match")
     if not n_dec:
         print("  " + why_empty(con, parts))
+        if related:
+            print()
+            _print_related(related)
         return
+    # What they did HERE, before the named stats. A cbet frequency is "of
+    # the times they could"; this is "of the decisions you already asked
+    # about", which is the number a popup report leads with.
+    acts = actions_of(con, where)
+    if acts["mix"]:
+        print("\n  [this spot]")
+        for r in acts["mix"]:
+            thin = " ?" if r["n"] < 30 else "  "
+            print(f"  {r['label']:22} {r['pct']:6.1f}% "
+                  f"{'+/-%.0f' % r['band']:>7}{thin} n={r['n']:<6d}")
+        for r in acts["extra"]:
+            thin = " ?" if r["n"] < 30 else "  "
+            print(f"  {r['label']:22} {r['pct']:6.1f}% "
+                  f"{'+/-%.0f' % r['band']:>7}{thin} n={r['n']:<6d}")
+        print()
     last = None
     for r in rows:
         if r["group"] != last:
@@ -1085,6 +1580,20 @@ def show_stats(con, where, label, parts=()):
     if not rows:
         print("  no stat has a chance to occur inside this filter.")
         print("  (asking for a preflop stat inside --street flop does this)")
+    if related:
+        print()
+        _print_related(related)
+
+
+def show_related(related, label):
+    """Just the neighbouring spots -- the other half of opening a report."""
+    print(f"\nfilter: {label}")
+    print("=" * (len(label) + 8))
+    if not related:
+        print("  no neighbouring spot from here -- open a report from "
+              "--presets, or add a street / pot / position to this filter.")
+        return
+    _print_related(related)
 
 
 # The four lines every tracker draws, and what each one is for.
@@ -1434,8 +1943,11 @@ def show_report(con, where, label, dim, columns, min_n=30):
 
     stats = [BY_KEY[c] for c in columns]
     grid = {s.key: rates_by(con, s, expr, where) for s in stats}
-    counts = rates_by(con, BY_KEY["vpip"], expr, where)
-    keys = sorted({k for g in grid.values() for k in g},
+    # Decisions the filter selected, per bucket -- not VPIP's n. VPIP's
+    # chance is preflop, so under a flop or river filter that count is
+    # zero and every row looks empty even when the cells have data.
+    counts = counts_by(con, expr, where)
+    keys = sorted({k for g in grid.values() for k in g} | set(counts),
                   key=lambda k: order(k) if k is not None else "")
     if not keys:
         print("nothing matches")
@@ -1460,9 +1972,9 @@ def show_report(con, where, label, dim, columns, min_n=30):
     # The denominators, on their own line rather than beside every cell:
     # a percentage without its n is not a number anybody should act on, and
     # a table with n beside every cell is a table nobody can read.
-    print("\n  chances behind each row (VPIP's denominator):")
+    print("\n  decisions in this filter, per row:")
     for k in keys:
-        n = counts.get(k, (0, 0))[0]
+        n = counts.get(k, 0)
         print(f"    {str(k)[:width - 1]:<{width}} n={n}")
     print("\n  '?' marks a cell measured on fewer than "
           f"{min_n} chances -- ignore it.")
@@ -1661,11 +2173,14 @@ def usage():
     print(f"    {'--by':14} split into a table by one of: "
           f"{', '.join(DIMENSIONS)}")
     print(f"    {'--show':14} which stats are the columns "
-          f"(default: {','.join(DEFAULT_COLUMNS)})")
+          f"(default: the ones this situation is about, else "
+          f"{','.join(DEFAULT_COLUMNS)})")
     print(f"    {'--min':14} mark cells below this many chances (default 30)")
     print(f"    {'--hand':14} replay one hand by id, ignoring every filter")
     print(f"    {'--chart':14} the 13x13 chart: what the range holds, or "
           f"one stat per combo with --show")
+    print(f"    {'--related':14} neighbouring spots from this filter "
+          f"(also printed under --stats)")
     print("\n  saving the filter as a stat of its own:")
     print(f"    {'--define':14} a key to save this filter under, so it can "
           f"be a column")
@@ -1754,6 +2269,8 @@ def check(db_path=DB):
               ("--pre with sizes", ["--pre", "*Rl*"])]
     cases += [("--quick " + f["key"], ["--quick", f["key"]])
               for f in quick_filters()]
+    cases += [(f"--preset {name}", list(flags))
+              for name, flags in SMART_REPORTS.items()]
     cases.append(("--player", ["--player", con.execute(
         "SELECT player FROM decisions WHERE player IS NOT NULL LIMIT 1"
     ).fetchone()[0]]))
@@ -1899,6 +2416,83 @@ def check(db_path=DB):
         fails.append(f"the chart has {len(squares)} squares and misses "
                      f"{sorted(dealt - squares)[:5]}")
 
+    # Smart Reports are situations, and every one of them has to stay a
+    # situation this engine can open. A related name that is not a report
+    # is a dead click in the window; a column that is not a stat is a
+    # blank report tab that looks like "nothing happened on the flop".
+    report_fails = []
+    for name, flags in SMART_REPORTS.items():
+        try:
+            build(list(flags))
+        except SystemExit as e:
+            report_fails.append(f"{name}: {e}")
+        for other in REPORT_RELATED.get(name, ()):
+            if other not in SMART_REPORTS:
+                report_fails.append(f"{name} related {other!r} is not a report")
+        if name not in REPORT_FAMILY:
+            report_fails.append(f"{name} has no family")
+    if len(SMART_REPORTS) < 15:
+        report_fails.append(f"only {len(SMART_REPORTS)} built-in reports -- "
+                            f"the tree is the product")
+    print(f"built-in reports still build  "
+          f"{len(SMART_REPORTS) - len(report_fails)}/{len(SMART_REPORTS)}")
+    fails.extend(report_fails)
+
+    col_fails = []
+    if columns_for([]) != list(DEFAULT_COLUMNS):
+        col_fails.append("an empty filter must keep the default columns")
+    river_cols = columns_for(["--street", "river"])
+    if "vpip" in river_cols or "cbet_flop" in river_cols:
+        col_fails.append("a river filter still leads with a preflop/flop stat")
+    if "fold_to_river_bet" not in river_cols:
+        col_fails.append("a river filter dropped fold_to_river_bet")
+    flop_cols = columns_for(["--street", "flop", "--pfa", "--facing", "check"])
+    if "cbet_flop" not in flop_cols:
+        col_fails.append("a flop c-bet filter dropped cbet_flop")
+    if "vpip" in flop_cols:
+        col_fails.append("a flop filter still leads with VPIP")
+    for cols in (river_cols, flop_cols, columns_for(["--pot", "3bet"])):
+        for c in cols:
+            if c not in BY_KEY:
+                col_fails.append(f"columns_for named unknown stat {c}")
+    print(f"report columns follow the spot  "
+          f"{'yes' if not col_fails else 'NO'}")
+    fails.extend(col_fails)
+
+    # The action mix is a partition of the filtered rows. If a verb is
+    # missing, every percentage shrinks and the spot looks tighter than
+    # it is -- the same class of silent error a dropped parser line is.
+    mix = actions_of(con, "1=1")
+    mix_k = sum(r["k"] for r in mix["mix"])
+    print(f"action mix covers every decision  {mix_k}/{mix['n']}")
+    if mix["n"] and mix_k != mix["n"]:
+        fails.append(f"action mix counted {mix_k} of {mix['n']} decisions")
+    empty_mix = actions_of(con, "1=0")
+    if empty_mix["mix"] or empty_mix["n"]:
+        fails.append("action mix on an empty filter was not empty")
+
+    rel_fails = []
+    for name, flags in SMART_REPORTS.items():
+        spots = related_spots(list(flags))
+        if not spots:
+            rel_fails.append(f"{name}: no neighbouring spots")
+            continue
+        for r in spots:
+            try:
+                build(r["argv"])
+            except SystemExit as e:
+                rel_fails.append(f"{name} -> {r['name']}: {e}")
+            if _canonical(r["argv"]) == _canonical(flags):
+                rel_fails.append(f"{name} offered itself as related")
+    flop_related = {r["name"] for r in related_spots(list(SMART_REPORTS["Flop c-bets"]))}
+    if "Flop vs c-bet" not in flop_related:
+        rel_fails.append("Flop c-bets does not offer Flop vs c-bet")
+    if matching_report(["--hero"] + list(SMART_REPORTS["Flop c-bets"])) != "Flop c-bets":
+        rel_fails.append("a report opened on hero is not recognised as itself")
+    print(f"related spots build and differ  "
+          f"{len(SMART_REPORTS) - len(rel_fails)}/{len(SMART_REPORTS)}")
+    fails.extend(rel_fails)
+
     # A saved report must come back as the filter that was saved. Saved to a
     # file of its own: a check that writes to somebody's own reports is a
     # check they stop running.
@@ -1953,12 +2547,15 @@ def main(argv):
         usage()
         return 0
     if "--presets" in argv:
-        known = reports()
-        for name, flags in known.items():
-            where, described, _p = build(list(flags))
-            print(f"\n  {name}" + ("" if name in SMART_REPORTS else "   (saved)"))
-            print(f"      {' '.join(flags)}")
-            print(f"      {described}")
+        for family, names in reports_by_family():
+            print(f"\n[{family}]")
+            known = reports()
+            for name in names:
+                flags = known[name]
+                where, described, _p = build(list(flags))
+                print(f"\n  {name}" + ("" if name in SMART_REPORTS else "   (saved)"))
+                print(f"      {' '.join(flags)}")
+                print(f"      {described}")
         for name, why in UNREADABLE:
             print(f"\n  {name}   BROKEN -- {why}")
         return 1 if UNREADABLE else 0
@@ -1975,7 +2572,7 @@ def main(argv):
     cohort_spec, argv = players.parse_cohort(argv)
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart"):
+              "--chart", "--related"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -2061,7 +2658,7 @@ def main(argv):
     if dim is not None and dim not in DIMENSIONS:
         raise SystemExit(f"unknown dimension {dim!r} -- "
                          f"one of: {', '.join(DIMENSIONS)}")
-    columns = (opt("--show") or ",".join(DEFAULT_COLUMNS)).split(",")
+    columns = (opt("--show") or ",".join(columns_for(argv))).split(",")
     for c in columns:
         if c not in BY_KEY:
             raise SystemExit(f"unknown stat {c!r} -- see `stats.py --list`")
@@ -2084,6 +2681,13 @@ def main(argv):
     where, label, _parts = build(argv)
     if preset:
         label = f"{preset}: {label}"
+    neighbours = related_spots(argv)
+    if mode == "--related":
+        # No database: this is a walk of the report tree, and connecting
+        # just to print flags is how an empty `hands.db` gets created on
+        # a machine that has not imported yet.
+        show_related(neighbours, label)
+        return 0
     con = sqlite3.connect(DB)
     if cohort_spec is not None:
         count = select_cohort(con, cohort_spec)
@@ -2112,7 +2716,7 @@ def main(argv):
     elif dim:
         show_report(con, where, label, dim, columns, min_n)
     else:
-        show_stats(con, where, label, _parts)
+        show_stats(con, where, label, _parts, related=neighbours)
     con.close()
     return 0
 

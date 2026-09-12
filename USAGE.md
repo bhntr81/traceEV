@@ -200,9 +200,41 @@ really is 0.1% of the range.
 
 ---
 
+### Smart Reports, and walking to a neighbouring spot
+
+The report box is a Hand2Note-style tree of **named situations** -- steal
+attempts, flop c-bets, facing a 3-bet, river in a 3-bet pot -- not a list
+of five guesses. Opening one replaces the street / pot / facing you had
+clicked and keeps who you are measuring, so "Flop c-bets" as hero is that
+spot on your own hands, not that spot AND leftover river chips.
+
+```bash
+python query.py --preset "Flop c-bets"
+python query.py --preset "Flop c-bets" --hero --by position
+python query.py --presets                 # the tree, then your saved ones
+python query.py --preset "Flop c-bets" --related
+```
+
+`--stats` (the default) now leads with **what they did in this spot** --
+fold / check / call / bet / raise of the decisions the filter already
+selected, each with its `n` and a Wilson interval -- and then the named
+stats that can still occur inside it. That is the popup report Hand2Note
+opens on a filter: first the mix here, then the vocabulary.
+
+Under that sit **related spots**: the other seat, the next street, the
+same idea in a fatter pot. Each line is a `--preset` you can paste, or a
+row you can click in the window and on the page. `--related` prints only
+those, when you want to walk the tree without another stats dump.
+
+The report tab / `--by` **changes its columns to match the situation**.
+A river filter used to lead with VPIP, whose chance is preflop, so every
+cell came back empty and the `n` column printed as zero. `--show` still
+wins when you name the columns; without it, flop spots show flop stats
+and river spots show river stats.
+
 ### Saving the filter as a report
 
-The five reports in the box are the ones this project guessed at. The sixth
+The reports in the box are the built-in situations above. The next one
 is whatever you were looking at last Tuesday:
 
 ```bash
@@ -494,19 +526,31 @@ python query.py --where "eff_bb > 150 AND fl_paired=1" --stats
 
 Filters combine freely, and there are three things to ask for.
 
-**`--stats`** (the default) runs every stat that *can* occur inside the
-filter, and silently drops the ones that cannot — asking for a preflop stat
-inside `--street flop` gives nothing, which is correct rather than a bug.
+**`--stats`** (the default) leads with what they did in the spot the filter
+already named -- fold / check / call / bet / raise, each with its `n` --
+then every named stat that *can* occur inside it, and silently drops the
+ones that cannot. Asking for a preflop stat inside `--street flop` gives
+nothing, which is correct rather than a bug.
 
 ```
 filter: pool, site acr, pot 3bet, street flop, ip
 524 decisions match
 
+  [this spot]
+  fold                     28.1%    +/-4    n=524
+  check                    31.0%    +/-4    n=524
+  bet                      22.4%    +/-4    n=524
   [flop]
   cbet flop                70.7%    +/-7   n=184
   fold to cbet             42.6%    +/-7   n=190
   [sizing]
   bets a third or less     50.6%    +/-7   n=170
+
+related spots:
+  Flop in 3-bet pots           related report
+    --preset 'Flop in 3-bet pots'
+  same spot, out of position   the other seat
+    --oop --pot 3bet --street flop
 ```
 
 **`--results`** is the money, and it works differently on purpose. Money is
