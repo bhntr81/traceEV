@@ -50,7 +50,8 @@ SCHEMA = """
 DROP TABLE IF EXISTS spots;
 DROP TABLE IF EXISTS bets;
 CREATE TABLE spots (
-  hand_id TEXT, seat INT, player TEXT, table_id TEXT, fmt TEXT, game TEXT, bb REAL,
+  hand_id TEXT, seat INT, player TEXT, table_id TEXT, fmt TEXT, game TEXT,
+  game_type TEXT, bb REAL,
   played_at TEXT, n_players INT, position TEXT, is_hero INT,
   cards TEXT, combo TEXT, suited INT, pair INT, hi TEXT, lo TEXT,
 
@@ -387,7 +388,8 @@ def build(db_path=DB):
             wtsd = int(showdown and s["seat"] in non_folders)
             spot_rows.append((
                 hid, s["seat"], seat_ids.get((hid, s["seat"])), h["table_id"],
-                h["fmt"], h["game"], bb, h["played_at"], h["n_players"], s["position"],
+                h["fmt"], h["game"], games.type_id(h["game"], h["fmt"]),
+                bb, h["played_at"], h["n_players"], s["position"],
                 s["is_hero"], s["cards"], combo, suited, pair, hi, lo,
 
                 "".join(p["pf_seq"]), p["vpip"], p["pfr"],

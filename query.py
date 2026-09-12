@@ -111,6 +111,12 @@ VALUE_FLAGS = {
     # is Hold'em -- mixing the two VPIPs is the same class of error as
     # mixing two sites under fmt='RING'. `--game all` opts in to mixing.
     "--game": None,
+    # Same words as `--game`, under the name the research pack uses.
+    "--variant": None,
+    # Variant + cash. The three defaults are nlhe-cash / plo4-cash /
+    # plo5-cash. `--game plo` still includes MTT Omaha; this does not.
+    "--game-type": None,
+    "--type": None,
     "--player": "player = {v}",
     # The other seat, by name. Only meaningful while one opponent is left --
     # in a three-way pot there is no "the other player" -- so this selects
@@ -380,6 +386,9 @@ DIMENSIONS = {
     "stake": ("bb", lambda k: float(k or 0)),
     "site": ("site", str),
     "game": ("game", str),
+    "variant": ("CASE game WHEN 'OMAHA5' THEN 'plo5' "
+                "WHEN 'OMAHA' THEN 'plo4' ELSE 'nlhe' END", str),
+    "game_type": ("game_type", str),
     "player": ("player", str),
     "month": ("substr(played_at, 1, 7)", str),
     "day": ("substr(played_at, 1, 10)", str),
@@ -730,6 +739,7 @@ WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
                 "--with-fish", "--regs-only",
                 "--today")
 WHO_VALUES = ("--player", "--vs-player", "--site", "--stake", "--game",
+              "--variant", "--game-type", "--type",
               "--since", "--until",
               "--alias", "--vs-alias", "--villain-type", "--vs-class",
               "--session", "--hours",
@@ -1911,11 +1921,16 @@ def matching_hands(con, where, limit=None):
     """
     expr = action_profit_sql()
     call = call_profit_sql()
+    scols = {r[1] for r in con.execute("PRAGMA table_info(spots)")} \
+        if "spots" in {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")} else set()
+    cards_sql = "MAX(s.cards)" if "cards" in scols else "NULL"
     sql = (
         f"SELECT d.hand_id, d.seat, MAX(d.played_at), MAX(d.site), "
         f"       MAX(d.bb), MAX(d.position), MAX(d.combo), MAX(d.board), "
         f"       MAX(s.net_bb), SUM({expr}), "
-        f"       SUM({expr} IS NOT NULL), COUNT(*), SUM({call}) "
+        f"       SUM({expr} IS NOT NULL), COUNT(*), SUM({call}), "
+        f"       {cards_sql} "
         f"FROM (SELECT * FROM decisions WHERE {where}) d "
         f"LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
         f"GROUP BY d.hand_id, d.seat "
@@ -1925,12 +1940,12 @@ def matching_hands(con, where, limit=None):
         sql += f" LIMIT {int(limit)}"
     rows = []
     for (hid, seat, when, site, bb, pos, combo, board, net, act, priced,
-         hits, call_bb) in con.execute(sql):
+         hits, call_bb, cards) in con.execute(sql):
         rows.append({
             "id": hid, "seat": seat, "when": when, "site": site, "bb": bb,
             "pos": pos, "combo": combo, "board": board, "net": net,
             "act": act, "priced": priced or 0, "hits": hits or 0,
-            "call": call_bb,
+            "call": call_bb, "cards": cards,
         })
     return rows
 
@@ -3273,17 +3288,27 @@ def build(argv):
                 raise SystemExit(f"{a} needs a value")
             v = argv[i + 1]
             i += 2
-            if a == "--game":
+            if a in ("--game", "--variant"):
                 try:
                     clause = games.sql(v)
                 except KeyError as e:
                     raise SystemExit(str(e)) from None
                 named_game = True
+                word = "variant" if a == "--variant" else "game"
                 if clause != "1=1":
                     parts.append(clause)
-                    described.append("game " + v)
+                    described.append(word + " " + v)
                 else:
                     described.append("all games")
+                continue
+            if a in ("--game-type", "--type"):
+                try:
+                    clause = games.type_sql(v)
+                except KeyError as e:
+                    raise SystemExit(str(e)) from None
+                named_game = True
+                parts.append(clause)
+                described.append("type " + v)
                 continue
             if a == "--where":
                 parts.append("(" + v + ")")
@@ -4808,6 +4833,55 @@ def combo_at(i, j):
     return (hi + lo + "s") if i < j else (lo + hi + "o")
 
 
+def _hand_cell(row):
+    """Combo for Hold'em; the hole cards themselves when there are four or five."""
+    combo = row.get("combo")
+    if combo:
+        return combo
+    cards = row.get("cards") or ""
+    n = len(cards.split())
+    if n >= 4:
+        return cards
+    return "--"
+
+
+def chart_gate(con, where):
+    """
+    Why the 13×13 must not be drawn, or None.
+
+    The chart is 169 two-card combos. Drawing it over a PLO filter
+    produces 169 empty squares that look like "this pool has no range"
+    rather than "this chart is the wrong shape". The shown-hands list
+    is the honest view; a combinatoric Omaha heat map is deferred.
+    """
+    if re.search(r"OMAHA|plo4|plo5|omaha|game_type = 'plo", where, re.I):
+        return ("The 13×13 is a Hold'em chart. This filter is Omaha — "
+                "open Hands for the shown cards, not a 169-square range.")
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if "cards" not in cols:
+        return None
+    n = con.execute(
+        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE {where})").fetchone()[0]
+    if not n:
+        return None
+    seen = con.execute(
+        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE ({where}) AND combo IS NOT NULL)"
+    ).fetchone()[0]
+    if seen:
+        return None
+    four = con.execute(
+        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+        f"FROM decisions WHERE ({where}) AND cards IS NOT NULL "
+        f"AND (LENGTH(cards) - LENGTH(REPLACE(cards, ' ', ''))) >= 3)"
+    ).fetchone()[0]
+    if four:
+        return ("The 13×13 is a Hold'em chart. Matching hands have "
+                "four or five hole cards — open Hands for the shown cards.")
+    return None
+
+
 def chart_of(con, where, stat=None, min_n=3):
     """
     The preflop chart: what the range that reached this spot is made of.
@@ -4840,6 +4914,12 @@ def chart_of(con, where, stat=None, min_n=3):
     total = con.execute(
         f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
         f"FROM decisions WHERE {where})").fetchone()[0]
+    gate = chart_gate(con, where)
+    if gate:
+        return {"mode": "gated", "gated": True, "reason": gate,
+                "stat": None, "cells": {}, "seen": 0, "total": total,
+                "min_n": min_n, "peak": 0,
+                "coverage": coverage_of(con, where)}
     seen = con.execute(
         f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
         f"FROM decisions WHERE ({where}) AND combo IS NOT NULL)").fetchone()[0]
@@ -4859,7 +4939,8 @@ def chart_of(con, where, stat=None, min_n=3):
             "stat": None if stat is None else stat.label,
             "cells": cells, "seen": seen, "total": total, "min_n": min_n,
             "peak": max((n for n, _k in cells.values()), default=0),
-            "coverage": coverage_of(con, where)}
+            "coverage": coverage_of(con, where),
+            "gated": False, "reason": None}
 
 
 def show_chart(con, where, label, stat=None, parts=(), min_n=3):
@@ -4867,6 +4948,11 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3):
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
     g = chart_of(con, where, stat, min_n)
+    if g.get("gated"):
+        print("  " + g["reason"])
+        print(f"  {g['total']:,} player-hands match. The Hands list "
+              f"still shows the cards that were seen.")
+        return
     if not g["total"]:
         print("  " + why_empty(con, parts))
         return
@@ -5718,7 +5804,7 @@ def show_hand(con, hand_id, seat=None):
         mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
         net = (s["won"] or 0) - s["put_in"]
         print(f" {mark} {s['position'] or '?':4} {(s['name'] or '')[:16]:16} "
-              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>14}  "
+              f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>17}  "
               f"{net:+8.2f}")
     for st in d["streets"]:
         head = st["street"].upper()
@@ -6238,9 +6324,9 @@ def show_hands(con, where, label, limit=40, parts=()):
     if not rows:
         print("  " + why_empty(con, parts))
         return
-    print(f"    {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
+        print(f"    {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':17} "
           f"{'net bb':>7} {'act bb':>7} {'call bb':>8}  board")
-    print("    " + "-" * 92)
+    print("    " + "-" * 104)
     shown = rows[:limit]
     notes.attach(con)
     notes.decorate(con, shown)
@@ -6256,7 +6342,7 @@ def show_hands(con, where, label, limit=40, parts=()):
         if r.get("n_notes"):
             extra = (extra + " " if extra else "") + f"n{r['n_notes']}"
         print(f"  {star} {when:17} {r['site'] or '':10} {r['bb'] or 0:5.2f} "
-              f"{r['pos'] or '?':4} {r['combo'] or '--':5} "
+              f"{r['pos'] or '?':4} {_hand_cell(r):17} "
               f"{net:7.1f} {act:>7} {call:>8}  {r['board'] or ''}"
               + (f"  {extra}" if extra else ""))
         if r.get("compact"):
@@ -6280,6 +6366,9 @@ def usage():
         if v:
             print(f"    {k:14} {v}")
     print(f"    {'--game':14} holdem (default), plo, plo5, all")
+    print(f"    {'--variant':14} same words as --game")
+    print(f"    {'--game-type':14} nlhe-cash, plo4-cash, plo5-cash "
+          f"(also --type; plo / plo5 / nlhe alias the cash defaults)")
     print(f"    {'--board':14} one of: {', '.join(BOARDS)}")
     print(f"    {'--quick':14} named filters: "
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
@@ -7146,6 +7235,12 @@ def check_sessions():
         fails.append("who_only dropped --game")
     if "--street" in game_who:
         fails.append("who_only kept --street with --game")
+    type_who = who_only(["--hero", "--game-type", "plo4-cash",
+                         "--street", "flop"])
+    if "--game-type" not in type_who or "plo4-cash" not in type_who:
+        fails.append("who_only dropped --game-type")
+    if "--street" in type_who:
+        fails.append("who_only kept --street with --game-type")
     if "--street" in kept:
         fails.append("who_only kept a situation flag")
     gone = without_who(["--session", "h1", "--pot", "3bet"])
@@ -8082,6 +8177,20 @@ def check_hist():
     plo_w, plo_l, _ = build(["--game", "plo"])
     if "game = 'OMAHA'" not in plo_w or "plo" not in plo_l:
         fails.append(f"--game plo compiled to {plo_w!r} / {plo_l!r}")
+    var_w, var_l, _ = build(["--variant", "plo4"])
+    if "game = 'OMAHA'" not in var_w or "variant plo4" not in var_l:
+        fails.append(f"--variant plo4 compiled to {var_w!r} / {var_l!r}")
+    type_w, type_l, _ = build(["--game-type", "plo4-cash"])
+    if "game = 'OMAHA'" not in type_w or games.CASH not in type_w:
+        fails.append(f"--game-type plo4-cash compiled to {type_w!r}")
+    if "type plo4-cash" not in type_l:
+        fails.append(f"--game-type labelled {type_l!r}")
+    gated = chart_of(plo, plo_w)
+    if not gated.get("gated") or "Omaha" not in (gated.get("reason") or ""):
+        fails.append("--game plo --chart drew a Hold'em 13×13")
+    hold_chart = chart_of(plo, hold_w)
+    if hold_chart.get("gated"):
+        fails.append("default Hold'em chart was gated")
     plo_hist = hist_postflop_of(plo, plo_w)
     pby = {r["key"]: r for r in plo_hist["rows"]}
     if plo_hist["n"] != 4:
@@ -8344,6 +8453,10 @@ def check(db_path=DB):
             "SELECT DISTINCT game FROM decisions")}
         if "OMAHA" in present:
             cases.append(("--game plo", ["--game", "plo"]))
+            cases.append(("--variant plo4", ["--variant", "plo4"]))
+            if "fmt" in dec_cols:
+                cases.append(("--game-type plo4-cash",
+                              ["--game-type", "plo4-cash"]))
         if "OMAHA5" in present:
             cases.append(("--game plo5", ["--game", "plo5"]))
 

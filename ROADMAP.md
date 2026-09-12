@@ -1108,6 +1108,21 @@ the page, and the window. Hold'em default and `verify-parity`
 unchanged. Gaps: Omaha equity, 13×13, Stars Omaha, PLO player
 class. PLO readiness is scored separately from NLHE ~97%.
 
+## Run — Multi-game NLHE vs PLO v1
+
+**Goal:** Parser → schema → Game Type → Reports filter →
+Compact/replayer → UI gates → verify-parity NLHE+PLO.
+Bodog/Bovada PLO files import. PLO4 report ≠ NLHE sample.
+4/5 cards in Compact. No fake Hold'em 13×13 on PLO.
+
+**Result:** HEADER accepts Ignition/Bodog/Bovada. `variant` +
+`hole_card_count` on hands; `game_type` on spots/decisions.
+`--game-type` / `--type` / `--variant`. Compact prepends
+four/five cards. 13×13 gated with a reason. Parity J on
+`fixtures/plo_parity/`. NLHE A–I still PASS. Deferred: PLO
+heat map, PLO6/Omaha8, taxonomy polish, HUD, Stars Omaha,
+PLO player class.
+
 ## Run — Statistics Profile Menu + Save/Open
 
 **Goal:** H2N Profile Menu and Save/Open Report on the

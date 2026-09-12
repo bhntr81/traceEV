@@ -1,0 +1,17 @@
+Ignition Hand #2459808911: TBL#1 OMAHA Pot Limit - 2025-05-19 17:20:00
+Seat 1: Small Blind ($10.00 in chips)
+Seat 2: Big Blind [ME] ($10.00 in chips)
+Small Blind : Posts chip $0.05
+Big Blind : Posts chip $0.10
+*** HOLE CARDS ***
+Small Blind : Card dealt [Ah Kh Qd Jd]
+Big Blind : Card dealt [As Ad Kh 7d]
+Small Blind : Calls $0.05
+*** FLOP *** [Kc 2h 3s]
+Small Blind : Checks
+Big Blind : Bets $0.20
+Small Blind : Folds
+Big Blind : Return uncalled portion of bet $0.20
+Big Blind : Hand result $0.20
+*** SUMMARY ***
+Total Pot($0.20)

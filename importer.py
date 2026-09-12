@@ -27,6 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import games
 import sites
 
 DB = Path(__file__).parent / "hands.db"
@@ -38,6 +39,7 @@ DB = Path(__file__).parent / "hands.db"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hands (
   hand_id TEXT PRIMARY KEY, played_at TEXT, table_id TEXT, game TEXT,
+  variant TEXT, hole_card_count INT,
   fmt TEXT, sb REAL, bb REAL, n_players INT, board TEXT, pot REAL,
   hero_seat INT, standard INT, source TEXT, site TEXT, rake REAL,
   max_seats INT, jp_fee REAL);
@@ -53,7 +55,8 @@ CREATE INDEX IF NOT EXISTS actions_spot ON actions(street, position, action);
 CREATE INDEX IF NOT EXISTS hands_fmt ON hands(fmt, bb);
 """
 
-HAND_COLUMNS = ("hand_id", "played_at", "table_id", "game", "fmt", "sb", "bb",
+HAND_COLUMNS = ("hand_id", "played_at", "table_id", "game", "variant",
+                "hole_card_count", "fmt", "sb", "bb",
                 "n_players", "board", "pot", "hero_seat", "standard", "source",
                 "site", "rake", "max_seats", "jp_fee")
 
@@ -70,12 +73,26 @@ def migrate(con):
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
     for col, kind in (("site", "TEXT"), ("rake", "REAL"),
-                      ("max_seats", "INT"), ("jp_fee", "REAL")):
+                      ("max_seats", "INT"), ("jp_fee", "REAL"),
+                      ("variant", "TEXT"), ("hole_card_count", "INT")):
         if col not in cols:
             con.execute(f"ALTER TABLE hands ADD COLUMN {col} {kind}")
     if "site" not in cols:
         # Before a second site existed, every hand was Ignition's.
         con.execute("UPDATE hands SET site='ignition' WHERE site IS NULL")
+    # A database written before variant existed still has `game`.
+    # Fill from the registry rather than guessing -- HOLDEM was the
+    # only game this project stored, so a NULL game is Hold'em.
+    if "variant" not in cols or "hole_card_count" not in cols:
+        con.execute(
+            "UPDATE hands SET variant='nlhe', hole_card_count=2 "
+            "WHERE game='HOLDEM' OR game IS NULL")
+        con.execute(
+            "UPDATE hands SET variant='plo4', hole_card_count=4 "
+            "WHERE game='OMAHA'")
+        con.execute(
+            "UPDATE hands SET variant='plo5', hole_card_count=5 "
+            "WHERE game='OMAHA5'")
     acols = {r[1] for r in con.execute("PRAGMA table_info(actions)")}
     if "allin" not in acols:
         con.execute("ALTER TABLE actions ADD COLUMN allin INT")
@@ -299,6 +316,17 @@ def load(paths, db_path=DB, progress=None):
                 # export can only find the file when cwd happens to be
                 # that folder, and a session export writes nothing.
                 h["source"] = str(f.resolve())
+                # Variant and hole count are facts of `game`, written
+                # here so a parser never decides what "plo" means.
+                # A header the registry does not know stays NULL
+                # rather than becoming Hold'em by silence.
+                game = h.get("game")
+                h.setdefault("variant", games.variant(game))
+                try:
+                    h.setdefault("hole_card_count",
+                                 games.holes(game) if game else None)
+                except KeyError:
+                    h.setdefault("hole_card_count", None)
                 if h["hand_id"] in known:
                     skipped += 1
                     continue

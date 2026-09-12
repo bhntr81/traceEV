@@ -17,8 +17,10 @@ What this v1 does not encode, and why:
 
 - Blind posts, dead chips, a straddle. The line starts at the first
   voluntary action; posting is not a decision.
-- Hole cards. The list already has a combo column; repeating AhKd
-  here crowds the action.
+- Hole cards, for Hold'em. The list already has a combo column;
+  repeating AhKd here crowds the action. Four- and five-card
+  Omaha has no combo, so those cards are prepended `[As Ad Kh 7d]`
+  -- otherwise the line is a board with nobody in it.
 - Early folds. H2N sometimes drops them; we keep every voluntary
   action so a fold from UTG is still visible.
 - EP1–EP3. This project's seats are UTG/HJ/CO/BTN/SB/BB. STR is
@@ -119,7 +121,14 @@ def CompactHandRenderer(hand, fmt="text"):
         chunk = "  ".join(([head] if head else []) + tokens)
         if chunk:
             parts.append(chunk)
-    return " | ".join(parts)
+    line = " | ".join(parts)
+    cards = _focus_cards(hand)
+    if cards:
+        shown = f"[{cards}]"
+        if fmt == "html":
+            shown = f"<span class=\"hole\">{html_lib.escape(shown)}</span>"
+        line = f"{shown} {line}" if line else shown
+    return line
 
 
 def attach(con, rows, fmt="text"):
@@ -157,8 +166,9 @@ def lines_for(con, pairs, fmt="text"):
         if raw is None:
             out[(hid, seat)] = ""
             continue
+        cards = (raw.get("seat_cards") or {}).get(seat)
         out[(hid, seat)] = CompactHandRenderer(
-            dict(raw, focus=seat), fmt=fmt)
+            dict(raw, focus=seat, cards=cards), fmt=fmt)
     return out
 
 
@@ -171,6 +181,33 @@ def check():
             "8d (6)  BB _B4.5_  BTN C4.5 | Th (15)  BB _B86'_  BTN C86")
     if got != want:
         fails.append(f"H2N example was {got!r}, not {want!r}")
+    if got.startswith("["):
+        fails.append("Hold'em compact repeated the hole cards")
+
+    plo4 = CompactHandRenderer({
+        "bb": 0.10, "focus": 2, "cards": "As Ad Kh 7d",
+        "seats": [{"seat": 2, "cards": "As Ad Kh 7d"}],
+        "streets": [
+            {"street": "preflop", "board": "", "actions": [
+                _act(1, "SB", "C", 0.05),
+                _act(2, "BB", "X", 0),
+            ]},
+            {"street": "flop", "board": "Kc 2h 3s", "actions": [
+                _act(1, "SB", "X", 0, pot_bb=2),
+                _act(2, "BB", "B", 0.20, pot_bb=2),
+            ]},
+        ]})
+    if not plo4.startswith("[As Ad Kh 7d]"):
+        fails.append(f"PLO4 compact hid the four cards: {plo4!r}")
+    plo5 = CompactHandRenderer({
+        "bb": 0.10, "focus": 1, "cards": "Qh Jh Qd Kc 2c",
+        "streets": [
+            {"street": "preflop", "board": "", "actions": [
+                _act(1, "BB", "X", 0),
+            ]},
+        ]})
+    if not plo5.startswith("[Qh Jh Qd Kc 2c]"):
+        fails.append(f"PLO5 compact hid the five cards: {plo5!r}")
 
     fold_check = CompactHandRenderer({
         "bb": 1, "focus": 2, "streets": [
@@ -455,7 +492,8 @@ def _load_hands(con, ids, acols, dcols):
     for r in rows:
         hid = r[0]
         if hid not in grouped:
-            grouped[hid] = {"bb": r[9], "board": r[10], "actions": []}
+            grouped[hid] = {"bb": r[9], "board": r[10], "actions": [],
+                            "seat_cards": {}}
         action = {
             "street": r[1], "n": r[2], "position": r[3], "seat": r[4],
             "action": r[5], "amount": r[6], "total": r[7],
@@ -467,6 +505,14 @@ def _load_hands(con, ids, acols, dcols):
             action["to_call"] = r[13]
             action["agg"] = r[14]
         grouped[hid]["actions"].append(action)
+    names = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "seats" in names and ids:
+        for hid, seat, cards in con.execute(
+                f"SELECT hand_id, seat, cards FROM seats "
+                f"WHERE hand_id IN ({qs})", ids):
+            if hid in grouped:
+                grouped[hid].setdefault("seat_cards", {})[seat] = cards
     out = {}
     for hid, raw in grouped.items():
         out[hid] = _as_hand(raw)
@@ -483,7 +529,30 @@ def _as_hand(raw):
         if not acts:
             continue
         streets.append({"street": st, "board": shown[st], "actions": acts})
-    return {"bb": raw.get("bb"), "board": raw.get("board"), "streets": streets}
+    return {"bb": raw.get("bb"), "board": raw.get("board"),
+            "streets": streets, "seat_cards": raw.get("seat_cards") or {}}
+
+
+def _focus_cards(hand):
+    """
+    Four or five hole cards for the focus seat, or None.
+
+    Two-card Hold'em stays off the line -- the combo column already
+    has AhKd. Omaha has no combo, so the cards have to live here.
+    """
+    cards = hand.get("cards") or ""
+    if not cards:
+        focus = hand.get("focus")
+        if focus is None:
+            focus = hand.get("focus_seat")
+        for s in hand.get("seats") or []:
+            if s.get("seat") == focus and s.get("cards"):
+                cards = s["cards"]
+                break
+        if not cards and focus is not None:
+            cards = (hand.get("seat_cards") or {}).get(focus) or ""
+    n = len(str(cards).split()) if cards else 0
+    return cards if n >= 4 else None
 
 
 def _chunks(xs, n):

@@ -27,6 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import games
 import sites
 from equity import completing
 from spots import combo_of, is_aggressive, with_pot
@@ -40,7 +41,7 @@ DROP TABLE IF EXISTS decisions;
 CREATE TABLE decisions (
   hand_id TEXT, n INT, street TEXT,
   seat INT, player TEXT, is_hero INT, site TEXT,
-  table_id TEXT, fmt TEXT, game TEXT, bb REAL, played_at TEXT, n_players INT,
+  table_id TEXT, fmt TEXT, game TEXT, game_type TEXT, bb REAL, played_at TEXT, n_players INT,
   standard INT, position TEXT, cards TEXT, combo TEXT, board TEXT,
 
   -- the state in front of the player when it was their turn
@@ -150,6 +151,11 @@ CREATE INDEX IF NOT EXISTS dec_runout
 -- `--game plo` is the rare seek; the default `game = 'HOLDEM'` does
 -- not read this.
 CREATE INDEX IF NOT EXISTS dec_omaha ON decisions(game) WHERE game != 'HOLDEM';
+-- `--game-type plo4-cash` is the same rare seek as `--game plo`, plus
+-- cash. Hold'em cash is almost every row; indexing it would be the
+-- shape that made the stats table slower.
+CREATE INDEX IF NOT EXISTS dec_game_type
+    ON decisions(game_type) WHERE game_type != 'nlhe-cash';
 """
 
 
@@ -354,7 +360,8 @@ def build(db_path=DB):
 
             rows.append((
                 hid, a["n"], street, seat, who.get((hid, seat)),
-                s.get("is_hero"), site, h["table_id"], h["fmt"], h["game"], h["bb"],
+                s.get("is_hero"), site, h["table_id"], h["fmt"], h["game"],
+                games.type_id(h["game"], h["fmt"]), h["bb"],
                 h["played_at"], h["n_players"], h["standard"], a["position"],
                 s.get("cards"), combo_of(s.get("cards"))[0],
                 board_to(h["board"], street),

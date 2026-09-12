@@ -66,7 +66,9 @@ SWITCH_FIELDS = {
     "today": "--today",
 }
 VALUE_FIELDS = {
-    "site": "--site", "game": "--game", "player": "--player", "pos": "--pos",
+    "site": "--site", "game": "--game", "game_type": "--game-type",
+    "variant": "--variant",
+    "player": "--player", "pos": "--pos",
     "street": "--street", "pot": "--pot", "facing": "--facing",
     "vs": "--vs", "opener": "--opener",
     "combo": "--combo", "stake": "--stake", "deep": "--deep",
@@ -412,7 +414,10 @@ def payload(con, params):
     if view == "chart":
         out = query.chart_of(con, where)
         out["label"] = label
-        out["why"] = None if out["total"] else nothing()
+        if out.get("gated"):
+            out["why"] = out.get("reason")
+        else:
+            out["why"] = None if out["total"] else nothing()
         return out
 
     if view == "export-session":
@@ -650,6 +655,12 @@ body.detached .filter, body.detached #related{display:none}
       <option value="plo5">plo5</option>
       <option value="all">all games</option>
     </select></label>
+    <label><select id="game_type">
+      <option value="">any type</option>
+      <option value="nlhe-cash">NLHE Cash</option>
+      <option value="plo4-cash">PLO4 Cash</option>
+      <option value="plo5-cash">PLO5 Cash</option>
+    </select></label>
     <label><select id="stake"><option value="">any stake</option></select></label>
     <label><select id="player"><option value="">any player</option></select></label>
     <label>alias
@@ -882,7 +893,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','game','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key','profile']
+['site','game','game_type','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','stat_key','profile']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -919,7 +930,7 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','game','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick','hist_group']){
+  for (const id of ['site','game','game_type','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session','fmt','last_sessions','call_range','quick','hist_group']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
@@ -1849,6 +1860,11 @@ function render(d){
     out.innerHTML = h + '</tbody></table>';
 
   } else if (state.view === 'chart'){
+    if (d.gated){
+      out.innerHTML = `<p>${d.reason || 'The 13×13 is a Hold\\u2019em chart.'}</p>`
+        + (d.total ? `<p class="n">${d.total.toLocaleString()} player-hands match. Open Hands for the shown cards.</p>` : '');
+      return;
+    }
     if (!d.total){ out.innerHTML = nope(); return; }
     const RANKS = 'AKQJT98765432';
     const comboAt = (i,j) => {
@@ -2066,7 +2082,7 @@ function hydrateFromURL(){
   ['pos','vs','street','pot','facing','board'].forEach(g => {
     if (q.get(g)) state.multi[g] = q.get(g).split(',').filter(Boolean);
   });
-  ['site','game','stake','player','stack','combo','action','result','pin',
+  ['site','game','game_type','stake','player','stack','combo','action','result','pin',
    'session','fmt','last_sessions','alias','hist_group'].forEach(id => {
     const el = $('#'+id);
     if (el && q.get(id)) el.value = q.get(id);
@@ -2167,6 +2183,8 @@ function applyHydrate(h){
     else if (a === '--player' && argv[i+1]){ $('#player').value = argv[++i]; }
     else if (a === '--site' && argv[i+1]){ $('#site').value = argv[++i]; }
     else if (a === '--game' && argv[i+1]){ $('#game').value = argv[++i]; }
+    else if ((a === '--game-type' || a === '--type') && argv[i+1]){
+      $('#game_type').value = argv[++i]; }
     else if (a === '--alias' && argv[i+1]){ $('#alias').value = argv[++i]; }
   }
   $('#cohort').value = cohortCompact(h.cohort_predicate);
@@ -2335,6 +2353,8 @@ def check(db_path=DB):
          ["--hist-group", "air"]),
         ({"game": ["plo"]},
          ["--game", "plo"]),
+        ({"game_type": ["plo4-cash"]},
+         ["--game-type", "plo4-cash"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))

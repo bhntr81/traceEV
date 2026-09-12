@@ -21,8 +21,11 @@ This is the parser and nothing else: the header a hand begins with, how a
 file splits into hands, and one hand as the dict shape every site's parser
 returns. Loading, the schema and the checks are `importer.py` and
 `sites.py`; what is true of this site is its registry entry there.
+Ignition, Bodog and Bovada are one HEADER -- a Downloads file from
+any of the three used to be skipped if it did not say Ignition.
 
-    python ignition.py --check      Omaha tagged, four and five hole cards kept
+    python ignition.py --check      Omaha tagged, four and five hole cards kept,
+                                    Bodog / Bovada headers accepted
 
     python importer.py <folder>     load, whatever sites are in it
     python sites.py --check         prove the import
@@ -33,9 +36,13 @@ import sys
 
 import games
 
-# Ignition names itself on the first line of every hand. The header is the
-# only thing a file is identified by -- never the folder it was found in.
-HEADER = lambda line: line.startswith("Ignition Hand #")
+# The Bodog network writes the same hand under three brand names.
+# Downloads-style Bovada / Bodog files used to fail HEADER and were
+# skipped whole -- PLO included -- because only "Ignition Hand #"
+# was accepted. The folder they sit in is not the identifier; the
+# first line is.
+_NETWORK = r"(?:Ignition|Bodog|Bovada)"
+HEADER = lambda line: bool(re.match(rf"^{_NETWORK} Hand #", line))
 
 # The format and the stakes are not in the hand text at all; they are in
 # the file's name -- "HH20260825-052504 - 800 - RING - $0.10-$0.25 - HOLDEM
@@ -50,7 +57,7 @@ FILENAME_RE = re.compile(r" - (RING|ZONE|MTT) - (?:\$([\d.]+)-\$([\d.]+))?", re.
 # picked apart afterwards. Insisting on TBL# silently dropped every Zone
 # and tournament hand, which was a fifth of the collection.
 HAND_RE = re.compile(
-    r"^Ignition Hand #(\d+)\s*:?\s*(.*?)\s+-\s+"
+    rf"^{_NETWORK} Hand #(\d+)\s*:?\s*(.*?)\s+-\s+"
     r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", re.M)
 TABLE_RE = re.compile(r"(?:TBL#|ID#|Tournament #)(\w+)")
 SEAT_RE = re.compile(
@@ -326,6 +333,37 @@ Big Blind : Hand result $0.10
 Total Pot($0.10)
 """
 
+# Same network, other brand on the first line. A Downloads export
+# from Bovada or Bodog is this text, and used to be skipped because
+# HEADER only accepted "Ignition".
+BODOG_PLO4 = PLO4.replace("Ignition Hand #2459808909",
+                          "Bodog Hand #2459808910", 1)
+BOVADA_PLO5 = PLO5.replace("Ignition Hand #2459651456",
+                           "Bovada Hand #2459651457", 1)
+
+# A flop that actually played, so compact has a line to encode and
+# strength has a board to name. The uncontested blinds-only PLO4
+# above is the parse fixture; this is the study fixture.
+PLO4_PLAYED = """\
+Ignition Hand #2459808911: TBL#1 OMAHA Pot Limit - 2025-05-19 17:20:00
+Seat 1: Small Blind ($10.00 in chips)
+Seat 2: Big Blind [ME] ($10.00 in chips)
+Small Blind : Posts chip $0.05
+Big Blind : Posts chip $0.10
+*** HOLE CARDS ***
+Small Blind : Card dealt [Ah Kh Qd Jd]
+Big Blind : Card dealt [As Ad Kh 7d]
+Small Blind : Calls $0.05
+*** FLOP *** [Kc 2h 3s]
+Small Blind : Checks
+Big Blind : Bets $0.20
+Small Blind : Folds
+Big Blind : Return uncalled portion of bet $0.20
+Big Blind : Hand result $0.20
+*** SUMMARY ***
+Total Pot($0.20)
+"""
+
 
 def check():
     """Ignition Omaha is tagged, and four or five hole cards are kept."""
@@ -366,6 +404,41 @@ def check():
         for why in bad:
             print(f"    {why}")
             fails.append(f"PLO5: {why}")
+
+    for name, text, game, n_cards in (
+            ("Bodog PLO4", BODOG_PLO4, "OMAHA", 4),
+            ("Bovada PLO5", BOVADA_PLO5, "OMAHA5", 5)):
+        first = text.splitlines()[0]
+        if not HEADER(first):
+            fails.append(f"{name} HEADER refused {first[:40]!r}")
+            print(f"{name:32} NO (header)")
+            continue
+        parsed = parse_hand(text, source="HH - RING - $0.05-$0.10 - OMAHA.txt")
+        if parsed is None:
+            fails.append(f"{name} did not parse")
+            print(f"{name:32} NO")
+            continue
+        hero = next(s for s in parsed["seats"] if s["is_hero"])
+        cards = (hero["cards"] or "").split()
+        ok = parsed["hand"]["game"] == game and len(cards) == n_cards
+        print(f"{name:32} {'yes' if ok else 'NO'}")
+        if not ok:
+            fails.append(f"{name}: game {parsed['hand']['game']!r} "
+                         f"cards {hero['cards']!r}")
+
+    played = parse_hand(PLO4_PLAYED, source="HH - RING - $0.05-$0.10 - OMAHA.txt")
+    if played is None:
+        fails.append("PLO4_PLAYED did not parse")
+        print("PLO4 played                     NO")
+    else:
+        flop = [a for a in played["actions"] if a["street"] == "flop"]
+        hero = next(s for s in played["seats"] if s["is_hero"])
+        ok = (len(flop) >= 2
+              and hero["cards"] == "As Ad Kh 7d"
+              and played["hand"]["game"] == "OMAHA")
+        print(f"PLO4 played                     {'yes' if ok else 'NO'}")
+        if not ok:
+            fails.append("PLO4_PLAYED lost the flop or the four cards")
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")

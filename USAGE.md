@@ -1188,11 +1188,15 @@ named flags run out. `--help` prints the full list with the SQL each becomes.
 `--game` is holdem by default (`plo`, `plo5`, `all`). Mixing PLO VPIP
 into an NLHE number is the same class of error as mixing two sites
 under `fmt='RING'`. `--game plo` is how Reports / Statistics / Sessions
-ask for the other game. Postflop histograms and Weak % then use Omaha
-labels: two hole cards and three board cards, never all four as
-Hold'em. The 13×13 and all-in equity stay two-card -- `--game plo
---chart` is empty, not a lie. Rebuild derived tables after an Omaha
-import so `game` lands on `spots` and `decisions`.
+ask for the other game (MTT included). `--game-type plo4-cash` (also
+`--type`; aliases `plo`, `plo5`, `nlhe`) is the variant plus cash --
+the three defaults are NLHE Cash, PLO4 Cash and PLO5 Cash.
+`--variant` is the same words as `--game`. Postflop histograms and
+Weak % then use Omaha labels: two hole cards and three board cards,
+never all four as Hold'em. The 13×13 is gated on a PLO filter -- it
+does not draw 169 empty squares. Compact prepends `[As Ad Kh 7d]`
+for four- and five-card hands. Rebuild derived tables after an Omaha
+import so `game` / `game_type` land on `spots` and `decisions`.
 
 ### `stats.py` — the stat engine
 

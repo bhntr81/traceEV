@@ -1,0 +1,13 @@
+Bovada Hand #2459651457: TBL#1 5CARD OMAHA Pot Limit - 2025-05-19 17:00:00
+Seat 1: Small Blind ($10.00 in chips)
+Seat 2: Big Blind [ME] ($10.00 in chips)
+Small Blind : Posts chip $0.05
+Big Blind : Posts chip $0.10
+*** HOLE CARDS ***
+Small Blind : Card dealt [Ah Kh Qd Jd Td]
+Big Blind : Card dealt [Qh Jh Qd Kc 2c]
+Small Blind : Folds
+Big Blind : Return uncalled portion of bet $0.05
+Big Blind : Hand result $0.10
+*** SUMMARY ***
+Total Pot($0.10)

@@ -8,6 +8,36 @@ Newest first.
 
 ---
 
+## Multi-game v1: Game Type, Bodog/Bovada, 4/5-card compact, 13×13 gate
+
+The PLO study track widened past strength. Same branch, same freeze
+base, PR #7 import still reconciled in.
+
+- **Bodog / Bovada HEADER** — the network writes three brand names.
+  Downloads-style PLO files were skipped because only `Ignition Hand #`
+  was accepted. `variant` and `hole_card_count` are written on `hands`
+  from the registry, not guessed in a parser.
+- **Game Type** — `{variant, cash|mtt}` → `nlhe-cash` / `plo4-cash` /
+  `plo5-cash`. `--game-type` / `--type` / `--variant` are who-flags.
+  Default `--game` is still Hold'em (all formats) so NLHE reports do
+  not suddenly drop MTT. Stats under a type filter are that type only.
+- **Compact / replayer** — four and five hole cards sit on the line
+  (`[As Ad Kh 7d]`). Hold'em still omits them; the combo column has
+  AhKd.
+- **13×13 gated on PLO** — the chart says why, and Hands still lists
+  the shown cards. An empty 169-square is not a range.
+
+`verify-parity` A–I stay on the NLHE corpus. J is the PLO sibling
+(`fixtures/plo_parity/`). Rebuild derived tables so `game_type`
+lands on `spots` and `decisions`.
+
+### Not this, on purpose
+
+PLO combinatoric heat map, PLO6 / Omaha8, full Omaha taxonomy
+polish, HUD, PokerStars Omaha, player class measured on PLO.
+
+---
+
 ## PLO study: Omaha strength, `--game plo` histograms
 
 A new track, stacked on the NLHE H2N freeze

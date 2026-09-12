@@ -25,9 +25,9 @@ HERE = Path(__file__).parent
 # In dependency order, so the first failure is the earliest cause rather
 # than the loudest symptom.
 CHECKS = [
-    ("games", "the variant registry: headers, --game words, hole counts"),
+    ("games", "the variant registry: headers, --game words, types, hole counts"),
     ("acr", "WPN parser: PLO4/PLO5 fixtures, and Hold'em still loads"),
-    ("ignition", "Ignition parser: Omaha tagged, four and five hole cards kept"),
+    ("ignition", "Ignition/Bodog/Bovada: Omaha tagged, four and five hole cards kept"),
     ("pokerstars", "PokerStars: NLHE still loads; Omaha skip is the extension point"),
     ("sites", "each site's import: money, positions, blinds, and names where it has them"),
     ("spots", "the per-hand derivation: figures with a known shape"),
@@ -45,7 +45,7 @@ CHECKS = [
     ("expr", "expressions over plain stats: Value/Cases/Opps, no corpus"),
     ("aliases", "named account groups, CSV, and the SQL they compile to"),
     ("query", "the filter surface: every filter runs, and every one narrows"),
-    ("parity", "H2N tracking-half invariants A–H on the committed corpus"),
+    ("parity", "H2N tracking-half A–I on NLHE fixtures, J on the PLO corpus"),
     ("diag", "a failure in any of the three places reaches the log"),
     ("update", "the updater reports honestly and can only fast-forward"),
     ("app", "the window, its filter dialog, and the dark theme"),

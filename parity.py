@@ -4,7 +4,8 @@ Live-corpus lock on the H2N tracking-half invariants.
 The in-memory fixtures in `query.py --check` prove the functions
 against a hand-built table. This module proves the same facts after
 a real import: the committed HH in `fixtures/parity/` go through
-`importer.load` and `CHAIN`, then A–I run on the derived tables. A
+`importer.load` and `CHAIN`, then A–I run on the derived tables and J on
+the PLO sibling corpus. A
 derivation that silently drops a line still looks fine in a table
 somebody typed; it does not survive here.
 
@@ -23,6 +24,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import compact
+import games
 import importer
 import players
 import query
@@ -32,6 +35,7 @@ from stats import BY_KEY
 
 HERE = Path(__file__).parent
 FIXTURES = HERE / "fixtures" / "parity"
+PLO_FIXTURES = HERE / "fixtures" / "plo_parity"
 
 # Alice / Bob / Carol are pinned after load. The auto-classifier
 # refuses on a handful of hands (unknown is an answer); the
@@ -74,6 +78,28 @@ def load_corpus():
     for site, player, klass in PINS:
         players.set_type(site, player, klass, path=types, db_path=db)
     return db, types, got
+
+
+def load_plo_corpus():
+    """
+    Downloads-style PLO files through the same import path.
+
+    A sibling of `fixtures/parity`, not a subdirectory -- rglob
+    would otherwise pull Omaha into the NLHE A–I corpus and
+    Ignition coverage would drop below 100% (PLO has cards and
+    no two-card combo).
+    """
+    if not PLO_FIXTURES.is_dir():
+        raise SystemExit(f"no PLO fixture corpus at {PLO_FIXTURES}")
+    scratch = Path(tempfile.mkdtemp(prefix="parity-plo-"))
+    db = scratch / "hands.db"
+    got = importer.load([PLO_FIXTURES], db)
+    if not got["added"]:
+        raise SystemExit(
+            f"PLO fixture corpus loaded 0 hands from {PLO_FIXTURES} "
+            f"(files={got['files']}, unknown={got['unknown']})")
+    importer.rebuild(db)
+    return db, got
 
 
 def _count(con, where):
@@ -455,9 +481,90 @@ def check_I(con):
     return fails
 
 
+def check_J(con):
+    """
+    PLO v1 against Downloads-style fixtures.
+
+    NLHE A–I stay on the Hold'em corpus. This is the other half:
+    Bodog/Bovada parse, variant + hole count, game-type reports
+    that do not mix with NLHE, compact showing four cards, and
+    the 13×13 refused rather than drawn empty.
+    """
+    fails = []
+    cols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
+    if "variant" not in cols or "hole_card_count" not in cols:
+        fails.append("J: hands is missing variant / hole_card_count")
+        return fails
+
+    rows = list(con.execute(
+        "SELECT hand_id, site, game, variant, hole_card_count, fmt "
+        "FROM hands ORDER BY 1"))
+    by_id = {r[0]: r for r in rows}
+    if "2459808910" not in by_id:
+        fails.append("J: Bodog PLO4 was skipped")
+    if "2459651457" not in by_id:
+        fails.append("J: Bovada PLO5 was skipped")
+    if "2459808911" not in by_id:
+        fails.append("J: Ignition PLO4 played hand was skipped")
+
+    plo4 = [r for r in rows if r[3] == "plo4"]
+    plo5 = [r for r in rows if r[3] == "plo5"]
+    if not plo4:
+        fails.append("J: no hand stored variant=plo4")
+    if any(r[4] != 4 for r in plo4):
+        fails.append("J: a PLO4 hand has hole_card_count != 4")
+    if not plo5:
+        fails.append("J: no hand stored variant=plo5")
+    if any(r[4] != 5 for r in plo5):
+        fails.append("J: a PLO5 hand has hole_card_count != 5")
+
+    hold_w, _, _ = query.build([])
+    plo_w, _, _ = query.build(["--game-type", "plo4-cash"])
+    n_hold = _count(con, hold_w)
+    n_plo = _count(con, plo_w)
+    if n_plo == 0:
+        fails.append("J: --game-type plo4-cash selected nothing")
+    if n_hold == n_plo:
+        fails.append(
+            f"J: PLO4 report matched the NLHE sample ({n_hold} decisions)")
+    if n_hold:
+        fails.append(
+            f"J: default Hold'em selected {n_hold} decisions in a "
+            "PLO-only corpus")
+
+    g = query.chart_of(con, plo_w)
+    if not g.get("gated"):
+        fails.append("J: PLO4 chart drew a Hold'em 13×13")
+    elif "Omaha" not in (g.get("reason") or ""):
+        fails.append(f"J: chart gate lost the reason: {g.get('reason')!r}")
+
+    line = compact.lines_for(con, [("2459808911", 2)], fmt="text").get(
+        ("2459808911", 2), "")
+    if "[As Ad Kh 7d]" not in line:
+        fails.append(f"J: compact hid the four cards: {line!r}")
+
+    made = con.execute(
+        "SELECT made FROM decisions WHERE hand_id='cp-2459808999' "
+        "AND street='flop' AND cards LIKE 'As Ad Kh 7d%' "
+        "LIMIT 1").fetchone()
+    if made is None or made[0] != "overpair":
+        fails.append(
+            f"J: ACR PLO4 flop was {made}, not Omaha overpair")
+
+    dcols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if "game_type" not in dcols:
+        fails.append("J: decisions is missing game_type")
+    else:
+        types = {r[0] for r in con.execute(
+            "SELECT DISTINCT game_type FROM decisions")}
+        if "plo4-cash" not in types:
+            fails.append(f"J: game_type values were {sorted(types)}")
+    return fails
+
+
 def check():
     """
-    A–I against the committed corpus. Returns True on a clean pass.
+    A–I against the committed NLHE corpus, then J against PLO.
 
     In-memory stop-ships (empty freq, fold AP, Reports ignore exclude)
     already live in `query.py --check`. This is the live import of the
@@ -485,6 +592,18 @@ def check():
             print(f"    {line}")
         fails.extend(bad)
     con.close()
+
+    plo_db, plo_got = load_plo_corpus()
+    print(f"PLO corpus  {plo_got['added']} hands  "
+          f"({', '.join(f'{k} {v}' for k, v in plo_got['by_site'].items())})")
+    plo_con = sqlite3.connect(plo_db)
+    bad = check_J(plo_con)
+    print(f"{'J PLO import / type / gate':28}  "
+          f"{'yes' if not bad else 'NO'}")
+    for line in bad:
+        print(f"    {line}")
+    fails.extend(bad)
+    plo_con.close()
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
     return not fails

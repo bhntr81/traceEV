@@ -853,7 +853,7 @@ class App(ImportMixin, ttk.Frame):
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
         self.vals = {n: tk.StringVar() for n in
-                     ("site", "game", "stake", "player", "deep", "short",
+                     ("site", "game", "game_type", "stake", "player", "deep", "short",
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "after", "then", "size", "outcome",
@@ -1063,7 +1063,7 @@ class App(ImportMixin, ttk.Frame):
                     "--reg", "--fish", "--vs-reg", "--vs-fish",
                     "--with-fish", "--regs-only",
                     "--today")
-    WHO_VALS = ("site", "game", "stake", "player", "since", "until",
+    WHO_VALS = ("site", "game", "game_type", "stake", "player", "since", "until",
                 "alias", "vs_alias", "villain_type",
                 "session", "hours", "start_of_day", "tz",
                 "fmt", "last_sessions")
@@ -1134,6 +1134,8 @@ class App(ImportMixin, ttk.Frame):
                                             if x.strip())
                 else:
                     name = {"--site": "site", "--game": "game",
+                            "--game-type": "game_type", "--type": "game_type",
+                            "--variant": "game",
                             "--stake": "stake",
                             "--player": "player", "--deep": "deep",
                             "--short": "short", "--since": "since",
@@ -1535,8 +1537,8 @@ class App(ImportMixin, ttk.Frame):
         for flag in query.WHO_SWITCHES:
             if flag in self.flags and flag not in ("--today",):
                 self.flags[flag].set(False)
-        for name in ("player", "alias", "site", "game", "stake", "vs_alias",
-                     "villain_type"):
+        for name in ("player", "alias", "site", "game", "game_type", "stake",
+                     "vs_alias", "villain_type"):
             if name in self.vals:
                 self.vals[name].set("")
         self._apply_argv(ctx["subject_argv"], who=True)
@@ -1862,6 +1864,7 @@ class App(ImportMixin, ttk.Frame):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
         for name, flag in (("site", "--site"), ("game", "--game"),
+                           ("game_type", "--game-type"),
                            ("stake", "--stake"),
                            ("player", "--player"), ("deep", "--deep"),
                            ("short", "--short"), ("since", "--since"),
@@ -1889,6 +1892,8 @@ class App(ImportMixin, ttk.Frame):
                            ("call_range", "--call-range")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any ") or v == "holdem (default)":
+                continue
+            if name == "game_type" and v.startswith("any"):
                 continue
             if name in ("start_of_day", "tz"):
                 # Prefs for `--today` / `--hours`. Emitting them on
@@ -2170,8 +2175,12 @@ class App(ImportMixin, ttk.Frame):
                                out.get("why") or out.get("error"))
             return
         if view == "chart":
-            self.chart = out if out.get("cells") else None
-            self._draw_chart(out.get("why") or out.get("error"))
+            if out.get("gated"):
+                self.chart = None
+                self._draw_chart(out.get("reason") or out.get("why"))
+            else:
+                self.chart = out if out.get("cells") else None
+                self._draw_chart(out.get("why") or out.get("error"))
             return
         if view == "sessions":
             self._render_sessions(out)
@@ -4818,6 +4827,8 @@ class FilterDialog(tk.Toplevel):
         for name, blank, values in (
                 ("site", "any site", self.app.options["sites"]),
                 ("game", "holdem (default)", ("plo", "plo5", "all")),
+                ("game_type", "any type",
+                 ("nlhe-cash", "plo4-cash", "plo5-cash")),
                 ("stake", "any stake", self.app.options["stakes"]),
                 ("player", "any player", self.app.options["players"])):
             box = ttk.Combobox(row, textvariable=self.app.vals[name],
@@ -5114,6 +5125,8 @@ def check(db_path=DB):
         ({"flags": [], "vals": {"player": HERO_CHOICE}}, ["--hero"]),
         ({"flags": ["--hero"], "vals": {"game": "plo"}},
          ["--hero", "--game", "plo"]),
+        ({"flags": ["--hero"], "vals": {"game_type": "plo4-cash"}},
+         ["--hero", "--game-type", "plo4-cash"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
