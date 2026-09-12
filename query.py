@@ -969,71 +969,80 @@ def spot_summary(con, where, argv):
     }
 
 
+# One CASE, used by the aggregate and by each matching hand, so the
+# mean on the report and the number beside a replay cannot drift.
+#
+# v1 prices three clean cases. Everything else is NULL (unpriced),
+# not zero: stuffing 0 in for a called pot would look like the action
+# was break-even and that is a finding, not a gap.
+#
+#   fold always 0
+#   bet 5 into pot 10, everyone folds  →  +10  (pot_before; the bet
+#       comes back, so it is not subtracted)
+#   bet 5, face a raise, fold          →  −5   (amount on THIS action)
+#
+# Not Won$ of the hand, not all-in EV, not Call Profit Rate.
+ACTION_PROFIT_EDGES = (
+    "called-and-played-on is unpriced -- later pot is not assigned "
+    "back to this bet (that is Call Profit Rate, deferred)",
+    "multiway: priced only when every other seat folds; a call from "
+    "any one of them, or a showdown, is unpriced",
+    "later streets after a call are not this action's money",
+    "uncalled bet: +pot_before is the dead money they take; the "
+    "uncalled chips come back and are not subtracted",
+    "rake is not subtracted from +pot; if rake ate the pot (won=0) "
+    "the line is unpriced rather than guessed as a loss",
+    "MTT chips are not dollars -- tournament rows stay unpriced",
+)
+
+
+def action_profit_sql(d="d", s="s"):
+    """bb attributed to this decision, or NULL if v1 will not guess."""
+    other = (
+        f"EXISTS (SELECT 1 FROM decisions x "
+        f"WHERE x.hand_id = {d}.hand_id AND x.n > {d}.n "
+        f"AND x.seat <> {d}.seat AND ")
+    self = (
+        f"EXISTS (SELECT 1 FROM decisions x "
+        f"WHERE x.hand_id = {d}.hand_id AND x.n > {d}.n "
+        f"AND x.seat = {d}.seat AND ")
+    cash = (f"{s}.fmt IS NOT NULL AND {s}.fmt <> 'MTT' "
+            f"AND {d}.bb")
+    uncontested = (
+        f"{d}.agg = 1 AND {cash} "
+        f"AND {s}.wtsd = 0 AND IFNULL({s}.won, 0) > 0 "
+        f"AND NOT {other}x.action <> 'F')")
+    bet_fold = (
+        f"{d}.agg = 1 AND {cash} "
+        f"AND {self}x.action = 'F') "
+        f"AND {other}x.agg = 1)")
+    return (
+        f"CASE WHEN {d}.action = 'F' THEN 0 "
+        f"WHEN {uncontested} THEN {d}.pot_before / {d}.bb "
+        f"WHEN {bet_fold} THEN -IFNULL({d}.amount, 0) / {d}.bb "
+        f"ELSE NULL END"
+    )
+
+
 def action_profit_of(con, where):
     """
     Profit attributed to the filtered action, not the hand, in bb/hand.
 
-    v1 prices three clean cases and leaves the rest unpriced:
-
-      * fold is 0
-      * an uncontested bet -- nobody else acts after, they win without
-        a showdown -- is +pot_before (the pot they take; their bet is
-        returned, so it is not subtracted)
-      * a bet that is raised, and they fold, is −amount (the chips they
-        put in on THIS action)
-
-    MTT is out: chips are not dollars. Everything else -- called and
-    played on, multiway pots that go to showdown, uncalled bets where
-    rake ate the pot, a later street's money assigned back to this
-    bet -- is counted as unpriced rather than guessed. Fake precision
-    here is worse than a smaller n.
+    The mean is over priced hits -- the matching actions v1 can score --
+    not over opportunities (times they could have acted and did not)
+    and not over Won$ of those hands. Unpriced hits stay in `n` and
+    out of the mean, so a called pot cannot drag the figure to zero
+    and look like a finding.
     """
+    expr = action_profit_sql()
     row = con.execute(
         f"""
         SELECT
           COUNT(*) AS n,
-          SUM(CASE WHEN d.action = 'F' THEN 1
-                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
-                        AND s.wtsd = 0 AND IFNULL(s.won, 0) > 0
-                        AND NOT EXISTS (
-                          SELECT 1 FROM decisions x
-                          WHERE x.hand_id = d.hand_id AND x.n > d.n
-                            AND x.seat <> d.seat AND x.action <> 'F')
-                   THEN 1
-                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
-                        AND EXISTS (
-                          SELECT 1 FROM decisions x
-                          WHERE x.hand_id = d.hand_id AND x.n > d.n
-                            AND x.seat = d.seat AND x.action = 'F')
-                        AND EXISTS (
-                          SELECT 1 FROM decisions x
-                          WHERE x.hand_id = d.hand_id AND x.n > d.n
-                            AND x.seat <> d.seat AND x.agg = 1)
-                   THEN 1
-                   ELSE 0 END) AS priced,
-          SUM(CASE WHEN d.action = 'F' THEN 0
-                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
-                        AND s.wtsd = 0 AND IFNULL(s.won, 0) > 0
-                        AND NOT EXISTS (
-                          SELECT 1 FROM decisions x
-                          WHERE x.hand_id = d.hand_id AND x.n > d.n
-                            AND x.seat <> d.seat AND x.action <> 'F')
-                        AND d.bb
-                   THEN d.pot_before / d.bb
-                   WHEN d.agg = 1 AND s.fmt <> 'MTT'
-                        AND EXISTS (
-                          SELECT 1 FROM decisions x
-                          WHERE x.hand_id = d.hand_id AND x.n > d.n
-                            AND x.seat = d.seat AND x.action = 'F')
-                        AND EXISTS (
-                          SELECT 1 FROM decisions x
-                          WHERE x.hand_id = d.hand_id AND x.n > d.n
-                            AND x.seat <> d.seat AND x.agg = 1)
-                        AND d.bb
-                   THEN -IFNULL(d.amount, 0) / d.bb
-                   ELSE NULL END) AS profit
+          SUM({expr} IS NOT NULL) AS priced,
+          SUM({expr}) AS profit
         FROM (SELECT * FROM decisions WHERE {where}) d
-        JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
+        LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
         """
     ).fetchone()
     n, priced, profit = row[0] or 0, row[1] or 0, row[2]
@@ -1041,9 +1050,45 @@ def action_profit_of(con, where):
         "n": n, "priced": priced, "unpriced": n - priced,
         "total_bb": profit if profit is not None else 0.0,
         "bb_per_hand": ((profit or 0.0) / priced) if priced else None,
-        "note": ("fold = 0; uncontested bet = +pot; bet-then-fold = −bet; "
-                 "called-and-played-on is unpriced"),
+        "per": "priced hits",
+        "note": ("fold = 0; bet 5 into 10, all fold = +10; "
+                 "bet 5, raise, fold = −5. Mean over priced hits, "
+                 "not opportunities, not Won$."),
+        "edges": list(ACTION_PROFIT_EDGES),
     }
+
+
+def matching_hands(con, where, limit=None):
+    """
+    Each (hand, seat) the filter selected, with hand net and action profit.
+
+    `net_bb` is what the hand did. `act_bb` is what THIS action did, and
+    the two sitting next to each other is the point: a won hand whose
+    cbet was called is +net and unpriced act, which is a different
+    sentence from mixing them into one number.
+    """
+    expr = action_profit_sql()
+    sql = (
+        f"SELECT d.hand_id, d.seat, MAX(d.played_at), MAX(d.site), "
+        f"       MAX(d.bb), MAX(d.position), MAX(d.combo), MAX(d.board), "
+        f"       MAX(s.net_bb), SUM({expr}), "
+        f"       SUM({expr} IS NOT NULL), COUNT(*) "
+        f"FROM (SELECT * FROM decisions WHERE {where}) d "
+        f"LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
+        f"GROUP BY d.hand_id, d.seat "
+        f"ORDER BY MAX(d.played_at) DESC"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = []
+    for hid, seat, when, site, bb, pos, combo, board, net, act, priced, hits \
+            in con.execute(sql):
+        rows.append({
+            "id": hid, "seat": seat, "when": when, "site": site, "bb": bb,
+            "pos": pos, "combo": combo, "board": board, "net": net,
+            "act": act, "priced": priced or 0, "hits": hits or 0,
+        })
+    return rows
 
 
 def chain_of(con, where, same_seat=False):
@@ -2110,11 +2155,16 @@ def show_stats(con, where, label, parts=(), related=None, argv=None):
         prof = action_profit_of(con, where)
         if prof["priced"]:
             print(f"  action profit  {prof['bb_per_hand']:+.2f} bb/hand"
-                  f"  n={prof['priced']:,} priced of {prof['n']:,}")
+                  f"  n={prof['priced']:,} priced of {prof['n']:,} hits"
+                  f"  (not opportunities, not Won$)")
             print(f"  {prof['note']}")
+            for edge in prof["edges"]:
+                print(f"    unpriced: {edge}")
         elif prof["n"]:
-            print(f"  action profit  unpriced on {prof['n']:,} "
-                  f"({prof['note']})")
+            print(f"  action profit  unpriced on {prof['n']:,} hits"
+                  f"  ({prof['note']})")
+            for edge in prof["edges"]:
+                print(f"    unpriced: {edge}")
         print()
     # What they did HERE, before the named stats. A cbet frequency is "of
     # the times they could"; this is "of the decisions you already asked
@@ -2694,24 +2744,24 @@ def show_hands(con, where, label, limit=40, parts=()):
     # The filter names bare columns, and `spots` shares several of them
     # with `decisions` -- is_hero, position, combo -- so it is applied inside
     # a subquery where there is only one table for a name to mean.
-    rows = con.execute(
-        f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site, d.bb, "
-        f"       d.position, d.combo, d.board, s.net_bb "
-        f"FROM (SELECT * FROM decisions WHERE {where}) d "
-        f"LEFT JOIN spots s "
-        f"  ON s.hand_id = d.hand_id AND s.seat = d.seat "
-        f"ORDER BY d.played_at DESC").fetchall()
+    rows = matching_hands(con, where)
     print(f"{len(rows)} hands match; showing up to {limit}\n")
     if not rows:
         print("  " + why_empty(con, parts))
         return
     print(f"  {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
-          f"{'net bb':>7}  board")
-    print("  " + "-" * 74)
-    for hid, seat, when, site, bb, pos, combo, board, net in rows[:limit]:
-        print(f"  {when[:16]:17} {site:10} {bb or 0:5.2f} {pos or '?':4} "
-              f"{combo or '--':5} {net if net is not None else 0:7.1f}  "
-              f"{board or ''}")
+          f"{'net bb':>7} {'act bb':>7}  board")
+    print("  " + "-" * 82)
+    for r in rows[:limit]:
+        when = (r["when"] or "")[:16]
+        act = (f"{r['act']:+.1f}" if r["act"] is not None else "   –")
+        net = r["net"] if r["net"] is not None else 0
+        print(f"  {when:17} {r['site'] or '':10} {r['bb'] or 0:5.2f} "
+              f"{r['pos'] or '?':4} {r['combo'] or '--':5} "
+              f"{net:7.1f} {act:>7}  {r['board'] or ''}")
+    print()
+    print("  act bb is this action (v1); net bb is the whole hand. "
+          "A dash is unpriced -- see action profit on --stats.")
 
 
 def usage():
@@ -2930,8 +2980,57 @@ def check_fixture():
         f"SELECT COUNT(*) FROM decisions WHERE {last_w}").fetchone()[0]
     if n != 4:
         fails.append(f"--last-raise selected {n}, expected 4")
+
+    # Action profit v1: the three examples, and a called pot left unpriced.
+    # spots is required for the cash-game / won / wtsd half; a fold with
+    # no spots row must still be 0 (LEFT JOIN), or a missing derivation
+    # would drop every fold from the mean.
+    con.execute(
+        "CREATE TABLE spots ("
+        "hand_id TEXT, seat INT, fmt TEXT, wtsd INT, won REAL, net_bb REAL)")
+    con.executemany(
+        "INSERT INTO spots VALUES (?,?,?,?,?,?)",
+        [("h1", 1, "RING", 0, 15, 10),
+         ("h2", 1, "RING", 1, 0, -6),
+         ("h3", 1, "RING", 1, 20, 5),
+         ("h5", 1, "RING", 0, 0, -5)])
+    con.executemany(
+        "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("h5", 1, 1, "B", 1, 0, 5, 10, 1, 1, 1, 0.50, "flop"),
+         ("h5", 2, 2, "R", 1, 5, 15, 15, 1, 0, 1, 1.00, "flop"),
+         ("h5", 3, 1, "F", 0, 10, 0, 30, 1, 0, 0, None, "flop")])
+    for where, want, priced in (
+            ("hand_id='h1' AND seat=1 AND agg=1", 10.0, 1),
+            ("hand_id='h5' AND seat=1 AND agg=1", -5.0, 1),
+            ("hand_id='h4' AND seat=1", 0.0, 1)):
+        got = action_profit_of(con, where)
+        if got["priced"] != priced or got["bb_per_hand"] != want:
+            fails.append(
+                f"action profit {where} was {got['bb_per_hand']} "
+                f"on {got['priced']} priced, expected {want} on {priced}")
+    called = action_profit_of(con, "hand_id='h2' AND seat=1 AND agg=1")
+    if called["priced"] or called["bb_per_hand"] is not None:
+        fails.append("a called pot was priced -- that is Call Profit Rate")
+    three = action_profit_of(
+        con,
+        "seat=1 AND ((hand_id='h1' AND agg=1) OR "
+        "(hand_id='h5' AND agg=1) OR hand_id='h4')")
+    if three["priced"] != 3 or abs((three["bb_per_hand"] or 0) - (5 / 3)) > 1e-9:
+        fails.append(
+            f"the three examples averaged {three['bb_per_hand']}, "
+            f"not (10-5+0)/3")
+    for col in ("played_at", "site", "position", "combo", "board"):
+        con.execute(f"ALTER TABLE decisions ADD COLUMN {col} TEXT")
+    per = matching_hands(con, "hand_id='h1' AND seat=1 AND agg=1")
+    if len(per) != 1 or per[0]["act"] != 10:
+        fails.append(
+            f"per-hand action profit was {per}, not +10 on the uncontested bet")
+    per = matching_hands(con, "hand_id='h5' AND seat=1 AND agg=1")
+    if len(per) != 1 or per[0]["act"] != -5:
+        fails.append(
+            f"per-hand action profit was {per}, not -5 on the bet-fold")
     con.close()
-    print(f"outcome/size fixture          "
+    print(f"outcome/size/action-profit fixture  "
           f"{'yes' if not fails else 'NO'}")
     for f in fails:
         print(f"    {f}")

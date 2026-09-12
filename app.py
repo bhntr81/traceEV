@@ -1087,13 +1087,7 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = con.execute(
-                    f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site,"
-                    f" d.bb, d.position, d.combo, d.board, s.net_bb "
-                    f"FROM (SELECT * FROM decisions WHERE {where}) d "
-                    f"LEFT JOIN spots s ON s.hand_id=d.hand_id "
-                    f"AND s.seat=d.seat ORDER BY d.played_at DESC LIMIT 500"
-                ).fetchall()
+                out["rows"] = query.matching_hands(con, where, limit=500)
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if not self._any(out):
@@ -1263,13 +1257,16 @@ class App(ImportMixin, ttk.Frame):
             if prof["bb_per_hand"] is not None:
                 tv.insert("", "end", values=(
                     "action profit", f"{prof['bb_per_hand']:+.2f} bb",
-                    "", f"{prof['priced']:,} priced"))
+                    "priced hits", f"{prof['priced']:,} of {prof['n']:,}"))
             else:
                 tv.insert("", "end", values=(
                     "action profit", "unpriced", "", f"{prof['n']:,}"),
                     tags=("note",))
             tv.insert("", "end", values=(prof["note"], "", "", ""),
                       tags=("note",))
+            for edge in prof.get("edges") or []:
+                tv.insert("", "end", values=(edge, "", "", ""),
+                          tags=("note",))
         acts = out.get("actions") or {}
         if acts.get("mix"):
             tv.insert("", "end", values=("THIS SPOT", "", "", ""),
@@ -1413,25 +1410,30 @@ class App(ImportMixin, ttk.Frame):
             "error on a win rate is about 1170/√n", ""))
 
     def _render_hands(self, tv, out):
-        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb", "board"),
-                   (140, 90, 60, 60, 70, 90, 200),
+        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb",
+                        "act bb", "board"),
+                   (140, 90, 60, 60, 70, 80, 80, 180),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
                     "board": "w"})
         self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net in out["rows"]:
+        for r in out["rows"]:
+            net, act = r.get("net"), r.get("act")
             iid = tv.insert("", "end", values=(
-                (when or "")[:16], site, f"{bb:g}" if bb else "",
-                pos or "", combo or "–",
+                (r.get("when") or "")[:16], r.get("site") or "",
+                f"{r['bb']:g}" if r.get("bb") else "",
+                r.get("pos") or "", r.get("combo") or "–",
                 f"{net:+.1f}" if net is not None else "",
-                board or ""),
-                tags=("pos",) if (net or 0) > 0 else
-                     ("neg",) if (net or 0) < 0 else ())
-            self._hand_ids[iid] = (hid, seat)
+                f"{act:+.1f}" if act is not None else "–",
+                r.get("board") or ""),
+                tags=("pos",) if (act or 0) > 0 else
+                     ("neg",) if (act or 0) < 0 else ())
+            self._hand_ids[iid] = (r["id"], r["seat"])
         if out["rows"]:
-            tv.insert("", "end", values=("", "", "", "", "", "", ""))
+            tv.insert("", "end", values=("", "", "", "", "", "", "", ""))
             tv.insert("", "end", tags=("note",),
-                      values=("double-click a hand to replay it", "", "", "",
-                              "", "", ""))
+                      values=("act bb is this action; net bb is the hand. "
+                              "– is unpriced. Double-click to replay.",
+                              "", "", "", "", "", "", ""))
 
     def _open_hand(self, _event):
         tv = self.tree["hands"]

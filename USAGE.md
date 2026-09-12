@@ -223,9 +223,28 @@ on a filter:
   without the action is opportunities). Hits/1000 is per thousand
   player-hands of the person being measured, not per thousand
   opportunities -- a 70% cbet on 12 flops is still a rare event.
-- **Action profit** in bb/hand, attributed to *this* action: fold is 0,
-  an uncontested bet is +pot, a bet that is raised and folded is −bet.
-  Called-and-played-on is left unpriced (see CHANGELOG).
+- **Action profit** in bb/hand, attributed to *this* action, not the
+  hand. The mean is over **priced hits** -- the matching actions v1
+  can score -- sitting next to Hits/Opps. It is not opportunities
+  (times they could have acted and did not), not Won$ of those hands,
+  not all-in EV, and not Call Profit Rate.
+
+  - fold → always 0
+  - bet 5 into pot 10, everyone folds → **+10** (they take the pot;
+    their bet comes back, so it is not subtracted)
+  - bet 5, face a raise, fold → **−5** (the chips they put in on
+    THIS action)
+
+  `--hands` prints `act bb` beside `net bb` so the two cannot be
+  mixed up. A dash is unpriced. Open cases, left unpriced on purpose:
+
+  - a call that is played on (later pot is not assigned back)
+  - multiway unless every other seat folds
+  - later streets after a call
+  - rake: not subtracted from +pot; if rake ate the pot (`won=0`)
+    the line is unpriced
+  - MTT (chips are not dollars)
+  - uncalled extra chips come back; v1 credits `+pot_before` only
 - **This spot** -- fold / check / call / bet / raise of the filtered
   decisions, each with its `n` and a Wilson interval.
 - **Faced next** / **next actions** -- what the other seat did after

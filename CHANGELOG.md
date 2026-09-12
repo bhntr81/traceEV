@@ -86,16 +86,25 @@ the person being measured -- mixing that with the frequency is how a
 
 ### Added — Action profit (v1)
 
-Profit attributed to the filtered action, not the hand, as bb/hand.
+Profit attributed to the filtered action, not the hand, as bb/hand
+over priced hits. One SQL CASE feeds the report mean and the act bb
+column on --hands, so those two cannot drift.
 
   * fold = 0
-  * uncontested bet (nobody else acts after, they win without showdown)
-    = +pot_before (their bet is returned, so it is not subtracted)
-  * bet that is raised, and they fold = −amount on THIS action
+  * bet 5 into pot 10, everyone folds = +10 (pot_before; the bet is
+    returned, so it is not subtracted)
+  * bet 5, face a raise, fold = -5 (amount on THIS action)
 
-MTT is out. Called-and-played-on, later streets assigned back to this
-bet, rake on an uncontested pot, and multiway showdowns are **unpriced**
-and counted, not guessed. The note is printed next to the figure.
+Distinct from Won$ of the filtered hands, all-in EV / EV diff, and
+Call Profit Rate (deferred). The mean ignores unpriced hits rather
+than scoring them as 0 -- a called pot stuffed with zero would look
+like the action was break-even.
+
+Unpriced, on purpose: called-and-played-on (later pot is not this
+action), multiway unless everyone folds, later streets after a call,
+rake not subtracted (and won=0 after rake is unpriced, not a guessed
+loss), MTT, an uncalled overage coming back (v1 credits +pot_before
+only). The note sits next to Hits/Opps.
 
 ### Added — Faced Next / Next Actions, and click-to-filter
 
@@ -144,9 +153,9 @@ untouched.
 - **Richer pin.** The window shows the pinned spot's hits and action
   profit above this one. A true side-by-side report tab (two column
   packs, same `--by`) is still `--versus` on the command line.
-- **Call Profit Rate, Dispersion, EV diff.** The last needs a solver,
-  which is a different product. The first two want a priced call, and
-  action-profit v1 leaves called-and-played-on unpriced on purpose.
+- **Call Profit Rate, Dispersion, EV diff.** Action-profit v1 leaves
+  called-and-played-on unpriced on purpose; those extras need a priced
+  call or a solver.
 - **Multi-Player compare** as its own view. `--versus` already compares
   two populations; a window for it is not this PR.
 - **Missed 2nd/3rd Barrel, Won$, Won hand%** in the Raise C-bet pack.

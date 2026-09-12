@@ -174,17 +174,9 @@ def payload(con, params):
                 "why": None if got else nothing()}
 
     if view == "hands":
-        rows = con.execute(
-            f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site, d.bb, "
-            f"       d.position, d.combo, d.board, s.net_bb "
-            f"FROM (SELECT * FROM decisions WHERE {where}) d "
-            f"LEFT JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat "
-            f"ORDER BY d.played_at DESC LIMIT 300").fetchall()
-        return {"label": label, "rows": [
-            {"when": r[2], "site": r[3], "bb": r[4], "pos": r[5],
-             "combo": r[6], "board": r[7], "net": r[8], "id": r[0],
-             "seat": r[1]}
-            for r in rows], "why": None if rows else nothing()}
+        rows = query.matching_hands(con, where, limit=300)
+        return {"label": label, "rows": rows,
+                "why": None if rows else nothing()}
 
     if view == "hand":
         hid = params.get("id", [""])[0]
@@ -567,9 +559,11 @@ function render(d){
     if (d.profit && d.profit.n){
       const ap = d.profit.bb_per_hand == null ? 'unpriced'
         : (d.profit.bb_per_hand>=0?'+':'') + d.profit.bb_per_hand.toFixed(2) + ' bb/hand';
-      h += `<tr><td>action profit</td><td>${ap}</td><td class="n"></td>`
-        + `<td class="n">${d.profit.priced.toLocaleString()} priced</td></tr>`
+      h += `<tr><td>action profit</td><td>${ap}</td><td class="n">priced hits</td>`
+        + `<td class="n">${d.profit.priced.toLocaleString()} of ${d.profit.n.toLocaleString()}</td></tr>`
         + `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
+      for (const edge of (d.profit.edges || []))
+        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
     }
     if (d.actions && d.actions.mix && d.actions.mix.length){
       h += `<tr><td colspan="4" class="group">this spot</td></tr>`;
@@ -669,14 +663,15 @@ function render(d){
 
   } else {
     if (!d.rows.length){ out.innerHTML = nope(); return; }
-    let h = '<p class="n">click a hand to replay it</p>'
+    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Click a hand to replay it.</p>'
       + '<table><thead><tr><th>when</th><th>site</th><th>bb</th><th>pos</th>'
-      + '<th>hand</th><th>net bb</th><th>board</th></tr></thead><tbody>';
+      + '<th>hand</th><th>net bb</th><th>act bb</th><th>board</th></tr></thead><tbody>';
     for (const r of d.rows)
       h += `<tr class="click" data-id="${r.id}" data-seat="${r.seat}">`
         + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site}</td>`
         + `<td class="n">${r.bb??''}</td><td>${r.pos||''}</td>`
         + `<td>${r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
+        + `<td>${r.act==null?'–':money(r.act)}</td>`
         + `<td class="n">${r.board||''}</td></tr>`;
     out.innerHTML = h + '</tbody></table>';
   }
