@@ -8,6 +8,35 @@ Newest first.
 
 ---
 
+## Detach report panes
+
+H2N-style Detach: a study pane opens in its own window.
+No HUD. No solver. Pin stays in-main. Dock-back is deferred.
+
+The report identity is the same argv Pin already uses -- who +
+situation + crumbs -- so a detached Stack pane and a pin of that
+nest cannot drift. The window is live: a further drill in main
+(or a row click in the copy) reshapes it. Freeze-on-detach is
+the other legal reading; live is the cheaper one because the
+payload is already built.
+
+Gear → **Detach** on every study pane, including Win Graph,
+Hand Values, and Hands. Cap is four; closing one frees the
+slot. The title is `subject · pane · short filters`. Close
+does not touch the in-main pane. Row-drill and compact hands
+work inside a detached breakdown. Pin + nest still work on
+the main bar.
+
+`--check` covers the context id, the title, the cap, and
+Pin coexistence. No invented EV.
+
+### Not this, on purpose
+
+No HUD. No solver. No detach of the whole shell. No
+multi-profile Save/Open. No rakeback. Dock-back is deferred.
+
+---
+
 ## Live-corpus correctness (verify-parity)
 
 Lock the already-shipped H2N tracking-half semantics. No HUD, no
@@ -53,8 +82,8 @@ imports, so the packaged app and `build.py --check` agree.
 
 ### Not this, on purpose
 
-No HUD. No solver. No Detach, rakeback, multi-profile, PLO, or
-new Expression atoms.
+No HUD. No solver. No rakeback, multi-profile, PLO, or
+new Expression atoms. Detach shipped next.
 
 ---
 

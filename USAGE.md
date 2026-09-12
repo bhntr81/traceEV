@@ -209,14 +209,18 @@ is not required.
 
 Default panes: Results, Stack Sizes, Positions, Next Action. Click
 a row to AND it onto the filter (`parent ∧ row`). The breadcrumb
-is the path; three deep, then the last crumb is replaced. Detach
-is not built.
+is the path; three deep, then the last crumb is replaced. Gear →
+**Detach** opens that pane in its own window (resize / zoom the
+graph). The copy stays live with the main filter -- a further
+drill reshapes it -- and Pin stays on the main bar. Cap is four;
+closing one does not break the cockpit. Dock-back is deferred.
 
 The demo that has to work without typing flags:
 
 Unfiltered → Stack **80-120** → Next Action **Call vs OR** → **Axs**
 → compact list → double-click a row to replay → right-click another
-stack row and **Pin this**.
+stack row and **Pin this**. Gear on Stack (or Graph) → **Detach** →
+resize the copy → keep drilling in main; Pin still works on the bar.
 
 `--action` is this decision (fold / check / call / bet / raise).
 `--then` is still the next street. Call vs OR is `--street preflop
@@ -226,15 +230,15 @@ every suited ace; `22+`, `pairs`, `broadways` are the same idea.
 `--result won` is the whole-hand result via `spots` (cash only).
 
 The page (`python gui.py`) has the same study view as its default
-tab. Pin, Mark, and Add to Note hit the same backends.
+tab. Pin, Mark, Add to Note, and Detach hit the same backends.
 
 The study strip now carries the postflop **hand-value histogram**
 and its Weak % (Air / Draws / Weak pair by default). Click a bar
 to AND `--hist-group` onto the filter; right-click flips whether
 that group counts as weak. Other is always last, for leftovers.
 
-Not in this cockpit: Detach, multi-profile Save/Open, a board
-editor. Sessions is the neighbouring tab. Statistics is
+Not in this cockpit: multi-profile Save/Open, a board
+editor, dock-back. Sessions is the neighbouring tab. Statistics is
 the one after study.
 
 ### Statistics
@@ -287,7 +291,7 @@ same person.
 `--fmt cash` is everything that is not a tournament (`fmt <>
 'MTT'`). `fmt='RING'` is not a pool; ACR ring is in cash too.
 
-Not this: multi-profile Save/Open, a board editor, Detach.
+Not this: multi-profile Save/Open, a board editor, dock-back.
 
 ### Sessions
 
@@ -981,7 +985,8 @@ session's detail. Click a line name to hide it; hover names the
 hand. All-in EV is only priced for the clean two-way case with
 cards to come -- nothing is invented. MTT is out.
 
-Not this: rakeback overlay, Chip EV, Detach.
+Not this: rakeback overlay, Chip EV. Detach lives on the
+Reports gear, not on this CLI flag.
 
 **`--hands`** lists the hands themselves, newest first, with the board and
 what each one made. Under each row is a **compact hand** -- the same

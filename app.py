@@ -309,7 +309,8 @@ class WinGraph:
     the pointer. The series comes from `query.graph_of`.
     """
 
-    def __init__(self, parent, unit_var=None, height=None, compact=False):
+    def __init__(self, parent, unit_var=None, height=None, compact=False,
+                 on_gear=None):
         self.unit = unit_var or tk.StringVar(value="bb")
         self.hidden = set()
         self.got = None
@@ -331,6 +332,9 @@ class WinGraph:
             self.leg_vars[key] = var
             ttk.Checkbutton(bar, text=why, variable=var,
                             command=self._toggle).pack(side="left", padx=(8, 0))
+        if on_gear:
+            ttk.Button(bar, text="⚙", width=3, command=on_gear).pack(
+                side="right")
         self.tip = ttk.Label(self.frame, text="", style="Dim.TLabel")
         self.tip.pack(anchor="w", padx=8)
         self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0,
@@ -444,7 +448,7 @@ class HistWidget:
     editor is deferred, but the percentage has to move.
     """
 
-    def __init__(self, parent, on_click=None, height=150):
+    def __init__(self, parent, on_click=None, height=150, on_gear=None):
         self.on_click = on_click
         self.got = None
         self.message = None
@@ -458,6 +462,9 @@ class HistWidget:
         self.weak_lab.pack(side="left", padx=(12, 0))
         ttk.Label(bar, text="click a bar to filter · right-click flips weak",
                   style="Dim.TLabel").pack(side="left", padx=12)
+        if on_gear:
+            ttk.Button(bar, text="⚙", width=3, command=on_gear).pack(
+                side="right")
         self.tip = ttk.Label(self.frame, text="", style="Dim.TLabel")
         self.tip.pack(anchor="w", padx=8)
         self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0,
@@ -850,6 +857,7 @@ class App(ImportMixin, ttk.Frame):
         self.pane_hidden = {}
         self.pane_sort = {}
         self._pin_alias = {}
+        self._detached = []
         self._study_out = None
         self._session_id = None
         self._sessions_out = None
@@ -1607,7 +1615,7 @@ class App(ImportMixin, ttk.Frame):
             state="readonly", width=14)
         self.plus_box.pack(side="left", padx=(6, 0))
         self.plus_box.bind("<<ComboboxSelected>>", lambda _e: self._add_pane())
-        ttk.Label(tools, text="click a row to drill  ·  right-click a hand",
+        ttk.Label(tools, text="click a row to drill  ·  ⚙ Detach  ·  right-click a hand",
                   style="Dim.TLabel").pack(side="left", padx=12)
 
         grid = ttk.Frame(parent)
@@ -1625,13 +1633,19 @@ class App(ImportMixin, ttk.Frame):
         self.plus_frames = {}
 
         self.study_hist = HistWidget(parent, on_click=self._click_study_hist,
-                                     height=140)
+                                     height=140,
+                                     on_gear=lambda: self._pane_gear("hist"))
         self.study_hist.pack(fill="x", padx=8, pady=(0, 4))
         self.study_graph = WinGraph(parent, unit_var=self.graph_unit,
-                                    height=170, compact=True)
+                                    height=170, compact=True,
+                                    on_gear=lambda: self._pane_gear("graph"))
         self.study_graph.pack(fill="x", padx=8, pady=(0, 4))
         hands = ttk.LabelFrame(parent, text="Hands")
         hands.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        hbar = ttk.Frame(hands)
+        hbar.pack(fill="x")
+        ttk.Button(hbar, text="⚙", width=3,
+                   command=lambda: self._pane_gear("hands")).pack(side="right")
         self.study_hands = self._table(hands)
         self.study_hands.bind("<Double-1>", self._open_hand)
         self.study_hands.bind("<Return>", self._open_hand)
@@ -2284,6 +2298,7 @@ class App(ImportMixin, ttk.Frame):
         self.study_hist.set(out.get("hist"),
                             out.get("why") or out.get("error"))
         self._paint_related(out.get("related") or [])
+        self._sync_detached()
 
     def _paint_crumbs(self):
         for kid in self.crumb_bar.winfo_children():
@@ -2424,12 +2439,16 @@ class App(ImportMixin, ttk.Frame):
 
     def _pane_gear(self, name):
         pane = ((self._study_out or {}).get("panes") or {}).get(name) or {}
-        available = _pane_available(name, pane)
-        if not available:
-            return
-        hidden = set(self.pane_hidden.get(name, set()))
+        available = _pane_available(name, pane) if name not in (
+            "graph", "hands") else []
+        # Detach is always on the gear, even when a pane has no
+        # columns to hide -- Graph and Hands have no column list
+        # and still have to open a window.
         menu = tk.Menu(self, tearoff=0, background=PANEL, foreground=INK,
                        activebackground=EDGE)
+        menu.add_command(label="Detach",
+                         command=lambda n=name: self._detach_pane(n))
+        hidden = set(self.pane_hidden.get(name, set()))
         for col in available:
             on = col not in hidden
 
@@ -2449,8 +2468,59 @@ class App(ImportMixin, ttk.Frame):
         finally:
             menu.grab_release()
 
+    def _alive_detached(self):
+        alive = []
+        for w in self._detached:
+            try:
+                if w.winfo_exists():
+                    alive.append(w)
+            except tk.TclError:
+                pass
+        self._detached = alive
+        return alive
+
+    def _detach_pane(self, name):
+        """
+        Open this pane in its own window.
+
+        Live: the window redraws from the latest study payload, so
+        a drill in main (or in the copy) reshapes it. Pin stays on
+        the main bar -- a detached pane is a viewport, not a second
+        report. Dock-back is deferred.
+        """
+        if name not in query.DETACHABLE:
+            return None
+        alive = self._alive_detached()
+        for w in alive:
+            if getattr(w, "pane", None) == name:
+                try:
+                    w.lift()
+                    w.focus_force()
+                except tk.TclError:
+                    pass
+                return w
+        if not query.can_detach(len(alive)):
+            self.status.configure(
+                text=f"detach cap {query.DETACH_CAP} — close one")
+            return None
+        win = DetachedPane(self, name)
+        self._detached.append(win)
+        return win
+
+    def _sync_detached(self):
+        out = self._study_out
+        title_argv = self.argv()
+        for w in self._alive_detached():
+            try:
+                w.sync(out, title_argv)
+            except tk.TclError:
+                pass
+
+    def _forget_detached(self, win):
+        self._detached = [w for w in self._detached if w is not win]
+
     def _drill_pane(self, name, event):
-        tv = self.study_trees.get(name)
+        tv = event.widget if event is not None else self.study_trees.get(name)
         if not tv:
             return
         iid = tv.identify_row(event.y)
@@ -2473,7 +2543,7 @@ class App(ImportMixin, ttk.Frame):
         self.refresh()
 
     def _pane_pin_menu(self, name, event):
-        tv = self.study_trees.get(name)
+        tv = event.widget if event is not None else self.study_trees.get(name)
         if not tv:
             return
         iid = tv.identify_row(event.y)
@@ -3015,10 +3085,13 @@ class App(ImportMixin, ttk.Frame):
                               "", "", "", "", "", "", "", ""))
 
     def _selected_hand(self, tv=None):
+        extra = []
+        for w in getattr(self, "_detached", []) or []:
+            extra.append(getattr(w, "hands", None))
         trees = [tv, getattr(self, "study_hands", None),
                  getattr(self, "session_hands", None),
                  getattr(self, "stat_hands", None),
-                 (self.tree or {}).get("hands")]
+                 (self.tree or {}).get("hands")] + extra
         for t in trees:
             if t is None:
                 continue
@@ -3386,6 +3459,96 @@ def _cohort_expr(conditions):
         else:
             parts.append(f"{field}={value}")
     return ",".join(parts)
+
+
+class DetachedPane(tk.Toplevel):
+    """
+    One study pane in its own window.
+
+    Live: `sync` redraws from the latest study payload, so a
+    drill in the main window (or a row click here) reshapes
+    this copy. The report identity is `App.argv` -- the same
+    list Pin uses. Pin itself stays on the main bar. Closing
+    does not touch the in-main pane. Dock-back is deferred.
+    """
+
+    def __init__(self, app, name):
+        super().__init__(app)
+        self.app = app
+        self.pane = name
+        self.tree = None
+        self.hands = None
+        self.graph = None
+        self.hist = None
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.configure(bg=BG)
+        self.minsize(420, 280)
+        self.geometry("720x520")
+        dark_titlebar(self)
+        why = (f"live with the main filter  ·  pin stays in-main  ·  "
+               f"close does not dock")
+        ttk.Label(self, text=why, style="Dim.TLabel").pack(
+            anchor="w", padx=8, pady=(6, 0))
+        if name == "graph":
+            self.graph = WinGraph(self, unit_var=app.graph_unit)
+            self.graph.pack(fill="both", expand=True, padx=8, pady=8)
+        elif name == "hist":
+            self.hist = HistWidget(self, on_click=app._click_study_hist,
+                                   height=260)
+            self.hist.pack(fill="both", expand=True, padx=8, pady=8)
+            self.hist.canvas.pack_configure(fill="both", expand=True)
+        elif name == "hands":
+            box = ttk.LabelFrame(self, text="Hands")
+            box.pack(fill="both", expand=True, padx=8, pady=8)
+            self.hands = app._table(box)
+            self._bind_hands(self.hands)
+        else:
+            box = ttk.LabelFrame(
+                self, text=query.STUDY_PANE_LABELS.get(name, name))
+            box.pack(fill="both", expand=True, padx=8, pady=(4, 2))
+            self.tree = app._table(box)
+            self.tree.bind("<Button-1>",
+                           lambda e, n=name: app._drill_pane(n, e))
+            self.tree.bind("<Button-3>",
+                           lambda e, n=name: app._pane_pin_menu(n, e))
+            hands = ttk.LabelFrame(self, text="Hands")
+            hands.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+            self.hands = app._table(hands)
+            self._bind_hands(self.hands)
+        self.sync(app._study_out, app.argv())
+
+    def _bind_hands(self, tv):
+        tv.bind("<Double-1>", self.app._open_hand)
+        tv.bind("<Return>", self.app._open_hand)
+        tv.bind("<Button-3>", self.app._hand_menu)
+
+    def sync(self, out, argv=None):
+        argv = list(argv if argv is not None else self.app.argv())
+        try:
+            self.title(query.detach_title(argv, self.pane))
+        except tk.TclError:
+            return
+        out = out or {}
+        why = out.get("why") or out.get("error")
+        if self.graph is not None:
+            self.graph.set(out.get("graph"), why)
+            return
+        if self.hist is not None:
+            self.hist.set(out.get("hist"), why)
+            return
+        if self.tree is not None:
+            pane = (out.get("panes") or {}).get(self.pane)
+            if self.pane == "combo" and not pane:
+                pane = out.get("families")
+            if self.pane == "hist" and not pane:
+                pane = out.get("hist")
+            self.app._fill_pane(self.pane, self.tree, pane, out)
+        if self.hands is not None:
+            self.app._render_hands(self.hands, {"rows": out.get("hands") or []})
+
+    def _close(self):
+        self.app._forget_detached(self)
+        self.destroy()
 
 
 class WhoIsRegDialog(tk.Toplevel):
@@ -4886,6 +5049,106 @@ def check(db_path=DB):
     print(f"default study panes           "
           f"{len(getattr(app, 'study_trees', {}))}/"
           f"{len(query.DEFAULT_STUDY_PANES)}")
+
+    # Detach: nest Stack 80-120, open a window, keep pin in-main,
+    # close without breaking the cockpit, cap at four.
+    app.clear_situation()
+    app.pin.set("")
+    app._pin_alias.clear()
+    app.crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
+    app._study_out = {
+        "panes": {"stack": {"id": "stack", "rows": [
+            {"key": "80-120", "label": "80-120", "n": 10, "pct": 20.0,
+             "flag": "--stack", "value": "80-120"}]},
+                  "next": {"id": "next", "rows": [
+            {"key": "call", "label": "Call", "n": 4, "pct": 40.0,
+             "flag": "--action", "value": "call"}]}},
+        "hands": [{"id": "h1", "seat": 1, "when": "2026-09-01",
+                   "site": "acr", "pos": "BTN", "combo": "AKs",
+                   "net": 2.0, "act": 1.0, "compact": "BTN _R3_"}],
+        "graph": None, "hist": None,
+    }
+    nest_argv = app.argv()
+    if query._canonical(query.report_context(nest_argv)) != \
+            query._canonical(nest_argv):
+        fails.append("window argv is not the pin report context")
+    win = app._detach_pane("stack")
+    if win is None:
+        fails.append("Detach did not open Stack Sizes")
+    else:
+        win.withdraw()
+        if "80-120" not in win.title() or "Stack" not in win.title():
+            fails.append(f"detached title drifted: {win.title()!r}")
+        if "hero" not in win.title() and "all" not in win.title():
+            fails.append(f"detached title dropped the subject: {win.title()!r}")
+        if win.tree is None or win.hands is None:
+            fails.append("detached stack window has no table or hands")
+        if app.study_trees.get("stack") is None:
+            fails.append("Detach removed the in-main Stack pane")
+        # Pin stays in-main and still writes the same context id.
+        app._pin_step({"flag": "--action", "value": "call", "label": "Call"})
+        if not app.pin.get():
+            fails.append("Pin did not stay in-main after Detach")
+        pinned = app._pin_name()
+        this, other = query.pin_sides(app.argv(), pinned)
+        if query._canonical(this) != query._canonical(app.argv()):
+            fails.append("pin THIS side drifted from the detached nest")
+        if "--action" not in other or "call" not in other:
+            fails.append("pin of a row after Detach lost the other side")
+        # Live: a further drill updates the detached title.
+        app.crumbs.append({"flag": "--action", "value": "call",
+                           "label": "Call"})
+        app._sync_detached()
+        if "call" not in win.title().lower() and "Call" not in win.title():
+            fails.append(f"live title did not follow the next drill: "
+                         f"{win.title()!r}")
+        win._close()
+        if app.study_trees.get("stack") is None:
+            fails.append("closing a detached pane broke the main Stack")
+        if app._alive_detached():
+            fails.append("closed detach stayed in the host list")
+        # Pin still works after the window is gone.
+        if not app.pin.get():
+            fails.append("closing Detach cleared the in-main pin")
+    gwin = app._detach_pane("graph")
+    if gwin is None or gwin.graph is None:
+        fails.append("Detach did not open Win Graph")
+    else:
+        gwin.withdraw()
+        if "Win Graph" not in gwin.title():
+            fails.append(f"graph title drifted: {gwin.title()!r}")
+        gwin._close()
+    # Cap: four open, a fifth is refused, closing frees a slot.
+    opened = []
+    for name in ("results", "stack", "position", "next"):
+        w = app._detach_pane(name)
+        if w is None:
+            fails.append(f"Detach refused {name} under the cap")
+        else:
+            w.withdraw()
+            opened.append(w)
+    fifth = app._detach_pane("graph")
+    if fifth is not None:
+        fails.append("detach cap did not hold at 4")
+        try:
+            fifth._close()
+        except tk.TclError:
+            pass
+    if opened:
+        opened[0]._close()
+        extra = app._detach_pane("graph")
+        if extra is None:
+            fails.append("closing a detached pane did not free the cap")
+        else:
+            extra.withdraw()
+            extra._close()
+    for w in opened[1:]:
+        try:
+            w._close()
+        except tk.TclError:
+            pass
+    print(f"detach + pin coexist          "
+          f"{'yes' if not [f for f in fails if 'detach' in f.lower() or 'Detach' in f or 'pin THIS' in f or 'Pin did' in f] else 'NO'}")
 
     app.clear_situation()
     app._apply_argv(["--first-in", "--first-raise", "--last-action",
