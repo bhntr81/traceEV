@@ -144,6 +144,7 @@ def payload(con, params):
                "actions": query.actions_of(con, where),
                "summary": query.spot_summary(con, where, argv),
                "profit": query.action_profit_of(con, where),
+               "call_profit": query.call_profit_of(con, where),
                 "faced": query.chain_report(con, where, argv, False),
                 "next": query.chain_report(con, where, argv, True),
                "outcomes": query.outcomes_of(con, where),
@@ -647,7 +648,9 @@ function render(d){
         + `<tr><td>hits / 1000</td>`
         + `<td>${(sa.per_1k||0).toFixed(1)}</td><td></td>`
         + `<td>${(sb.per_1k||0).toFixed(1)}</td></tr>`
-        + `<tr><td>action profit</td><td>${ap(pa)}</td><td></td><td>${ap(pb)}</td></tr>`;
+        + `<tr><td>action profit</td><td>${ap(pa)}</td><td></td><td>${ap(pb)}</td></tr>`
+        + `<tr><td>call profit</td><td>${ap(A.call_profit||{})}</td><td></td>`
+        + `<td>${ap(B.call_profit||{})}</td></tr>`;
       const fd = d.compare.freq_diff;
       if (fd && fd.d != null)
         h += `<tr><td>freq this − pin</td>`
@@ -674,6 +677,15 @@ function render(d){
         + `<td class="n">${d.profit.priced.toLocaleString()} of ${d.profit.n.toLocaleString()}</td></tr>`
         + `<tr><td colspan="4" class="n">${d.profit.note}</td></tr>`;
       for (const edge of (d.profit.edges || []))
+        h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
+    }
+    if (d.call_profit && d.call_profit.n){
+      const cp = d.call_profit.bb_per_hand == null ? 'unpriced'
+        : (d.call_profit.bb_per_hand>=0?'+':'') + d.call_profit.bb_per_hand.toFixed(2) + ' bb/hand';
+      h += `<tr><td>call profit</td><td>${cp}</td><td class="n">priced calls</td>`
+        + `<td class="n">${d.call_profit.priced.toLocaleString()} of ${d.call_profit.n.toLocaleString()}</td></tr>`
+        + `<tr><td colspan="4" class="n">${d.call_profit.note}</td></tr>`;
+      for (const edge of (d.call_profit.edges || []))
         h += `<tr><td colspan="4" class="n">unpriced: ${edge}</td></tr>`;
     }
     if (d.actions && d.actions.mix && d.actions.mix.length){
@@ -780,9 +792,9 @@ function render(d){
 
   } else {
     if (!d.rows.length){ out.innerHTML = nope(); return; }
-    let h = '<p class="n">act bb is this action; net bb is the hand. A dash is unpriced. Underlined actions are this row\'s seat. Click a hand to replay it. The star marks it.</p>'
+    let h = '<p class="n">act bb is Action Profit; call bb is Call Profit Rate (actual calls). net bb is the hand. A dash is unpriced. Underlined actions are this row\'s seat. Click a hand to replay it. The star marks it.</p>'
       + '<table><thead><tr><th></th><th>when</th><th>site</th><th>bb</th><th>pos</th>'
-      + '<th>hand</th><th>net bb</th><th>act bb</th><th>compact</th></tr></thead><tbody>';
+      + '<th>hand</th><th>net bb</th><th>act bb</th><th>call bb</th><th>compact</th></tr></thead><tbody>';
     for (const r of d.rows){
       const tags = (r.tags||[]).join(',');
       h += `<tr class="click" data-id="${r.id}" data-seat="${r.seat}">`
@@ -791,6 +803,7 @@ function render(d){
         + `<td class="n">${r.bb??''}</td><td>${r.pos||''}</td>`
         + `<td>${r.combo||'–'}</td><td>${r.net==null?'':money(r.net)}</td>`
         + `<td>${r.act==null?'–':money(r.act)}</td>`
+        + `<td>${r.call==null?'–':money(r.call)}</td>`
         + `<td class="compact">${tags?('['+tags+'] '):''}${r.compact||r.board||''}</td></tr>`;
     }
     out.innerHTML = h + '</tbody></table>';
@@ -886,7 +899,7 @@ async function load(){
   chips('board', OPT.boards, 'board');
   for (const id of ['after','then']){
     $('#'+id).innerHTML = '<option value="">any</option>'
-      + ['fold','check','call','bet','raise','continue','none','fold-out','3bet']
+      + ['fold','check','call','bet','raise','squeeze','continue','none','fold-out','3bet']
           .map(v=>`<option>${v}</option>`).join('');
   }
   if (OPT.reports){
@@ -984,6 +997,7 @@ def check(db_path=DB):
          ["--players", "6", "--live", "2"]),
         ({"after": ["none"]}, ["--after", "none"]),
         ({"after": ["3bet"]}, ["--after", "3bet"]),
+        ({"after": ["squeeze"]}, ["--after", "squeeze"]),
         ({"cohort": ["vpip>=40,pfr<=10,hands>=100"], "hero": ["1"]},
          ["--cohort", "vpip>=40,pfr<=10,hands>=100", "--hero"]),
         ({"cohort": ["hands>=100"], "cohort_class": ["fish"], "pos": ["BTN"]},

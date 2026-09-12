@@ -1084,6 +1084,7 @@ class App(ImportMixin, ttk.Frame):
                 out["actions"] = query.actions_of(con, where)
                 out["summary"] = query.spot_summary(con, where, argv)
                 out["profit"] = query.action_profit_of(con, where)
+                out["call_profit"] = query.call_profit_of(con, where)
                 out["faced"] = query.chain_report(con, where, argv, False)
                 out["next"] = query.chain_report(con, where, argv, True)
                 out["outcomes"] = query.outcomes_of(con, where)
@@ -1279,6 +1280,13 @@ class App(ImportMixin, ttk.Frame):
                       if pb.get("bb_per_hand") is not None else "–")
             tv.insert("", "end", values=(
                 "action profit", this_ap, "", pin_ap, ""))
+            ca, cb = a.get("call_profit") or {}, b.get("call_profit") or {}
+            this_cp = (f"{ca['bb_per_hand']:+.2f} bb"
+                       if ca.get("bb_per_hand") is not None else "–")
+            pin_cp = (f"{cb['bb_per_hand']:+.2f} bb"
+                      if cb.get("bb_per_hand") is not None else "–")
+            tv.insert("", "end", values=(
+                "call profit", this_cp, "", pin_cp, ""))
             diff = cmp.get("freq_diff") or {}
             if diff.get("d") is not None:
                 tv.insert("", "end", values=(
@@ -1321,6 +1329,22 @@ class App(ImportMixin, ttk.Frame):
             tv.insert("", "end", values=(prof["note"], "", "", "", ""),
                       tags=("note",))
             for edge in prof.get("edges") or []:
+                tv.insert("", "end", values=(edge, "", "", "", ""),
+                          tags=("note",))
+        callp = out.get("call_profit")
+        if callp and callp["n"]:
+            if callp["bb_per_hand"] is not None:
+                tv.insert("", "end", values=(
+                    "call profit", f"{callp['bb_per_hand']:+.2f} bb",
+                    "priced calls", f"{callp['priced']:,} of {callp['n']:,}",
+                    ""))
+            else:
+                tv.insert("", "end", values=(
+                    "call profit", "unpriced", "", f"{callp['n']:,}", ""),
+                    tags=("note",))
+            tv.insert("", "end", values=(callp["note"], "", "", "", ""),
+                      tags=("note",))
+            for edge in callp.get("edges") or []:
                 tv.insert("", "end", values=(edge, "", "", "", ""),
                           tags=("note",))
         acts = out.get("actions") or {}
@@ -1475,13 +1499,13 @@ class App(ImportMixin, ttk.Frame):
         # focus seat's action is marked _R3_. Double-click still opens
         # the full replay -- that path is unchanged.
         self._cols(tv, ("*", "when", "site", "bb", "pos", "hand", "net bb",
-                        "act bb", "compact"),
-                   (36, 140, 90, 60, 60, 70, 80, 80, 480),
+                        "act bb", "call bb", "compact"),
+                   (36, 140, 90, 60, 60, 70, 80, 80, 80, 440),
                    {"*": "w", "when": "w", "site": "w", "pos": "w", "hand": "w",
                     "compact": "w"})
         self._hand_ids = {}
         for r in out["rows"]:
-            net, act = r.get("net"), r.get("act")
+            net, act, call = r.get("net"), r.get("act"), r.get("call")
             star = "*" if r.get("marked") else ""
             extra = ",".join(r.get("tags") or [])
             compact_line = r.get("compact") or r.get("board") or ""
@@ -1494,18 +1518,22 @@ class App(ImportMixin, ttk.Frame):
                 r.get("pos") or "", r.get("combo") or "–",
                 f"{net:+.1f}" if net is not None else "",
                 f"{act:+.1f}" if act is not None else "–",
+                f"{call:+.1f}" if call is not None else "–",
                 compact_line),
                 tags=("pos",) if (act or 0) > 0 else
                      ("neg",) if (act or 0) < 0 else ())
             self._hand_ids[iid] = (r["id"], r["seat"])
         if out["rows"]:
-            tv.insert("", "end", values=("", "", "", "", "", "", "", "", ""))
+            tv.insert("", "end", values=(
+                "", "", "", "", "", "", "", "", "", ""))
             tv.insert("", "end", tags=("note",),
-                      values=("", "act bb is this action; net bb is the hand. "
-                              "– is unpriced. _marked_ actions are this "
-                              "row's seat. Mark / Unmark / Note on the row. "
+                      values=("", "act bb is Action Profit; call bb is "
+                              "Call Profit Rate (actual calls). "
+                              "net bb is the hand. – is unpriced. "
+                              "_marked_ actions are this row's seat. "
+                              "Mark / Unmark / Note on the row. "
                               "Double-click to replay.",
-                              "", "", "", "", "", "", ""))
+                              "", "", "", "", "", "", "", ""))
 
     def _selected_hand(self):
         tv = self.tree["hands"]

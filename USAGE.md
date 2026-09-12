@@ -235,16 +235,41 @@ on a filter:
   - bet 5, face a raise, fold → **−5** (the chips they put in on
     THIS action)
 
-  `--hands` prints `act bb` beside `net bb` so the two cannot be
-  mixed up. A dash is unpriced. Open cases, left unpriced on purpose:
+  `--hands` prints `act bb` and `call bb` beside `net bb` so the
+  three cannot be mixed up. A dash is unpriced. Open cases for
+  Action Profit, left unpriced on purpose:
 
-  - a call that is played on (later pot is not assigned back)
+  - a call that is played on (later pot is not assigned back --
+    that number, when they called, is Call Profit Rate)
   - multiway unless every other seat folds
   - later streets after a call
   - rake: not subtracted from +pot; if rake ate the pot (`won=0`)
     the line is unpriced
   - MTT (chips are not dollars)
   - uncalled extra chips come back; v1 credits `+pot_before` only
+- **Call profit rate** in bb/hand, the sibling used to compare
+  alternatives when both call and raise were legal. It is
+  **accounting of actual calls**, not the EV of calling when they
+  raised. A raise in the same filter stays unpriced so the mean
+  cannot be dragged by a counterfactual we do not have.
+
+  A priced call is `to_call > 0` (facing a bet or raise, including
+  a limp) and not all-in (so a raise was still possible), cash
+  game. Profit is `(won − chips this seat put in from THIS action
+  on) / bb`. Later streets are assigned back on purpose -- that is
+  the point of the number. `won` already has rake out where the
+  site writes it.
+
+  - call 5 into pot 15, win, no more chips in → **+15** (`pot_before`)
+  - call 5 and lose → **−5**
+  - call 5, then bet 10, win 40 → **+25** (later streets assigned back)
+  - all-in call → unpriced (no raise was available)
+  - MTT → unpriced
+
+  The mean is over **priced calls**, with its `n`. On "Flop vs
+  c-bet", Action Profit is the priced raises (and folds as 0);
+  Call Profit Rate is the priced calls. Sitting next to each
+  other is the comparison. Neither is EV.
 - **This spot** -- fold / check / call / bet / raise of the filtered
   decisions, each with its `n` and a Wilson interval.
 - **Faced next** / **next actions** -- a report, not just a mix. Each
@@ -253,14 +278,19 @@ on a filter:
   on the parent action given that continuation. `--after fold` and
   `--then bet` open a row; `--after none` is "nothing further".
   `--after fold-out` and `--after 3bet` are aliases for fold and
-  raise (an open's 3-bet is a raise). Squeeze is not its own verb --
-  it is `--live 3` plus `--after raise`.
+  raise (an open's 3-bet is a raise). **`--after squeeze`** is its
+  own verb: any later squeeze (the squeeze stat's chance -- facing
+  an open, `n_live >= 4`, `pot_bb > 4`), not the first later action.
+  After an open the first later action is usually the call; the
+  squeeze is the raise that comes after that call. `--live` plus
+  `--after raise` still works; this is that, named.
 
 ```bash
 python query.py --from "Flop c-bets" --faced-next
 python query.py --from "Flop c-bets" --next-actions
 python query.py --from "Flop c-bets" --branch fold
 python query.py --from "Flop c-bets" --after fold --stats
+python query.py --from "Steal attempts" --after squeeze --stats
 python query.py --hit cbet_flop --stats
 ```
 
@@ -274,7 +304,19 @@ python query.py --hit cbet_flop --stats
   `--outcome fold-out` opens that row; a click does the same.
 
 A Quick Filter also **swaps the report columns** to the pack for that
-spot. `--quick raise_cbet` leads with raise c-bet, not VPIP.
+spot. `--quick raise_cbet` leads with raise c-bet, not VPIP, and the
+pack includes 2nd barrel (`cbet_turn`) and 3rd barrel (`cbet_river`).
+The flop c-bet pack does the same. Missed 2nd / 3rd Barrel are
+`--quick` negatives and named reports:
+
+```bash
+python query.py --filter "Raise C-bet" --by position
+python query.py --filter "2nd Barrel" --stats
+python query.py --filter "Missed 3rd Barrel" --hero
+```
+
+Won$ / Won hand% stay out of the pack -- they are spots-sourced and
+blank under a street filter.
 
 ```bash
 python query.py --hero --filter "Flop c-bets"
@@ -289,7 +331,8 @@ key, or a JSON argv list.
 
 **`--pin`** freezes another named report, same person, and prints a
 two-column summary: hits/opps, the primary frequency, hits per 1k,
-and Action Profit v1 when priced. The frequency gap is an interval
+Action Profit v1 when priced, and Call Profit Rate when a call with
+raise available is in the filter. The frequency gap is an interval
 on the difference. Changing the filter leaves the pin where it is --
 that is the point. In the window and on the page the pin box does
 the same thing above the rest of this report.

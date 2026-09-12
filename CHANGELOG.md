@@ -8,6 +8,87 @@ Newest first.
 
 ---
 
+## Call Profit Rate, squeeze as Faced Next, barrel packs
+
+Three leftovers from the reports/filters arc, each where the data
+already supported them. No HUD. No solver. No invented EV.
+
+### Added — Call Profit Rate
+
+Sibling to Action Profit in the same spot, for the comparison Smart
+Reports actually make: when both call and raise were legal, what did
+each alternative do?
+
+This is **accounting of actual calls**, not the EV of calling when
+they raised. A raise in the same filter stays unpriced so the mean
+cannot be dragged by a counterfactual we do not have.
+
+A priced call is `to_call > 0` (facing a bet or raise, including a
+limp) and not all-in (a raise was still possible), cash game.
+Profit is `(won − chips this seat put in from THIS action on) / bb`.
+Later streets are assigned back on purpose -- that is why Action
+Profit leaves the same pot unpriced. `won` already has rake out
+where the site writes it. MTT stays unpriced.
+
+  * call 5 into pot 15, win, no more chips in = +15 (`pot_before`)
+  * call 5 and lose = −5
+  * call 5, then bet 10, win 40 = +25
+  * all-in call = unpriced
+  * a bet = unpriced (only actual calls)
+
+The mean is over priced calls, with its `n`, sitting next to Action
+Profit on `--stats`, `--pin` / `--compare`, the window, and the
+page. `--hands` prints `call bb` beside `act bb` and `net bb`.
+
+`--check` holds the three examples, refuses an all-in call, an MTT
+call, and a bet, and on a live corpus asserts priced + unpriced = n
+and that no aggressive row is priced.
+
+### Added — squeeze as a Faced Next verb
+
+`--after squeeze` / `--then squeeze` (aliases `sqz`, `squeezed`).
+A squeeze is the squeeze stat's chance on a **later** row: facing
+an open, `n_live >= 4`, `pot_bb > 4`, aggressive. That is the
+caller-already-in proxy the stat already uses, so the verb and
+`--quick squeeze` agree on what a squeeze is.
+
+It is **not** the first later action. After an open the first later
+action is usually the call; `--after raise` would miss the squeeze.
+The Faced Next table keeps the first-action partition (fold / call
+/ raise / …) and adds squeeze as an overlay row when one happened.
+`--live` plus `--after raise` still works.
+
+`--check` holds an open-call-squeeze hand (the open is selected)
+and a no-caller 3-bet (it is not).
+
+### Added — 2nd / 3rd barrel in the c-bet packs
+
+`QUICK_PACKS` for `cbet_flop` and `raise_cbet` now include
+`cbet_turn` (2nd barrel) and `cbet_river` (3rd barrel). Missed 3rd
+Barrel is the `cbet_river` negative, next to Missed 2nd Barrel.
+Named reports: Raise C-bet, 2nd Barrel, Missed 2nd Barrel, 3rd
+Barrel, Missed 3rd Barrel -- each a `--quick` key the engine
+already had, with related spots from the c-bet tree.
+
+Won$ / Won hand% stay out of the pack. They are spots-sourced and
+blank under a street filter; putting them here would reprint the
+empty-column failure the pack exists to stop.
+
+### Not this, on purpose
+
+No HUD. No solver. No interval on Action Profit or Call Profit
+(v1 is a mean of priced rows). No Dispersion / EV diff. No richer
+pin (two full `--by` grids). No assigning later pot back onto a
+bet that was called -- that stays unpriced on Action Profit.
+
+### What's next
+
+Unchanged: richer pin, Dispersion / EV diff, Multi-Player compare
+as its own view, Won$ in a street pack (needs a decision-sourced
+column or it blanks), live `check.py` on a real `hands.db`.
+
+---
+
 ## Expression syntax + aliases
 
 Two v1 slices that close the planned H2N reports/filters arc.
