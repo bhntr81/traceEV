@@ -445,6 +445,56 @@ def wilson(k, n, z=1.96):
     return p, max(0.0, centre - half), min(1.0, centre + half)
 
 
+# Two-tailed 95% Student-t. Hardcoded because a new dependency for one
+# table would be the wrong kind of complexity, and the normal 1.96 is
+# only the large-n limit. n=2 is supposed to look huge.
+_T_CRIT = (
+    (1, 12.706), (2, 4.303), (3, 3.182), (4, 2.776), (5, 2.571),
+    (6, 2.447), (7, 2.365), (8, 2.306), (9, 2.262), (10, 2.228),
+    (12, 2.179), (15, 2.131), (20, 2.086), (30, 2.042),
+    (40, 2.021), (60, 2.000), (120, 1.980),
+)
+
+
+def t_crit(df):
+    """Two-tailed 95% t for this many degrees of freedom."""
+    if df < 1:
+        return None
+    for n, t in _T_CRIT:
+        if df <= n:
+            return t
+    return 1.960
+
+
+def mean_interval(total, sumsq, n):
+    """
+    95% interval on a mean, from SUM and SUM(x^2), or (None, None, None).
+
+    Wilson is for a proportion. A mean of priced bb is a different
+    shape, and wrapping a Wilson band around it would look like a
+    frequency. This is the classical t interval on the sample mean:
+    honest about n=2 (the band is enormous) and about n=1 (there is
+    no interval -- one observation has no estimated spread).
+
+    Not EV. Sampling uncertainty of the observed mean of the rows
+    that were priced. Hands in a session are not independent and the
+    tails are heavy; the interval is still better than a bare mean
+    that reads as exact.
+    """
+    if not n or n < 2 or total is None or sumsq is None:
+        return None, None, None
+    mean = total / n
+    var = (sumsq - (total * total) / n) / (n - 1)
+    if var < 0:
+        # Float noise when every priced row is the same number.
+        var = 0.0
+    se = sqrt(var / n)
+    t = t_crit(n - 1)
+    if t is None:
+        return mean, None, None
+    return mean, mean - t * se, mean + t * se
+
+
 def rate(con, stat, where="1=1", params=()):
     """One stat, one filter: (n, k, p, lo, hi). n=0 is a legitimate answer."""
     if isinstance(stat, str):

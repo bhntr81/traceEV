@@ -921,3 +921,16 @@ single-person group; `--vs-alias` is the villain pool; `--player`
 does not auto-expand a name. Documented gaps: no nested expressions,
 no H2N catalog / `[MP;IP]`, no save-cohort-as-alias, `--by player`
 still splits members.
+
+## Run — Intervals, Won$ on c-bet packs, cohort preflop range
+
+**Goal:** the next three leftovers. Action/Call Profit print n and a
+t interval (or n and why not). Won$ / Won hand% on Raise C-bet /
+c-bet packs without blanking. Preflop range on a Multi-Player
+cohort, with the Ignition-vs-ACR coverage caveat. No HUD, no solver,
+`--check` without inventing EV.
+
+**Result:** `stats.mean_interval` for priced means; `amount_won_of`
+as a spots join (not a Stat column); `coverage_of` on chart/range
+and on `--stats` under a parked cohort. Remaining: Dispersion / EV
+diff, Bet Sizes pane, richer second `--by` pin grid.
