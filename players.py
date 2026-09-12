@@ -635,6 +635,15 @@ def check(db_path=DB):
     that would not show up as anything else.
     """
     fails = check_parse()
+    # Connecting when the file is missing creates an empty hands.db,
+    # and every later --cohort then finds that file and fails inside
+    # it instead of saying to load hands.
+    db = Path(db_path)
+    if not db.exists() or db.stat().st_size == 0:
+        print()
+        print("FAIL: " + "; ".join(fails) if fails else
+              "PASS (no hands.db -- parse only)")
+        return not fails
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
 
