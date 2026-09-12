@@ -8,6 +8,61 @@ Newest first.
 
 ---
 
+## Sessions — sit-downs, not spots
+
+The other primary H2N study surface after the Reports cockpit.
+No HUD. No solver. No Chip EV. No rakeback overlay.
+
+### Added — session entity
+
+A session is consecutive hero cash hands at one site, cut when the
+gap exceeds 60 minutes or the room / named hero changes. `id` is
+the first hand. Won is profit dollars (`spots.net`); **Won bb** is
+`net_bb`. MTT is out. Opponent class is ignored -- a future
+Reg-vs-Fish stats-rebuild exclusion does not touch sessions, and
+they are not in `importer.CHAIN`.
+
+Ignition is one hero stream per site. Following
+`table:seat:segment` would start a new sit-down every time the seat
+turned over.
+
+### Added — clock (the date footguns)
+
+**Today**, last N hours, and a date range go through
+`sessions.Clock`: start-of-day hour (default midnight) and a
+per-room HH timezone offset (hours added to `played_at` to reach
+your clock). One `played_at >= X` across rooms is how Today goes
+empty. Raw `--since` / `--until` stay literal so saved reports do
+not move. An empty window names the hour and the offsets.
+
+### Added — GUI, page, CLI
+
+Sessions tab: list (Won bb column, column picker) → detail summary
++ the four-line graph + compact hands → Export session hands →
+Open in Reports (`--session` chip). Mark / note on the compact
+rows. `sessions.py list|show|export-hands|graph`, or the same
+flags. `--today` / `--hours` / `--session` on `query.py`.
+
+Export reads `hands.source` through that site's parser. A missing
+file is counted, not invented.
+
+`--facing` is a chip on both front ends, so opening a neighbouring
+spot (Flop c-bets) writes the facing the command line already had.
+The window used to drop it and rebuild a different filter.
+
+### Not this, on purpose
+
+No HUD. No solver. No live-table VPIP sort. No Chip EV graphs. No
+rakeback overlay. No session merge/split. No session-level note
+(hand marks/notes already exist). Window `--check` still needs Tk.
+Live `check.py` on a real `hands.db` is still a remaining gap.
+
+### What's next
+
+Statistics grid. Detach. Session merge/split. Live `hands.db`.
+
+---
+
 ## GUI Reports study-flow
 
 The H2N Reports cockpit, without a second UI and without a solver.

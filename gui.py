@@ -44,6 +44,7 @@ import compact
 import notes
 import players
 import query
+import sessions
 from stats import BY_KEY, STATS
 
 DB = Path(__file__).parent / "hands.db"
@@ -61,6 +62,7 @@ SWITCH_FIELDS = {
     "first_in": "--first-in", "last_raise": "--last-raise",
     "first_raise": "--first-raise", "last_action": "--last-action",
     "marked": "--marked", "noted": "--noted",
+    "today": "--today",
 }
 VALUE_FIELDS = {
     "site": "--site", "player": "--player", "pos": "--pos",
@@ -76,6 +78,10 @@ VALUE_FIELDS = {
     "players": "--players", "live": "--live",
     "stack": "--stack",
     "tag": "--tag",
+    "session": "--session",
+    "hours": "--hours",
+    "start_of_day": "--start-of-day",
+    "tz": "--tz",
     "alias": "--alias",
     "vs_alias": "--vs-alias",
     "villain_type": "--villain-type",
@@ -95,7 +101,8 @@ def argv_from(params):
         # A neighbouring spot that is not a named report -- same flags
         # the command line would take, written as one string so the page
         # does not have to grow a control for every flag a report uses
-        # (`--facing` has no chip).
+        # (`--facing` is also a chip group; this path is for
+        # generated neighbours that are not a named report).
         argv += shlex.split(spot)
     for field, flag in SWITCH_FIELDS.items():
         if params.get(field, [""])[0] in ("1", "true", "on"):
@@ -142,12 +149,48 @@ def payload(con, params):
     spec, argv = players.parse_cohort(argv)
     where, label, parts = query.build(argv)
     notes.attach(con)
+    sessions.ensure(con)
     if spec is not None:
         where, _header, label = query.apply_cohort(con, spec, where, label)
 
     def nothing():
         """Why this filter is empty, so the page never just goes blank."""
         return query.why_empty(con, parts)
+    if view == "sessions":
+        clock = query.clock_from_argv(argv)
+        kind = "today" if "--today" in argv else None
+        hours = None
+        if "--hours" in argv:
+            i = argv.index("--hours")
+            if i + 1 < len(argv):
+                hours = argv[i + 1]
+        since = until = None
+        if "--since" in argv:
+            i = argv.index("--since")
+            if i + 1 < len(argv):
+                since = argv[i + 1]
+        if "--until" in argv:
+            i = argv.index("--until")
+            if i + 1 < len(argv):
+                until = argv[i + 1]
+        # The Sessions date bar uses the clock. Raw --since on this
+        # view is a range through start-of-day, not the literal
+        # played_at comparison Reports keeps.
+        if since or until:
+            kind = kind or "range"
+        out = sessions.list_of(con, clock=clock, kind=kind,
+                               since=since, until=until, hours=hours)
+        sid = (params.get("session_id", [""])[0] or "").strip()
+        if not sid:
+            for i, a in enumerate(argv):
+                if a == "--session" and i + 1 < len(argv):
+                    sid = argv[i + 1]
+                    break
+        if sid:
+            out["detail"] = sessions.detail_of(con, sid, clock=clock)
+        out["label"] = label
+        return out
+
     if view == "study":
         extra = [x.strip() for x in
                  (params.get("panes", [""])[0] or "").split(",") if x.strip()]
@@ -277,6 +320,17 @@ def payload(con, params):
         out["label"] = label
         out["why"] = None if out["total"] else nothing()
         return out
+
+    if view == "export-session":
+        sid = (params.get("session_id", [""])[0]
+               or params.get("id", [""])[0] or "").strip()
+        dest = (params.get("out", [""])[0] or "").strip()
+        if not sid or not dest:
+            return {"error": "export needs a session id and a path"}
+        session = sessions.of(con, sid)
+        if session is None:
+            return {"error": f"no session {sid!r}"}
+        return sessions.export_hands(con, session, dest)
 
     if view == "note":
         hid = (params.get("id", [""])[0] or "").strip()
@@ -508,6 +562,9 @@ td.compact{text-align:left;font-weight:500}
   <fieldset><legend>pot type</legend>
     <div class="chips" id="pot"></div>
   </fieldset>
+  <fieldset><legend>facing</legend>
+    <div class="chips" id="facing"></div>
+  </fieldset>
   <fieldset><legend>situation</legend>
     <div class="chips" id="sit">
       <span class="chip" data-f="ip">in position</span>
@@ -531,8 +588,18 @@ td.compact{text-align:left;font-weight:500}
     <label>less than <input id="short" type="number" min="0" step="10"></label>
   </fieldset>
   <fieldset><legend>dates</legend>
+    <div class="chips">
+      <span class="chip" data-f="today">Today</span>
+    </div>
+    <label>last N hours <input id="hours" placeholder="4"></label>
     <label>from <input id="since" type="date"></label>
     <label>to <input id="until" type="date"></label>
+    <label>start-of-day hour <input id="start_of_day" placeholder="0"></label>
+    <label>room tz <input id="tz" placeholder="acr=-5,ignition=0"></label>
+    <label>session id <input id="session" placeholder="first hand id"></label>
+    <p class="n">Today / hours use start-of-day and each room's HH
+      timezone offset. An empty Today is usually the hour or the
+      offset, not missing hands. Raw from/to stay played_at.</p>
   </fieldset>
   <fieldset><legend>faced next / next actions</legend>
     <label>the other seat then
@@ -593,6 +660,7 @@ td.compact{text-align:left;font-weight:500}
 </aside>
 <section>
   <nav id="tabs">
+    <button data-v="sessions">sessions</button>
     <button data-v="study" class="on">study</button>
     <button data-v="stats">stats</button>
     <button data-v="range">range</button>
@@ -614,12 +682,13 @@ td.compact{text-align:left;font-weight:500}
 const $ = s => document.querySelector(s);
 const state = {view:'study', by:'position', flags:{}, multi:{}, preset:'',
                spot:'', crumbs:[], extraPanes:[], paneHidden:{}, paneSort:{},
-               pinAlias:{}};
+               pinAlias:{}, sessionId:''};
 let OPT = {};
 
 const POSITIONS = ['UTG','HJ','CO','BTN','SB','BB'];
 const STREETS   = ['preflop','flop','turn','river'];
 const POTS      = ['unopened','limped','raised','3bet','4bet'];
+const FACINGS   = ['unopened','open','3bet','4bet','5bet+','check','bet','raise'];
 
 function chips(host, items, group){
   $('#'+host).innerHTML = items.map(v =>
@@ -661,7 +730,7 @@ $('#tabs').addEventListener('click', e => {
     (state.view === 'report' || state.view === 'results') ? 'block' : 'none';
   load();
 });
-['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result']
+['site','stake','player','deep','short','since','until','where','by','preset','pin','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session']
   .forEach(id => $('#'+id).addEventListener('change', () => {
     if (id === 'by') state.by = $('#by').value;
     if (id === 'preset'){
@@ -671,7 +740,7 @@ $('#tabs').addEventListener('click', e => {
       ['ip','oop','pfa','not_pfa','vs_pfa','multiway','headsup','allin','first_in','last_raise','first_raise','last_action'].forEach(f => {
         state.flags[f] = false;
       });
-      ['pos','vs','street','pot','board'].forEach(g => { state.multi[g] = []; });
+      ['pos','vs','street','pot','facing','board'].forEach(g => { state.multi[g] = []; });
       ['after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','combo','action','result'].forEach(fid => {
         const el = $('#'+fid); if (el) el.value = '';
       });
@@ -698,10 +767,11 @@ function params(){
   for (const [k,v] of Object.entries(state.flags)) if (v) p.set(k,'1');
   for (const [g,vs] of Object.entries(state.multi))
     if (vs.length) p.set(g, vs.join(','));
-  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result']){
+  for (const id of ['site','stake','player','deep','short','since','until','where','after','then','size','outcome','players','live','stack','pot_frac','pre','flop','turn','river','line','node','pin','cohort','cohort_class','tag','alias','vs_alias','villain_type','combo','action','result','hours','start_of_day','tz','session']){
     const v = $('#'+id).value.trim();
     if (v) p.set(id, v);
   }
+  if (state.sessionId) p.set('session_id', state.sessionId);
   return p;
 }
 const money = v => `<span class="${v>=0?'pos':'neg'}">${v>=0?'+':''}${
@@ -858,13 +928,73 @@ function pinStep(step){
   box.value = opt.value;
   load();
 }
+function renderSessions(d){
+  const warn = d.warning || '';
+  const rows = d.rows || [];
+  let h = '<p class="n">'+(d.clock||'')+'</p>';
+  if (warn) h += '<p class="empty">'+warn+'</p>';
+  h += '<table><thead><tr><th>when</th><th>site</th><th>hero</th>'
+    + '<th>hands</th><th>duration</th><th>Won</th><th>Won bb</th></tr></thead><tbody>';
+  if (!rows.length)
+    h += '<tr><td colspan="7" class="n">no hero cash sessions</td></tr>';
+  for (const r of rows){
+    const cls = r['Won bb']>0 ? 'pos' : (r['Won bb']<0 ? 'neg' : '');
+    h += `<tr class="click ${cls}" data-sid="${r.id}">`
+      + `<td>${(r.when||'').slice(0,16)}</td><td>${r.site}</td>`
+      + `<td>${r.hero}</td><td>${r.hands}</td><td>${r.duration}</td>`
+      + `<td>${money(r.Won)}</td><td>${money(r['Won bb'])}</td></tr>`;
+  }
+  h += '</tbody></table>';
+  const det = d.detail || {};
+  const s = det.session;
+  if (s){
+    h += `<p class="smart">${s.site} ${s.hero} · ${s.hands} hands · ${s.duration}`
+      + ` · Won ${money(s.Won)} · Won bb ${money(s['Won bb'])}</p>`
+      + `<p><a class="link" id="openrep">Open in Reports</a>`
+      + ` · <a class="link" id="expsess">Export session hands</a></p>`;
+    if (det.svg) h += det.svg;
+    else if (det.why_graph) h += `<p class="n">${det.why_graph}</p>`;
+    h += renderStudyHands(det.hands || []);
+  } else {
+    h += '<p class="n">click a session for the graph, compact hands, export, '
+      + 'and Open in Reports.</p>';
+  }
+  $('#out').innerHTML = h;
+  $('#out').querySelectorAll('tr[data-sid]').forEach(tr => {
+    tr.onclick = () => { state.sessionId = tr.dataset.sid; load(); };
+  });
+  const open = $('#openrep');
+  if (open) open.onclick = e => {
+    e.preventDefault();
+    $('#session').value = state.sessionId || (s && s.id) || '';
+    state.view = 'study';
+    document.querySelectorAll('#tabs button').forEach(x =>
+      x.classList.toggle('on', x.dataset.v === 'study'));
+    load();
+  };
+  const exp = $('#expsess');
+  if (exp) exp.onclick = e => {
+    e.preventDefault();
+    const dest = prompt('export path', 'session-hands.txt');
+    if (!dest) return;
+    const p = new URLSearchParams({view:'export-session',
+      session_id: state.sessionId || (s && s.id) || '', out: dest});
+    fetch('/api?'+p).then(r => r.json()).then(got => {
+      alert(got.error || ('wrote '+(got.wrote||0)+' hands'
+        + (got.missing ? '\\n'+got.missing+' skipped (source gone)' : '')));
+    });
+  };
+}
 function renderStudy(d){
   const crumbs = ['<a data-i="-1">All</a>'].concat(
     (state.crumbs||[]).map((c,i) => ' › <a data-i="'+i+'">'+(c.label||c.value||'?')+'</a>')
   ).join('');
-  const chips = (state.crumbs||[]).map((c,i) =>
+  const sessChip = ($('#session') && $('#session').value.trim())
+    ? '<span class="chip on chip-x" data-sess="1">session '
+      + $('#session').value.trim().slice(0,18)+' ×</span>' : '';
+  const chips = sessChip + ((state.crumbs||[]).map((c,i) =>
     '<span class="chip on chip-x" data-i="'+i+'">'+(c.label||c.how||'?')+' ×</span>'
-  ).join('') || '<span class="n">unfiltered</span>';
+  ).join('') || (sessChip ? '' : '<span class="n">unfiltered</span>'));
   const summ = d.summary || {}, prof = d.profit || {};
   let smart = [];
   if (summ.opps) smart.push((summ.hits||0).toLocaleString()+'/'+summ.opps.toLocaleString()
@@ -895,7 +1025,10 @@ function renderStudy(d){
     a.onclick = e => { e.preventDefault(); popCrumb(+a.dataset.i); };
   });
   $('#out').querySelectorAll('.chip-x').forEach(a => {
-    a.onclick = () => { state.crumbs = state.crumbs.filter((_,i)=>i!==+a.dataset.i); load(); };
+    a.onclick = () => {
+      if (a.dataset.sess){ $('#session').value = ''; state.sessionId = ''; load(); return; }
+      state.crumbs = state.crumbs.filter((_,i)=>i!==+a.dataset.i); load();
+    };
   });
   $('#out').querySelectorAll('[data-fam]').forEach(a => {
     a.onclick = e => { e.preventDefault();
@@ -1087,6 +1220,10 @@ function render(d){
   const out = $('#out');
   $('#filter').textContent = 'filter: ' + (d.label || 'everything');
   paintRelated(d.related);
+  if (state.view === 'sessions'){
+    if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
+    renderSessions(d); return;
+  }
   if (state.view === 'study'){
     if (d.error){ out.innerHTML = `<p class="empty">${d.error}</p>`; return; }
     renderStudy(d); return;
@@ -1497,6 +1634,7 @@ async function load(){
   chips('vs', POSITIONS, 'vs');
   chips('street', STREETS, 'street');
   chips('pot', POTS, 'pot');
+  chips('facing', FACINGS, 'facing');
   chips('board', OPT.boards, 'board');
   for (const id of ['after','then']){
     $('#'+id).innerHTML = '<option value="">any</option>'
@@ -1614,6 +1752,12 @@ def check(db_path=DB):
         ({"action": ["call"], "stack": ["80-120"], "combo": ["Axs"]},
          ["--action", "call", "--stack", "80-120", "--combo", "Axs"]),
         ({"result": ["won"]}, ["--result", "won"]),
+        ({"today": ["1"]}, ["--today"]),
+        ({"hours": ["4"], "start_of_day": ["6"]},
+         ["--hours", "4", "--start-of-day", "6"]),
+        ({"session": ["h1"]}, ["--session", "h1"]),
+        ({"street": ["flop"], "pfa": ["1"], "facing": ["check"]},
+         ["--street", "flop", "--pfa", "--facing", "check"]),
     ]
     for form, argv in cases:
         spec_a, rest_a = players.parse_cohort(argv_from(form))
@@ -1653,7 +1797,8 @@ def check(db_path=DB):
               "PASS (no hands.db -- form/CLI only)")
         return not fails
     con = sqlite3.connect(db_path)
-    views = ("study", "stats", "report", "results", "hands", "graph")
+    views = ("sessions", "study", "stats", "report", "results", "hands",
+             "graph")
     broke = []
     for v in views:
         for form in ({"view": [v]},

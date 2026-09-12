@@ -68,6 +68,7 @@ gui.py          the same cockpit as a local page     --check
 expr.py         Value/Cases/Opps over plain stats    --check
 aliases.py      named (username, room) groups        --check
 notes.py        player notes, marks, tags            --check
+sessions.py     sit-downs: Won / Won bb, Today clock --check
 opponents.py      what one opponent does differently   --check
 population.py   what the pool does, split-half validated  --check
 check.py        run every check, in dependency order

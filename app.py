@@ -49,6 +49,7 @@ import diag
 import importer
 import notes
 import players
+import sessions
 import sites
 import query
 import stats
@@ -62,6 +63,21 @@ from stats import BY_KEY, STATS
 HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
         else Path(__file__).parent)
 DB = HERE / "hands.db"
+
+
+def connect_db(path=None, **kw):
+    """The corpus, or memory when there is none.
+
+    sqlite3.connect(path) creates an empty file. `--check` used to
+    leave that behind, and every later module then failed inside it
+    instead of skipping a missing corpus.
+    """
+    path = Path(path or DB)
+    if path.exists() and path.stat().st_size:
+        return sqlite3.connect(str(path), **kw)
+    return sqlite3.connect(":memory:", **kw)
+
+
 query.DB = DB
 # The saved stats are the user's as much as the database is, so they sit
 # beside it rather than beside the code -- which, frozen, is a directory
@@ -548,15 +564,20 @@ class App(ImportMixin, ttk.Frame):
     def __init__(self, master, check_updates=False):
         super().__init__(master)
         self.pack(fill="both", expand=True)
-        self.con = sqlite3.connect(DB, check_same_thread=False)
+        self.con = connect_db(check_same_thread=False)
         # Every switch the command line has, whether or not a control for
         # it has been built yet. These used to appear as a side effect of
         # drawing the rail, so deleting the rail silently emptied the filter.
         self.flags = {f: tk.BooleanVar() for f in query.SWITCHES}
         self.flags["--marked"] = tk.BooleanVar()
         self.flags["--noted"] = tk.BooleanVar()
+        # Not in SWITCHES: the SQL is the clock. Same reason --marked
+        # lives here -- a machine with no hands today would fail the
+        # live "selects nothing" loop for a filter that is working.
+        self.flags["--today"] = tk.BooleanVar()
         self.multi = {"pos": set(), "vs": set(), "street": set(),
-                      "pot": set(), "board": set(), "quick": set(),
+                      "pot": set(), "facing": set(), "board": set(),
+                      "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
                       "sd": set(), "turn_card": set(), "river_card": set()}
         # The filter's values live here rather than on the widgets, because
@@ -569,7 +590,8 @@ class App(ImportMixin, ttk.Frame):
                       "after", "then", "size", "outcome",
                       "players", "live", "stack", "tag",
                       "alias", "vs_alias", "villain_type",
-                      "combo", "action", "result")}
+                      "combo", "action", "result",
+                      "session", "hours", "start_of_day", "tz")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
         # Study cockpit: each crumb is a row click (parent ∧ row).
@@ -581,6 +603,22 @@ class App(ImportMixin, ttk.Frame):
         self.pane_sort = {}
         self._pin_alias = {}
         self._study_out = None
+        self._session_id = None
+        self._sessions_out = None
+        self.session_hidden = set()
+        self.session_series = None
+        clock = sessions.load_clock()
+        self.sess_today = tk.BooleanVar()
+        self.sess_hours = tk.StringVar()
+        self.sess_since = tk.StringVar()
+        self.sess_until = tk.StringVar()
+        self.sess_sod = tk.StringVar(value=str(clock.start_of_day))
+        self.sess_tz = {k: tk.StringVar(value=f"{clock.offset(k):g}")
+                        for k in sites.KEYS}
+        # Shared by the hands tab, the study list, and the session list.
+        # Created here so `_build_sessions` can bind it before the
+        # hands tab exists.
+        self.hand_tag = tk.StringVar()
 
         self.results = queue.Queue()
         self.pending = 0
@@ -739,9 +777,11 @@ class App(ImportMixin, ttk.Frame):
     # street/pot clicks onto the report and often match nothing.
     WHO_SWITCHES = ("--hero", "--pool", "--vs-hero", "--vs-pool",
                     "--reg", "--fish", "--vs-reg", "--vs-fish",
-                    "--with-fish", "--regs-only")
+                    "--with-fish", "--regs-only",
+                    "--today")
     WHO_VALS = ("site", "stake", "player", "since", "until",
-                "alias", "vs_alias", "villain_type")
+                "alias", "vs_alias", "villain_type",
+                "session", "hours", "start_of_day", "tz")
 
     def clear_situation(self, keep_preset=False):
         """Drop the situation filters; keep the player, the site, the cohort."""
@@ -798,7 +838,8 @@ class App(ImportMixin, ttk.Frame):
             if a in query.VALUE_FLAGS and i + 1 < len(argv):
                 v = argv[i + 1]
                 group = {"--pos": "pos", "--vs": "vs", "--street": "street",
-                         "--pot": "pot", "--board": "board", "--quick": "quick",
+                         "--pot": "pot", "--facing": "facing",
+                         "--board": "board", "--quick": "quick",
                          "--made": "made", "--kicker": "kicker",
                          "--fd": "fd", "--sd": "sd",
                          "--turn-card": "turn_card",
@@ -822,7 +863,10 @@ class App(ImportMixin, ttk.Frame):
                             "--villain-type": "villain_type",
                             "--vs-class": "villain_type",
                             "--combo": "combo", "--action": "action",
-                            "--result": "result"}.get(a)
+                            "--result": "result",
+                            "--session": "session", "--hours": "hours",
+                            "--start-of-day": "start_of_day",
+                            "--tz": "tz"}.get(a)
                     if name:
                         self.vals[name].set(v)
                 i += 2
@@ -886,11 +930,12 @@ class App(ImportMixin, ttk.Frame):
         self.related_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("study", "stats", "range", "chart", "report", "results",
-                     "graph", "hands"):
+        for name in ("study", "sessions", "stats", "range", "chart", "report",
+                     "results", "graph", "hands"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
+        self._build_sessions(self.tabs["sessions"])
         self._build_study(self.tabs["study"])
         self.tree = {}
         for name in ("stats", "range", "report", "results", "hands"):
@@ -921,7 +966,6 @@ class App(ImportMixin, ttk.Frame):
                        side="left", padx=(6, 0))
         ttk.Label(study, text="tag", style="Dim.TLabel").pack(
             side="left", padx=(12, 4))
-        self.hand_tag = tk.StringVar()
         ttk.Entry(study, textvariable=self.hand_tag, width=12).pack(
             side="left")
         ttk.Button(study, text="Note",
@@ -937,6 +981,198 @@ class App(ImportMixin, ttk.Frame):
         """The pin box value, or the JSON argv a pane row stored under it."""
         raw = self.pin.get().strip()
         return self._pin_alias.get(raw, raw)
+
+    def _build_sessions(self, parent):
+        """
+        Hand2Note's other primary study surface: sit-downs, not spots.
+
+        List (Won bb on the row) → detail + graph + compact hands →
+        export → Open in Reports. The date bar is the clock in
+        `sessions.py`, not raw `--since`.
+        """
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", padx=8, pady=(8, 2))
+        ttk.Checkbutton(bar, text="Today", variable=self.sess_today,
+                        command=self._sess_dates_changed).pack(side="left")
+        ttk.Label(bar, text="last", style="Dim.TLabel").pack(
+            side="left", padx=(12, 4))
+        ttk.Entry(bar, textvariable=self.sess_hours, width=5).pack(side="left")
+        ttk.Label(bar, text="hours", style="Dim.TLabel").pack(
+            side="left", padx=(4, 12))
+        ttk.Label(bar, text="from", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(bar, textvariable=self.sess_since, width=12).pack(
+            side="left", padx=(4, 8))
+        ttk.Label(bar, text="to", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(bar, textvariable=self.sess_until, width=12).pack(
+            side="left", padx=(4, 12))
+        ttk.Label(bar, text="start-of-day", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(bar, textvariable=self.sess_sod, width=4).pack(
+            side="left", padx=(4, 12))
+        ttk.Label(bar, text="room tz", style="Dim.TLabel").pack(side="left")
+        for key in sites.KEYS:
+            ttk.Label(bar, text=key, style="Dim.TLabel").pack(
+                side="left", padx=(8, 2))
+            ttk.Entry(bar, textvariable=self.sess_tz[key], width=5).pack(
+                side="left")
+        ttk.Button(bar, text="Apply", command=self._sess_dates_changed).pack(
+            side="left", padx=(12, 0))
+        self.sess_warn = ttk.Label(parent, text="", style="Dim.TLabel")
+        self.sess_warn.pack(fill="x", padx=8, pady=(0, 4))
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        left = ttk.LabelFrame(body, text="Sessions")
+        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        gear = ttk.Frame(left)
+        gear.pack(fill="x")
+        ttk.Button(gear, text="⚙", width=3,
+                   command=self._session_gear).pack(side="right")
+        ttk.Label(gear, text="Won bb is profit in big blinds, not collected",
+                  style="Dim.TLabel").pack(side="left", padx=6)
+        self.session_list = self._table(left)
+        self.session_list.bind("<<TreeviewSelect>>", self._pick_session)
+        self.session_list.bind("<Double-1>", self._pick_session)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True)
+        tools = ttk.Frame(right)
+        tools.pack(fill="x", pady=(0, 4))
+        ttk.Button(tools, text="Open in Reports",
+                   command=self._session_to_reports).pack(side="left")
+        ttk.Button(tools, text="Export session hands",
+                   command=self._export_session).pack(side="left", padx=(8, 0))
+        self.sess_sum = ttk.Label(tools, text="", style="Dim.TLabel")
+        self.sess_sum.pack(side="left", padx=12)
+        self.session_canvas = tk.Canvas(right, bg=BG, highlightthickness=0,
+                                        height=180)
+        self.session_canvas.pack(fill="x")
+        self.session_canvas.bind("<Configure>",
+                                 lambda _e: self._draw_session_graph())
+        hands = ttk.LabelFrame(right, text="Hands")
+        hands.pack(fill="both", expand=True, pady=(6, 0))
+        mark = ttk.Frame(hands)
+        mark.pack(fill="x")
+        ttk.Button(mark, text="Mark",
+                   command=lambda: self._mark_selected(True)).pack(side="left")
+        ttk.Button(mark, text="Unmark",
+                   command=lambda: self._mark_selected(False)).pack(
+                       side="left", padx=(6, 0))
+        ttk.Label(mark, text="tag", style="Dim.TLabel").pack(
+            side="left", padx=(12, 4))
+        ttk.Entry(mark, textvariable=self.hand_tag, width=12).pack(side="left")
+        ttk.Button(mark, text="Note", command=self._note_selected).pack(
+            side="left", padx=(12, 0))
+        self.session_hands = self._table(hands)
+        self.session_hands.bind("<Double-1>", self._open_hand)
+        self.session_hands.bind("<Return>", self._open_hand)
+        self.session_hands.bind("<Button-3>", self._hand_menu)
+
+    def _sess_clock(self):
+        tz = {}
+        for key, var in self.sess_tz.items():
+            raw = (var.get() or "0").strip()
+            try:
+                tz[key] = float(raw)
+            except ValueError:
+                tz[key] = 0.0
+        try:
+            hour = int((self.sess_sod.get() or "0").strip() or 0)
+        except ValueError:
+            hour = 0
+        clock = sessions.Clock(start_of_day=hour % 24, offsets=tz)
+        sessions.save_clock(clock)
+        # Clock prefs stay on the date bar. Writing them into study
+        # vals here made argv() grow `--start-of-day 0 --tz …` on
+        # every apply_argv check and broke the study-flag round-trip.
+        return clock
+
+    def _sess_dates_changed(self):
+        self._session_id = None
+        self.refresh()
+
+    def _session_window(self):
+        clock = self._sess_clock()
+        kind = hours = since = until = None
+        if self.sess_today.get():
+            kind = "today"
+        raw_h = (self.sess_hours.get() or "").strip()
+        if raw_h:
+            hours = raw_h
+        since = (self.sess_since.get() or "").strip() or None
+        until = (self.sess_until.get() or "").strip() or None
+        return clock, kind, hours, since, until
+
+    def _pick_session(self, _event=None):
+        tv = self.session_list
+        sel = tv.selection()
+        ids = getattr(tv, "_session_ids", {})
+        if not sel or sel[0] not in ids:
+            return
+        self._session_id = ids[sel[0]]
+        self.refresh()
+
+    def _session_to_reports(self):
+        """`--session ID` as the Reports chip. The sit-down, not the date."""
+        if not self._session_id:
+            return
+        self.vals["session"].set(self._session_id)
+        self.nb.select(self.tabs["study"])
+        self.refresh()
+
+    def _export_session(self):
+        if not self._session_id:
+            return
+        path = filedialog.asksaveasfilename(
+            title="export session hands",
+            defaultextension=".txt",
+            filetypes=[("hand histories", "*.txt"), ("all files", "*.*")])
+        if not path:
+            return
+        con = sqlite3.connect(DB)
+        try:
+            sessions.ensure(con)
+            session = sessions.of(con, self._session_id)
+            if session is None:
+                messagebox.showinfo("export", "that session is gone")
+                return
+            got = sessions.export_hands(con, session, path)
+        finally:
+            con.close()
+        msg = f"{got['wrote']} hands written to {got['path']}"
+        if got["missing"]:
+            msg += (f"\n{got['missing']} skipped -- the original HH file "
+                    "is gone. Export cannot invent the text.")
+        messagebox.showinfo("export", msg)
+
+    def _session_gear(self):
+        hidden = set(self.session_hidden)
+        win = tk.Toplevel(self)
+        win.title("session columns")
+        win.configure(bg=BG)
+        vars = {}
+        for col in sessions.LIST_COLUMNS:
+            v = tk.BooleanVar(value=col not in hidden)
+            vars[col] = v
+            ttk.Checkbutton(win, text=col, variable=v).pack(
+                anchor="w", padx=12, pady=2)
+
+        def apply():
+            self.session_hidden = {c for c, v in vars.items() if not v.get()}
+            win.destroy()
+            if self._sessions_out:
+                self._render_sessions(self._sessions_out)
+
+        ttk.Button(win, text="Apply", command=apply).pack(pady=8)
+
+    def _draw_session_graph(self, message=None):
+        old_c, old_s = self.canvas, self.series
+        self.canvas = self.session_canvas
+        self.series = self.session_series
+        try:
+            self._draw_graph(message)
+        finally:
+            self.canvas = old_c
+            self.series = old_s
 
     def _build_study(self, parent):
         """
@@ -1062,6 +1298,7 @@ class App(ImportMixin, ttk.Frame):
                 argv += ["--durable", str(durable)]
         for group, flag in (("pos", "--pos"), ("vs", "--vs"),
                             ("street", "--street"), ("pot", "--pot"),
+                            ("facing", "--facing"),
                             ("board", "--board"), ("quick", "--quick"),
                             ("made", "--made"), ("kicker", "--kicker"),
                             ("fd", "--fd"), ("sd", "--sd"),
@@ -1085,10 +1322,22 @@ class App(ImportMixin, ttk.Frame):
                            ("villain_type", "--villain-type"),
                            ("combo", "--combo"),
                            ("action", "--action"),
-                           ("result", "--result")):
+                           ("result", "--result"),
+                           ("session", "--session"),
+                           ("hours", "--hours"),
+                           ("start_of_day", "--start-of-day"),
+                           ("tz", "--tz")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
+            if name in ("start_of_day", "tz"):
+                # Prefs for `--today` / `--hours`. Emitting them on
+                # every study filter made two writings of the same
+                # situation compare unequal.
+                clocked = (self.flags["--today"].get()
+                           or self.vals["hours"].get().strip())
+                if not clocked:
+                    continue
             if name == "player" and v == HERO_CHOICE:
                 # Not a name, so not `--player`: hero is a different name on
                 # each site and none of them covers the others.
@@ -1133,10 +1382,19 @@ class App(ImportMixin, ttk.Frame):
         self.pending += 1
         token = self.pending
         self.status.configure(text="working…")
+        sess = None
+        if view == "sessions":
+            try:
+                clock, kind, hours, since, until = self._session_window()
+            except ValueError as e:
+                self.filter_line.configure(text=str(e))
+                self.sess_warn.configure(text=str(e))
+                return
+            sess = (clock, kind, hours, since, until, self._session_id)
         threading.Thread(target=self._work, daemon=True,
                          args=(token, view, where, label, parts,
                                self.by.get(), cohort_spec, self.chart_stat(),
-                               query_argv, self._pin_name())
+                               query_argv, self._pin_name(), sess)
                          ).start()
 
     def _paint_related(self, related):
@@ -1168,7 +1426,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None, argv=None, pin=""):
+              stat=None, argv=None, pin="", sess=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -1179,9 +1437,10 @@ class App(ImportMixin, ttk.Frame):
         user has already changed is discarded rather than drawn.
         """
         argv = list(argv or [])
-        con = sqlite3.connect(DB)
+        con = connect_db()
         try:
             notes.attach(con)
+            sessions.ensure(con)
             if cohort_spec is not None:
                 where, _header, label = query.apply_cohort(
                     con, cohort_spec, where, label)
@@ -1231,6 +1490,15 @@ class App(ImportMixin, ttk.Frame):
                 else:
                     got = query.report_of(con, where, dim, cols, argv)
                     out.update(got)
+            elif view == "sessions":
+                clock, kind, hours, since, until, sid = sess or (
+                    None, None, None, None, None, None)
+                out.update(sessions.list_of(
+                    con, clock=clock, kind=kind, since=since,
+                    until=until, hours=hours))
+                if sid:
+                    detail = sessions.detail_of(con, sid, clock=clock)
+                    out["detail"] = detail
             elif view == "study":
                 panes = list(query.DEFAULT_STUDY_PANES) + list(
                     getattr(self, "extra_panes", []) or [])
@@ -1267,7 +1535,8 @@ class App(ImportMixin, ttk.Frame):
                     or out.get("cells")
                     or out.get("compare")
                     or out.get("hands") or out.get("panes")
-                    or (out.get("sizes") or {}).get("rows"))
+                    or (out.get("sizes") or {}).get("rows")
+                    or "clock" in out)
 
     def _series(self, con, where):
         pairs = query.matching_seats(con, where)
@@ -1318,6 +1587,9 @@ class App(ImportMixin, ttk.Frame):
             self.chart = out if out.get("cells") else None
             self._draw_chart(out.get("why") or out.get("error"))
             return
+        if view == "sessions":
+            self._render_sessions(out)
+            return
         if view == "study":
             self._render_study(out)
             return
@@ -1355,6 +1627,60 @@ class App(ImportMixin, ttk.Frame):
                       anchor=side, stretch=False)
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
+
+    def _render_sessions(self, out):
+        """List + optional detail. Won bb stays on the row."""
+        self._sessions_out = out
+        warn = out.get("warning") or out.get("error") or ""
+        self.sess_warn.configure(text=warn or (out.get("clock") or ""))
+        tv = self.session_list
+        tv.delete(*tv.get_children())
+        hidden = set(self.session_hidden)
+        cols = [c for c in sessions.LIST_COLUMNS if c not in hidden]
+        if not cols:
+            cols = ["Won bb"]
+        widths = {"when": 140, "site": 80, "hero": 110, "hands": 60,
+                  "duration": 70, "Won": 80, "Won bb": 80}
+        anchors = {"when": "w", "site": "w", "hero": "w"}
+        self._cols(tv, cols, [widths.get(c, 80) for c in cols], anchors)
+        tv._session_ids = {}
+        for r in out.get("rows") or []:
+            vals = []
+            for c in cols:
+                if c == "Won":
+                    vals.append(f"{r['Won']:+.2f}")
+                elif c == "Won bb":
+                    vals.append(f"{r['Won bb']:+.1f}")
+                else:
+                    vals.append(r.get(c) if c != "when" else (r.get("when") or "")[:16])
+            tag = ("pos",) if r.get("Won bb", 0) > 0 else (
+                ("neg",) if r.get("Won bb", 0) < 0 else ())
+            iid = tv.insert("", "end", values=vals, tags=tag)
+            tv._session_ids[iid] = r["id"]
+            if r["id"] == self._session_id:
+                tv.selection_set(iid)
+        if not (out.get("rows") or []):
+            tv.insert("", "end", tags=("note",),
+                      values=[warn or "no hero cash sessions"]
+                      + [""] * (len(cols) - 1))
+        detail = out.get("detail") or {}
+        session = detail.get("session")
+        if session:
+            self.sess_sum.configure(
+                text=(f"{session['site']} {session['hero']}  "
+                      f"{session['hands']} hands  {session['duration']}  "
+                      f"Won {session['Won']:+.2f}  "
+                      f"Won bb {session['Won bb']:+.1f}"))
+            self.session_series = detail.get("series")
+            self._draw_session_graph(detail.get("why_graph")
+                                     or detail.get("error"))
+            self._render_hands(self.session_hands,
+                               {"rows": detail.get("hands") or []})
+        else:
+            self.sess_sum.configure(text="pick a session")
+            self.session_series = None
+            self._draw_session_graph("pick a session")
+            self._render_hands(self.session_hands, {"rows": []})
 
     def _render_study(self, out):
         """Chips, breadcrumb, Smart strip, panes, compact hands."""
@@ -1409,6 +1735,11 @@ class App(ImportMixin, ttk.Frame):
                       style="Dim.TLabel").pack(side="left")
         if self.preset.get():
             self._chip_label("report " + self.preset.get(), None)
+        sid = self.vals["session"].get().strip()
+        if sid:
+            self._chip_label("session " + sid[:18], "session")
+        if self.flags["--today"].get():
+            self._chip_label("today", "today")
         for i, step in enumerate(self.crumbs):
             self._chip_label(step.get("label") or step.get("how") or "?", i)
 
@@ -1422,6 +1753,10 @@ class App(ImportMixin, ttk.Frame):
         if index is None:
             self.preset.set("")
             self.crumbs = []
+        elif index == "session":
+            self.vals["session"].set("")
+        elif index == "today":
+            self.flags["--today"].set(False)
         else:
             self.crumbs = [c for i, c in enumerate(self.crumbs) if i != index]
         self.refresh()
@@ -2097,6 +2432,7 @@ class App(ImportMixin, ttk.Frame):
 
     def _selected_hand(self, tv=None):
         trees = [tv, getattr(self, "study_hands", None),
+                 getattr(self, "session_hands", None),
                  (self.tree or {}).get("hands")]
         for t in trees:
             if t is None:
@@ -3165,6 +3501,10 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "pot type")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("pot", v))) for v in POT_TYPES])
+        self._heading(page, "facing")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._set_item("facing", v)))
+            for v in query.FACINGS])
         self._heading(page, "situation")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in SITUATIONS])
@@ -3370,10 +3710,35 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "dates   (yyyy-mm-dd)")
         row = ttk.Frame(page)
         row.pack(fill="x", padx=18)
+        ttk.Checkbutton(row, text="Today",
+                        variable=self.app.flags["--today"]).pack(side="left")
+        ttk.Label(row, text="last N hours", style="Dim.TLabel").pack(
+            side="left", padx=(14, 4))
+        ttk.Entry(row, textvariable=self.app.vals["hours"], width=5).pack(
+            side="left", padx=(0, 18))
         for name, text in (("since", "from"), ("until", "to")):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=14).pack(
                 side="left", padx=(6, 18))
+        ttk.Label(row, text="start-of-day", style="Dim.TLabel").pack(
+            side="left")
+        ttk.Entry(row, textvariable=self.app.vals["start_of_day"],
+                  width=4).pack(side="left", padx=(4, 8))
+        ttk.Label(row, text="tz site=hours", style="Dim.TLabel").pack(
+            side="left")
+        ttk.Entry(row, textvariable=self.app.vals["tz"], width=22).pack(
+            side="left", padx=(4, 0))
+        ttk.Label(page,
+                  text="Today / hours use start-of-day and each room's "
+                       "HH timezone offset. Raw from/to are played_at "
+                       "as written. An empty Today is usually the hour "
+                       "or the offset, not missing hands.",
+                  style="Dim.TLabel").pack(anchor="w", padx=18, pady=(4, 0))
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(8, 0))
+        ttk.Label(row, text="session id", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["session"], width=22).pack(
+            side="left", padx=(6, 0))
 
         self._heading(page, "study  (marked hands and tags)")
         row = ttk.Frame(page)
@@ -3571,7 +3936,13 @@ def check(db_path=DB):
     root.withdraw()
     dark(root)
     app = App(root)
-    app.load_options()
+    # An empty or missing corpus used to raise here and leave the
+    # Tk root alive, so `--check` hung on exit instead of reporting
+    # the widget/CLI equality that does not need any hands.
+    try:
+        app.load_options()
+    except sqlite3.Error:
+        pass
 
     cases = [
         ({"flags": ["--hero", "--ip"], "pos": [], "vs": [],
@@ -3623,10 +3994,10 @@ def check(db_path=DB):
 
     # Every view must build its rows without raising, including on a filter
     # that matches nothing -- which is one click away at all times.
-    con = sqlite3.connect(db_path)
+    con = connect_db(db_path)
     broke = []
-    views = ("study", "stats", "range", "chart", "report", "results", "hands",
-             "graph")
+    views = ("sessions", "study", "stats", "range", "chart", "report",
+             "results", "hands", "graph")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:
@@ -3768,9 +4139,10 @@ def check(db_path=DB):
     app._apply_argv(["--street", "flop", "--pfa", "--facing", "check"])
     a, _la, _ = query.build(app.argv())
     b, _lb, _ = query.build(list(query.SMART_REPORTS["Flop c-bets"]))
+    same_spot = sorted(a.split(" AND ")) == sorted(b.split(" AND "))
     print(f"applying a spot matches its flags  "
-          f"{'yes' if a == b else 'NO -- ' + a}")
-    if a != b:
+          f"{'yes' if same_spot else 'NO -- ' + a}")
+    if not same_spot:
         fails.append("apply_argv does not rebuild the filter it was given")
     app.multi["street"] = {"river"}
     app.apply_report("Flop vs c-bet")
@@ -3789,9 +4161,10 @@ def check(db_path=DB):
     a, _, _ = query.build(app.argv())
     b, _, _ = query.build(["--stack", "80-120", "--action", "call",
                            "--combo", "Axs", "--result", "won"])
+    same_study = sorted(a.split(" AND ")) == sorted(b.split(" AND "))
     print(f"study flags round-trip        "
-          f"{'yes' if a == b else 'NO -- ' + a}")
-    if a != b:
+          f"{'yes' if same_study else 'NO -- ' + a}")
+    if not same_study:
         fails.append("study flags did not survive apply_argv")
     app.clear_situation()
     app.crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
@@ -3805,6 +4178,23 @@ def check(db_path=DB):
         fails.append("the window has no study cockpit tab")
     print(f"study cockpit tab             "
           f"{'yes' if 'study' in app.tabs else 'NO'}")
+    if "sessions" not in app.tabs:
+        fails.append("the window has no Sessions tab")
+    print(f"sessions tab                  "
+          f"{'yes' if 'sessions' in app.tabs else 'NO'}")
+    app.vals["session"].set("h1")
+    if "--session" not in app.argv() or "h1" not in app.argv():
+        fails.append("Open-in-Reports session chip did not reach argv")
+    print(f"session chip reaches argv     "
+          f"{'yes' if '--session' in app.argv() else 'NO'}")
+    app.vals["session"].set("")
+    app.flags["--today"].set(True)
+    app.vals["hours"].set("")
+    if "--today" not in app.argv():
+        fails.append("Today on the dialog did not reach argv")
+    print(f"today flag reaches argv       "
+          f"{'yes' if '--today' in app.argv() else 'NO'}")
+    app.flags["--today"].set(False)
     if not getattr(app, "study_trees", None) or \
             set(query.DEFAULT_STUDY_PANES) - set(app.study_trees):
         fails.append("study default panes are missing")
@@ -3820,9 +4210,11 @@ def check(db_path=DB):
     want, _, _ = query.build(["--first-in", "--first-raise",
                               "--last-action", "--size", "0.4-0.75",
                               "--stack", "100+", "--outcome", "fold-out"])
+    same_custom = (sorted(built.split(" AND "))
+                   == sorted(want.split(" AND ")))
     print(f"custom builder flags round-trip  "
-          f"{'yes' if built == want else 'NO -- ' + built}")
-    if built != want:
+          f"{'yes' if same_custom else 'NO -- ' + built}")
+    if not same_custom:
         fails.append("custom builder flags did not survive apply_argv")
 
     theme = ttk.Style(root).theme_use()

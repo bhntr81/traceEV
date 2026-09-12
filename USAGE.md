@@ -228,8 +228,53 @@ every suited ace; `22+`, `pairs`, `broadways` are the same idea.
 The page (`python gui.py`) has the same study view as its default
 tab. Pin, Mark, and Add to Note hit the same backends.
 
-Not in this cockpit: Sessions, a Statistics grid, graphs (use the
-graph tab), Detach, a Reg-Fish stats-exclusion toggle.
+Not in this cockpit: a Statistics grid, Detach, a Reg-Fish
+stats-exclusion toggle. Sessions is the neighbouring tab.
+
+### Sessions
+
+A session is a sit-down: consecutive hero cash hands at one site,
+split when the gap exceeds 60 minutes or the room / named hero
+changes. It is not a calendar day and not a Reports filter.
+
+```bash
+python sessions.py                         # the list (Won bb on the row)
+python sessions.py list --today
+python sessions.py --hours 4
+python sessions.py --since 2026-09-01 --until 2026-09-02
+python sessions.py --start-of-day 6 --tz acr=-5
+python sessions.py show FIRST_HAND_ID      # same as --show: summary + hands
+python sessions.py --show FIRST_HAND_ID
+python sessions.py graph FIRST_HAND_ID
+python sessions.py export-hands FIRST_HAND_ID --out session.txt
+python query.py --session FIRST_HAND_ID --stats
+```
+
+The window's **sessions** tab is the same loop: date bar → list
+(Won / Won bb) → click a row for the four-line graph and compact
+hands → **Export session hands** → **Open in Reports** (a
+`--session` chip on the study tab). Mark / Unmark / Note on a
+compact row, the same store as the hands tab.
+
+**Today is a footgun.** It is the most recent start-of-day hour in
+*your* clock, not the date stamped on the hand. Rooms write their
+own local time and do not say which. Set the start-of-day hour
+(6 if you play until 4am) and each room's HH timezone offset
+(hours added to `played_at` to reach you). An empty Today names
+those two numbers rather than looking like missing hands.
+
+Raw `--since` / `--until` on a report stay literal `played_at`
+comparisons, so a saved filter does not move when the clock prefs
+do.
+
+MTT is out (chips are not dollars). Opponent class is ignored --
+sessions are not affected by `--reg` / `--fish` or a future
+Reg-vs-Fish stats-rebuild exclusion. Ignition is one hero stream
+per site; the seat identity would split a real sit-down. Export
+needs the original HH files still at `hands.source`.
+
+Not this: Chip EV, rakeback overlay, live-table VPIP sort,
+merge/split.
 
 ### Smart Reports, and walking to a neighbouring spot
 
