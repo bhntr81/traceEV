@@ -2208,7 +2208,101 @@ STUDY_PANE_LABELS = {
     "board": "Flop Board",
     "combo": "Combos",
     "hist": "Hand Values",
+    "graph": "Win Graph",
+    "hands": "Hands",
 }
+
+# A detached pane is a second viewport of the same report Pin
+# already identifies: who + situation + crumbs as argv. Cap is
+# four because a fifth is a desktop of reports, not a study
+# surface, and the main window has to stay usable. Graph and
+# Hands are not +pane extras -- they already live on the strip.
+DETACH_CAP = 4
+DETACHABLE = DEFAULT_STUDY_PANES + PLUS_STUDY_PANES + ("graph", "hands")
+
+
+def report_context(argv, crumbs=None):
+    """
+    The report identity Pin already uses.
+
+    Pin stores a named report or a JSON argv list. Detach has to
+    name the same report the same way -- otherwise a detached
+    Stack pane and a pin of that nest are two writings of one
+    filter, and they drift the first time either changes.
+    `argv` may already have crumbs folded (the window's
+    `App.argv`); `crumbs` is for callers that still have them
+    separate (the page, `--check`).
+    """
+    argv = situation_only(list(argv or []))
+    if crumbs:
+        argv = drill_stack(argv, crumbs)
+    return argv
+
+
+def subject_of(argv):
+    """Who the report is about, for a window title. Not the situation."""
+    who = who_only(argv)
+    if "--hero" in who:
+        return "hero"
+    if "--pool" in who:
+        return "pool"
+    players = flag_values(who, "--player")
+    if players:
+        return players[0]
+    aliases = flag_values(who, "--alias")
+    if aliases:
+        return aliases[0]
+    if "--reg" in who:
+        return "regs"
+    if "--fish" in who:
+        return "fish"
+    return "all"
+
+
+def detach_short_filters(argv):
+    """The situation as a short phrase, or `unfiltered`."""
+    sit = without_who(argv)
+    if not sit:
+        return "unfiltered"
+    try:
+        _where, label, _parts = build(sit)
+    except SystemExit:
+        label = " ".join(str(x) for x in sit)
+    if not label or label == "everything":
+        return "unfiltered"
+    return label if len(label) <= 48 else label[:45] + "…"
+
+
+def detach_title(argv, pane):
+    """`subject · pane · short filters` -- the detached window title."""
+    label = STUDY_PANE_LABELS.get(pane, pane)
+    return f"{subject_of(argv)} · {label} · {detach_short_filters(argv)}"
+
+
+def can_detach(open_count, pane=None):
+    """
+    Another window is allowed. Cap is DETACH_CAP.
+
+    `pane` is accepted so a caller can ask about a specific
+    name; the cap is on the number of open windows, not on
+    which pane. Closing one frees the slot.
+    """
+    try:
+        n = int(open_count)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= n < DETACH_CAP
+
+
+def detach_meta(argv):
+    """Titles and cap for both front ends, from one writing."""
+    ctx = report_context(argv)
+    return {
+        "cap": DETACH_CAP,
+        "context": list(ctx),
+        "titles": {name: detach_title(ctx, name) for name in DETACHABLE},
+    }
+
 
 RANKS = "AKQJT98765432"
 
@@ -2516,6 +2610,7 @@ def study_of(con, where, argv, panes=None, pin=""):
         "panes": {},
         "plus": list(PLUS_STUDY_PANES),
         "defaults": list(DEFAULT_STUDY_PANES),
+        "detach": detach_meta(argv),
     }
     builders = {
         "results": lambda: results_breakdown(con, where, argv),
@@ -7190,6 +7285,89 @@ def check_hist():
     return fails
 
 
+def check_detach():
+    """
+    Detach reuses Pin's report context, titles name the nest,
+    and the cap is four.
+
+    No corpus, no invented EV. The failure this catches is a
+    detached pane that silently describes a different filter
+    than the pin sitting next to it -- two writings of one
+    nest, drifting the first time either changes.
+    """
+    fails = []
+    crumbs = [{"flag": "--stack", "value": "80-120", "label": "80-120"}]
+    parent = ["--hero"]
+    ctx = report_context(parent, crumbs)
+    folded = drill_stack(parent, crumbs)
+    if _canonical(ctx) != _canonical(folded):
+        fails.append("report_context drifted from drill_stack")
+    if "--hero" not in ctx or ctx[ctx.index("--stack") + 1] != "80-120":
+        fails.append(f"report_context dropped the nest: {ctx}")
+    # Pin's THIS side is situation_only of the current report.
+    # That is the context id Detach has to reuse.
+    this, pinned = pin_sides(ctx, '["--action","call"]')
+    if _canonical(this) != _canonical(ctx):
+        fails.append("pin THIS side is not the report context")
+    if "--hero" not in pinned:
+        fails.append("pin dropped who when stacked on a nest")
+    if "--action" not in pinned or "call" not in pinned:
+        fails.append(f"pin did not take the other row: {pinned}")
+    # A pin of the nest itself: without_who(context) is what
+    # `_pin_step` stores. Detach of that nest must still be it.
+    stored = without_who(ctx)
+    if _canonical(stored) != _canonical(["--stack", "80-120"]):
+        fails.append(f"pin store of a nest drifted: {stored}")
+
+    title = detach_title(ctx, "stack")
+    if "hero" not in title:
+        fails.append(f"title dropped the subject: {title!r}")
+    if "Stack" not in title:
+        fails.append(f"title dropped the pane: {title!r}")
+    if "80-120" not in title:
+        fails.append(f"title dropped the nest: {title!r}")
+    graph_title = detach_title(ctx, "graph")
+    if "Win Graph" not in graph_title or "80-120" not in graph_title:
+        fails.append(f"graph title drifted: {graph_title!r}")
+    bare = detach_title(["--pool"], "hands")
+    if "pool" not in bare or "unfiltered" not in bare:
+        fails.append(f"unfiltered title drifted: {bare!r}")
+
+    if not can_detach(0) or not can_detach(3) or can_detach(4) or can_detach(5):
+        fails.append("detach cap is not 4")
+    if can_detach(-1) or can_detach("x"):
+        fails.append("can_detach accepted a nonsense count")
+    if "graph" not in DETACHABLE or "stack" not in DETACHABLE:
+        fails.append("graph / stack are not detachable")
+    if "hands" not in DETACHABLE:
+        fails.append("hands is not detachable")
+    if "graph" in PLUS_STUDY_PANES or "hands" in PLUS_STUDY_PANES:
+        fails.append("graph/hands leaked into +pane extras")
+    if DETACH_CAP != 4:
+        fails.append(f"DETACH_CAP is {DETACH_CAP}, not 4")
+    meta = detach_meta(["--hero", "--stack", "80-120"])
+    if meta["cap"] != 4 or "stack" not in meta["titles"]:
+        fails.append("detach_meta dropped the cap or a pane title")
+    if _canonical(meta["context"]) != _canonical(ctx):
+        fails.append("detach_meta.context is not the report id")
+    # A deeper nest still titles the last crumbs, and Pin of a
+    # later row keeps the parent stack.
+    deeper = report_context(
+        ["--hero"], crumbs + [{"flag": "--action", "value": "call",
+                               "label": "Call"}])
+    if "--stack" not in deeper or "--action" not in deeper:
+        fails.append(f"second crumb dropped the nest: {deeper}")
+    if "Call" not in detach_short_filters(deeper) and \
+            "call" not in detach_short_filters(deeper):
+        fails.append(f"short filters dropped the second crumb: "
+                     f"{detach_short_filters(deeper)!r}")
+    print(f"detach context / title / cap  "
+          f"{'yes' if not fails else 'NO'}")
+    for f in fails:
+        print(f"    {f}")
+    return fails
+
+
 def check(db_path=DB):
     """
     Every filter is valid SQL, it filters, and it reaches an index.
@@ -7214,6 +7392,7 @@ def check(db_path=DB):
     fails.extend(check_statistics())
     fails.extend(check_graph())
     fails.extend(check_hist())
+    fails.extend(check_detach())
     fails.extend(compact.check())
     db = Path(db_path)
     if not db.exists() or db.stat().st_size == 0:

@@ -549,6 +549,11 @@ td.compact{text-align:left;font-weight:500}
 .chartcell{display:inline-block;width:36px;height:36px;margin:1px;
   font-size:9px;text-align:center;line-height:11px;vertical-align:top;
   cursor:pointer;border:0;color:var(--ink)}
+body.detached aside, body.detached nav, body.detached header{display:none}
+body.detached main{display:block;min-height:100vh}
+body.detached section{padding:12px 14px}
+body.detached .panes{grid-template-columns:1fr}
+body.detached .filter, body.detached #related{display:none}
 .wingraph{margin:0 0 12px}
 .wg-bar{margin:0 0 6px}
 .wg-unit{margin-right:6px;background:var(--panel);border:1px solid var(--edge);
@@ -762,7 +767,10 @@ td.compact{text-align:left;font-weight:500}
 const $ = s => document.querySelector(s);
 const state = {view:'study', by:'position', flags:{}, multi:{}, preset:'',
                spot:'', crumbs:[], extraPanes:[], paneHidden:{}, paneSort:{},
-               pinAlias:{}, sessionId:''};
+               pinAlias:{}, sessionId:'', detached:[]};
+const DETACH_PANE = new URLSearchParams(location.search).get('detach') || '';
+const DETACH_CH = (typeof BroadcastChannel !== 'undefined')
+  ? new BroadcastChannel('h2n-study') : null;
 let OPT = {};
 
 const POSITIONS = ['UTG','HJ','CO','BTN','SB','BB'];
@@ -990,6 +998,13 @@ function stepFromRow(r){
 }
 function applyStep(step){
   if (!step) return;
+  // A row click in a detached window is the same crumb the main
+  // report would take -- live context, one report id. Pin stays
+  // in-main; posting the step there is what keeps that true.
+  if (DETACH_PANE && window.opener && !window.opener.closed){
+    window.opener.postMessage({kind:'drill', step: step}, '*');
+    return;
+  }
   if (state.crumbs.length >= 3) state.crumbs = state.crumbs.slice(0,2);
   state.crumbs.push(step);
   load();
@@ -999,6 +1014,10 @@ function popCrumb(i){
   load();
 }
 function pinStep(step){
+  if (DETACH_PANE && window.opener && !window.opener.closed){
+    window.opener.postMessage({kind:'pin', step: step}, '*');
+    return;
+  }
   const label = 'pin ' + (step.label || step.value || 'row');
   const argv = step.argv || (step.flag ? [step.flag, step.value] : []);
   const box = $('#pin');
@@ -1197,13 +1216,31 @@ function renderStudy(d){
     + '<p class="smart">'+(smart.join('  ·  ')||'Smart')
     + (fams ? '  combos '+fams : '')+'</p>'
     + '<p class="n">+ pane <select id="plus">'+plus+'</select>'
-    + '  click a row to drill · right-click a hand</p>'
+    + '  click a row to drill · ⚙ Detach · right-click a hand</p>'
     + panes
     + renderHist(d.hist, {click: 'study'})
+    + '<p class="n"><button type="button" id="detach-graph">⚙ Detach graph</button></p>'
     + (d.graph && d.graph.n >= 2
         ? (d.graph_markup || '')
         : '')
     + renderStudyHands(d.hands||[]);
+  if (DETACH_PANE){
+    const titles = (d.detach && d.detach.titles) || {};
+    document.title = titles[DETACH_PANE] || (DETACH_PANE + ' · detached');
+    let only = '';
+    if (DETACH_PANE === 'graph'){
+      only = (d.graph_markup || '<p class="empty">not enough hands to draw a line</p>');
+    } else if (DETACH_PANE === 'hands'){
+      only = renderStudyHands(d.hands||[]);
+    } else if (DETACH_PANE === 'hist'){
+      only = renderHist(d.hist, {click: 'study'}) + renderStudyHands(d.hands||[]);
+    } else {
+      const pane = (d.panes||{})[DETACH_PANE] || (DETACH_PANE==='combo' ? d.families : null);
+      only = '<div class="panes">'+renderPane(DETACH_PANE, pane)+'</div>'
+        + renderStudyHands(d.hands||[]);
+    }
+    h = '<p class="n">live with the main filter · pin stays in-main</p>' + only;
+  }
   $('#out').innerHTML = h;
   $('#out').querySelectorAll('.crumbs a').forEach(a => {
     a.onclick = e => { e.preventDefault(); popCrumb(+a.dataset.i); };
@@ -1245,6 +1282,8 @@ function renderStudy(d){
   $('#out').querySelectorAll('.pane h3 button').forEach(b => {
     b.onclick = () => gearPane(b.dataset.pane, d);
   });
+  const dg = $('#detach-graph');
+  if (dg) dg.onclick = () => detachPane('graph');
   $('#out').querySelectorAll('.pane th[data-sort]').forEach(th => {
     th.onclick = () => {
       const pane = th.closest('.pane');
@@ -1261,6 +1300,9 @@ function renderStudy(d){
   bindHist($('#out'), d, 'study');
   if (window.bindWinGraph)
     $('#out').querySelectorAll('.wingraph').forEach(window.bindWinGraph);
+  window.__lastStudy = d;
+  if (!DETACH_PANE && DETACH_CH)
+    DETACH_CH.postMessage({kind:'study', data: d});
 }
 function renderHist(got, how){
   how = how || {};
@@ -1385,14 +1427,38 @@ function gearPane(name, d){
   const hidden = new Set(state.paneHidden[name]||[]);
   const cols = name==='results'
     ? ['label','hands','net','bb/100']
+    : (name==='graph' || name==='hands') ? []
     : ['label','n','freq','act bb'];
-  showCtx({clientX: window.event?window.event.clientX:80,
-           clientY: window.event?window.event.clientY:80},
+  const items = [['Detach', () => detachPane(name)]].concat(
     cols.map(c => [(hidden.has(c)?'☐ ':'☑ ')+c, () => {
       if (hidden.has(c)) hidden.delete(c); else hidden.add(c);
       state.paneHidden[name] = [...hidden];
       renderStudy(d);
     }]));
+  showCtx({clientX: window.event?window.event.clientX:80,
+           clientY: window.event?window.event.clientY:80},
+    items);
+}
+function detachPane(name){
+  if (DETACH_PANE) return;
+  const open = (state.detached||[]).filter(w => w && !w.closed);
+  state.detached = open;
+  const already = open.find(w => w.__pane === name);
+  if (already){ try{ already.focus(); }catch(e){} return; }
+  const cap = ((window.__lastStudy||{}).detach||{}).cap || 4;
+  if (open.length >= cap){
+    const el = $('#filter');
+    if (el) el.textContent = 'detach cap 4 — close one';
+    return;
+  }
+  const p = params();
+  p.set('view', 'study');
+  p.set('detach', name);
+  const w = window.open('/?'+p.toString(), '_blank', 'width=720,height=520');
+  if (w){
+    w.__pane = name;
+    state.detached.push(w);
+  }
 }
 function renderStudyHands(rows){
   if (!rows.length) return '<p class="empty">no hands in this filter</p>';
@@ -1876,8 +1942,49 @@ async function load(){
   const d = await r.json();
   if (mine === seq) render(d);
 }
+function hydrateFromURL(){
+  const q = new URLSearchParams(location.search);
+  if (!q.get('detach') && !q.get('view')) return;
+  if (q.get('preset')){
+    state.preset = q.get('preset');
+    const box = $('#preset');
+    if (box) box.value = state.preset;
+  }
+  if (q.get('crumbs')){
+    try { state.crumbs = JSON.parse(q.get('crumbs')); } catch (e) { state.crumbs = []; }
+  }
+  if (q.get('panes'))
+    state.extraPanes = q.get('panes').split(',').filter(Boolean);
+  ['hero','pool','ip','oop','pfa','not_pfa','multiway','headsup',
+   'vs_pfa','vs_hero','vs_pool','first_in','last_raise','first_raise',
+   'last_action','marked','noted','today'].forEach(f => {
+    if (q.get(f) === '1') state.flags[f] = true;
+  });
+  ['pos','vs','street','pot','facing','board'].forEach(g => {
+    if (q.get(g)) state.multi[g] = q.get(g).split(',').filter(Boolean);
+  });
+  ['site','stake','player','stack','combo','action','result','pin',
+   'session','fmt','last_sessions','alias','hist_group'].forEach(id => {
+    const el = $('#'+id);
+    if (el && q.get(id)) el.value = q.get(id);
+  });
+  state.view = 'study';
+}
+window.addEventListener('message', ev => {
+  const msg = ev.data || {};
+  if (msg.kind === 'drill') applyStep(msg.step);
+  if (msg.kind === 'pin') pinStep(msg.step);
+});
+if (DETACH_CH){
+  DETACH_CH.onmessage = ev => {
+    const msg = ev.data || {};
+    if (DETACH_PANE && msg.kind === 'study' && msg.data)
+      renderStudy(msg.data);
+  };
+}
 
 (async function start(){
+  if (DETACH_PANE) document.body.classList.add('detached');
   OPT = await (await fetch('/api/options')).json();
   $('#site').innerHTML = '<option value="">any site</option>'
     + OPT.sites.map(s=>`<option>${s}</option>`).join('');
@@ -1913,6 +2020,7 @@ async function load(){
     $('#pin').innerHTML = html.replace('>no report<', '>none<');
   }
   $('#sub').textContent = OPT.sites.join(' · ');
+  hydrateFromURL();
   paintChips();
   load();
 })();
@@ -2056,6 +2164,19 @@ def check(db_path=DB):
     print(f"study drill matches CLI      "
           f"{'yes' if query._canonical(child) == query._canonical(want) else 'NO'}")
 
+    nest = argv_from({"hero": ["1"], "stack": ["80-120"]})
+    ctx = query.report_context(nest)
+    title = query.detach_title(ctx, "stack")
+    if "hero" not in title or "80-120" not in title or "Stack" not in title:
+        fails.append(f"page detach title drifted: {title!r}")
+    if query.can_detach(4):
+        fails.append("page detach cap drifted from 4")
+    this, _other = query.pin_sides(ctx, '["--action","call"]')
+    if query._canonical(this) != query._canonical(ctx):
+        fails.append("page pin THIS side is not the detach context")
+    print(f"detach title / pin context   "
+          f"{'yes' if 'hero' in title and '80-120' in title else 'NO'}")
+
     # Every view must answer, including on a filter that matches nothing --
     # which a user will type within a minute of being handed a form.
     # Connecting when `hands.db` is missing creates an empty file, and
@@ -2086,6 +2207,21 @@ def check(db_path=DB):
     for b in broke:
         print(f"    {b}")
     fails += broke
+
+    try:
+        got = payload(con, {"view": ["study"], "hero": ["1"],
+                            "stack": ["80-120"]})
+        meta = got.get("detach") or {}
+        if meta.get("cap") != 4:
+            fails.append("study payload dropped detach cap")
+        stack_t = (meta.get("titles") or {}).get("stack") or ""
+        if "80-120" not in stack_t:
+            fails.append(f"study detach title missed the nest: {stack_t!r}")
+        if query._canonical(meta.get("context") or []) != \
+                query._canonical(["--hero", "--stack", "80-120"]):
+            fails.append("study detach context drifted from the form")
+    except Exception as e:
+        fails.append(f"study detach payload: {type(e).__name__}: {e}")
 
     # The dropdowns must offer things this database actually has, or the
     # first click produces an empty page and looks broken.

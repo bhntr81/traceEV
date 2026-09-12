@@ -1030,7 +1030,7 @@ hand onto a bar. `query.hist_postflop_of` is the one
 aggregator; `--hist-group` is the click. `HistWidget` on
 Statistics and the Reports study strip. Flipping `is_weak`
 moves Weak %. Coverage names Ignition (every hand) vs ACR
-(23%). Remaining: full group editor, board slices, Detach,
+(23%). Remaining: full group editor, board slices,
 live `hands.db`.
 
 ## Run — Live-corpus correctness (verify-parity)
@@ -1052,3 +1052,19 @@ cwd lucked out. Intentional divergence documented: Quick
 Filters are strict (chance ∧ action); Smart Reports are the
 loose spot. Remaining: the user's live `hands.db` is still
 the user's.
+
+## Run — Detach report panes
+
+**Goal:** H2N-style Detach so a study pane opens in its own
+window. Gear → Detach; title is subject + pane + short
+filters; cap ~4; Pin stays in-main; row-drill / compact
+hands work inside the copy. Prefer live context. No HUD,
+no solver, no whole-shell detach, no multi-profile, no
+rakeback. `--check` without inventing EV.
+
+**Result:** `query.report_context` is Pin's report id
+(who + situation + crumbs as argv). `DetachedPane` is a
+Tk Toplevel; the page opens a second window of the same
+payload. Live: `_sync_detached` / BroadcastChannel redraw
+from the latest study blob. Cap is four; close frees the
+slot and does not break main. Dock-back deferred.
