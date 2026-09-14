@@ -908,3 +908,33 @@ before the load: PokerStars' "raises $1 to $2" names the increment, not
 the amount added; and an All-in Cash Out leaves no "collected" line. The
 database is 22,165 hands and 173,549 decisions. Goal 1 of Part III is
 demonstrated, not just claimed.
+
+## Run 11 — the manual, audited; sessions; goal 3
+
+**Goal, set beforehand:** every feature in Hand2Note's user manual held
+against this program, and the largest gap that fits the scope built.
+
+**The audit.** Of the manual's twenty-odd tracking features, twelve were
+already here (several better -- no H2N view carries an interval, a
+difference test or a family correction). Missing, in order of worth:
+sessions and the time filters (three of the manual's nine use cases), hand
+marking and tags, notes, aliases, table composition (fish at the table and
+the seats between you and them), export with a filter, configurable
+categories, expression stats, bet size relative to the previous bet. The
+HUD, its popups, auto-import and the emulator are out of scope. The full
+table is on the plan page.
+
+**Built: `sessions.py`.** A sitting is a run of your own hands on one site
+with no gap longer than ten minutes. 83 sittings over 22,150 hands, 65 of
+fifty hands or more, one to nine tables at a time. Per site because the
+clock is the site's; the hour is the site's hour and every view says so.
+Filters, dimensions, a view, a tab; the check is the arithmetic and it is
+exact.
+
+**Goal 3, closed:** `opponents.py` onto `rates_by_player`, `difference`
+and `holm`, baseline without the player. Its check had reached 275 seconds
+of CPU at three sites and was the reason the suite had become a thing
+nobody ran; 2m13s now, 214 reads, 40 of 40 re-derived. `population.py`
+still carries its own SQL and is the last of the six.
+
+**Result: PASS**, 17 of 17.
