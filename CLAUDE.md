@@ -76,6 +76,7 @@ leaves a database that is consistent nowhere and looks fine everywhere.
 importer.py (each site's parser, per sites.py)
           ->  spots.py  ->  decisions.py  ->  lines.py
                                           ->  strength.py
+                                          ->  sessions.py
                        ->  players.py  ->  stats.py, opponents.py
 ```
 
@@ -138,6 +139,10 @@ Facts that stay true, and that have each been got wrong at least once:
   there, a different one after. Zone is nobody at all. `Site.names` says
   which, `players.durable` carries it onto each row, and anything that
   counts identities as people must respect it.
+- **A session is per site, and its clock is the site's.** `played_at` is
+  whatever clock the site wrote, and nothing says two sites' clocks agree,
+  so `sessions.py` never merges sittings across sites by timestamp. Every
+  view that uses the hour of day says whose hour it is.
 - **The turn and the river are described by what the card DID**, not by
   what the board looks like afterwards, and "straight" therefore means one
   thing on the turn (the board is now a card off one) and another on the

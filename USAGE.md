@@ -100,6 +100,9 @@ python strength.py --check
 python players.py          # who each player is             (~15 s)
 python players.py --check
 
+python sessions.py         # when you sat down and got up   (~40 s)
+python sessions.py --check
+
 python decisions.py --index   # just the indexes, without rebuilding
 ```
 
@@ -298,6 +301,47 @@ Multiway it is not, and there a `--node` pattern means "the betting went
 like this" rather than "this player did this". Positions are deliberately
 kept out of the strings, because eight-handed tables are recorded against
 six position names and 1,076 hands have one label covering two seats.
+
+---
+
+### Sessions, and when you were playing
+
+```bash
+python sessions.py --list                          # your sittings, newest first
+python query.py --hero --sessions                  # the sittings a filter's hands are in
+python query.py --hero --results --by hour         # winrate by hour of the day
+python query.py --hero --results --by weekday
+python query.py --hero --results --by session_len  # under 1h, 1-2h, ... 5h+
+python query.py --hero --results --by session_hour # 1st hour of a sitting, 2nd, ...
+python query.py --hero --results --by tables       # by how many tables were open
+python query.py --hero --hour 18-23 --session-len 120-300 --stats
+```
+
+A **session** is a run of your own hands on one site with no gap longer
+than ten minutes — Hand2Note's rule and its default. On this data the
+threshold barely matters: 21,171 of the gaps between consecutive hands are
+under two minutes and 53 are over an hour, with almost nothing in between.
+
+Each sitting carries its length, hands, how many tables it was spread over,
+its result, and its all-in EV. Every hand carries which sitting it was in,
+how many minutes into it, how long the sitting was, and how many tables
+were dealing you hands at the time (`tables_now` — distinct tables with a
+hand of yours inside the previous five minutes, which is Hand2Note's
+"multi-tabling count").
+
+Three things to know:
+
+* **Sessions are per site.** `played_at` is whatever clock the site wrote,
+  and nothing says two sites' clocks agree, so sittings are never merged
+  across sites by timestamp.
+* **The hour is the site's hour**, not yours. "Evening" is evening on the
+  site's clock. Every view that uses it says so.
+* **Money is over cash hands.** Tournament chips are not big blinds, so
+  MTT hands are counted in a sitting's hand count and left out of its bb.
+
+Ranges are `a-b`, inclusive: `--hour 18-23`, `--session-len 120-300`,
+`--session-min 0-60` (the first hour of any sitting), `--tables 1-2`.
+Weekdays are names: `--weekday sat,sun`.
 
 ---
 
@@ -634,9 +678,10 @@ python opponents.py --check
 ```
 
 A page of somebody's stats is not a read — most of the numbers on it are
-what the whole pool does. So this prints only the stats where the player's
-95% interval and the pool's do not overlap, biggest gap first, with what to
-do about it:
+what the whole pool does. So this prints only the stats where the interval
+on the **difference** between the player and their pool clears zero *and*
+survives being one of thirty-six questions asked about the same player
+(Holm), surest read first, with what to do about it:
 
 ```
   stat                     them     pool   read
@@ -648,8 +693,10 @@ do about it:
 ```
 
 `^` is above the pool, `v` is below. The baseline is the pool **on their own
-site**, since comparing a ACR player against a mixed baseline would
-make every one of them look tight.
+site, without them in it** — comparing an ACR player against a mixed
+baseline would make every one of them look tight, and a regular with two
+thousand hands is enough of the pool that leaving them in shrinks every
+difference they have.
 
 A player with nothing listed is not a failure of the tool. It means that on
 this many hands they are indistinguishable from the pool, which is itself

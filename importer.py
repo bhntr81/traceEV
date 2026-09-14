@@ -400,6 +400,7 @@ CHAIN = (
     ("lines", "the betting written out, onto decisions"),
     ("strength", "what each hand is, onto decisions"),
     ("players", "who each player is, onto decisions"),
+    ("sessions", "when you sat down and got up, onto decisions"),
 )
 
 
@@ -481,6 +482,7 @@ def check(db_path=DB):
     import decisions
     import lines
     import players
+    import sessions
     import strength
     order = [name for name, _what in CHAIN]
     con = sqlite3.connect(db_path)
@@ -488,7 +490,8 @@ def check(db_path=DB):
     con.close()
     for name, owned in (("lines", lines.LINE_COLUMNS),
                         ("strength", strength.COLUMNS),
-                        ("players", players.NAMES)):
+                        ("players", players.NAMES),
+                        ("sessions", sessions.NAMES)):
         placed = name in order and order.index(name) > order.index("decisions")
         print(f"{name + ' is in the chain':30} "
               f"{'yes' if placed else 'NO'}   {len(owned)} columns")

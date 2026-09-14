@@ -12,6 +12,7 @@ Three questions, one filter:
     --stats     what everybody did in the spot the filter describes
     --hands     which hands those were
     --range     what the hands that got there actually were
+    --sessions  which sittings those hands were part of
     --results   what the money did in them
     --graph     the four-line results graph, written as an HTML file
 
@@ -102,6 +103,16 @@ VALUE_FLAGS = {
     "--live": "n_live = {n}",
     "--since": "played_at >= {v}",
     "--until": "played_at <= {v}",
+    # When you were playing, from `sessions.py`. The hour is the SITE's
+    # hour -- `played_at` is whatever clock the site wrote -- and every view
+    # that uses it says so. Ranges are "a-b", inclusive, so `--hour 18-23`
+    # is the evening and `--session-len 120-300` is Hand2Note's own finding
+    # that two to five hours is where the win rate lives.
+    "--hour": "CAST(strftime('%H', played_at) AS INT) BETWEEN {lo} AND {hi}",
+    "--weekday": "strftime('%w', played_at) IN ({list})",
+    "--session-len": "session_len BETWEEN {lo} AND {hi}",
+    "--session-min": "session_min BETWEEN {lo} AND {hi}",
+    "--tables": "tables_now BETWEEN {lo} AND {hi}",
     # The shape of the betting rather than one decision in it. Each takes a
     # GLOB pattern over the strings `lines.py` derives, so `--flop "XB*"` is
     # "checked to somebody, who bet, and then anything at all".
@@ -130,6 +141,12 @@ LINE_FLAGS = {
     "--pre": ("pre", "pre_sz"), "--flop": ("flop", "flop_sz"),
     "--turn": ("turn", "turn_sz"), "--river": ("river", "river_sz"),
 }
+
+# strftime('%w') numbers the week from Sunday. Spelled out once, here,
+# for both the filter and the dimension.
+WEEKDAYS = {"sun": "0", "mon": "1", "tue": "2", "wed": "3",
+            "thu": "4", "fri": "5", "sat": "6"}
+WEEKDAY_NAME = {v: k for k, v in WEEKDAYS.items()}
 
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
@@ -225,6 +242,25 @@ DIMENSIONS = {
                                      "very deep (200bb+)") else 99)),
     "class": ("player_class", str),
     "vs_class": ("vs_class", str),
+    # When. The hour is the site's hour, and the report heading says so.
+    "hour": ("CAST(strftime('%H', played_at) AS INT)", lambda k: int(k or 0)),
+    "weekday": ("CASE strftime('%w', played_at) "
+                + " ".join(f"WHEN '{n}' THEN '{d}'" for d, n in WEEKDAYS.items())
+                + " END", lambda k: int(WEEKDAYS.get(k, 99))),
+    # How far into the sitting, and how long the sitting was, in whole
+    # hours -- the buckets Hand2Note's session-length finding is stated in.
+    "session_hour": ("CAST(session_min / 60 AS INT) + 1",
+                     lambda k: int(k or 0)),
+    "session_len": ("CASE WHEN session_len < 60 THEN 'under 1h' "
+                    "WHEN session_len < 120 THEN '1-2h' "
+                    "WHEN session_len < 180 THEN '2-3h' "
+                    "WHEN session_len < 240 THEN '3-4h' "
+                    "WHEN session_len < 300 THEN '4-5h' "
+                    "ELSE '5h+' END", lambda k: (
+                        ["under 1h", "1-2h", "2-3h", "3-4h", "4-5h", "5h+"]
+                        .index(k) if k in ("under 1h", "1-2h", "2-3h",
+                                           "3-4h", "4-5h", "5h+") else 99)),
+    "tables": ("tables_now", lambda k: int(k or 0)),
     "hand": ("made", str),
     "flush_draw": ("fd", str),
     "straight_draw": ("sd", str),
@@ -606,6 +642,27 @@ def build(argv):
                 described.append("board " + v)
                 continue
             tpl = VALUE_FLAGS[a]
+            if a == "--weekday":
+                # Names, because nobody remembers that Sunday is 0.
+                days = [WEEKDAYS.get(x.strip().lower()[:3], x.strip())
+                        for x in v.split(",")]
+                bad = [d for d in days if d not in WEEKDAYS.values()]
+                if bad:
+                    raise SystemExit(f"unknown weekday {bad[0]!r} -- "
+                                     f"one of: {', '.join(WEEKDAYS)}")
+                parts.append(tpl.format(list=", ".join(q(d) for d in days)))
+                described.append(f"{a.lstrip('-')} {v}")
+                continue
+            if "{lo}" in tpl:
+                lo, _, hi = v.partition("-")
+                try:
+                    lo, hi = float(lo), float(hi or lo)
+                except ValueError:
+                    raise SystemExit(f"{a} wants a range like 18-23, "
+                                     f"not {v!r}") from None
+                parts.append(tpl.format(lo=lo, hi=hi))
+                described.append(f"{a.lstrip('-')} {v}")
+                continue
             if "{list}" in tpl:
                 items = ", ".join(q(x.strip()) for x in v.split(","))
                 parts.append(tpl.format(list=items))
@@ -1063,6 +1120,48 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3):
     else:
         print(f"\n  (blank = dealt fewer than {min_n} times in this spot -- "
               f"one hand dealt twice is not a frequency)")
+
+
+def sessions_of(con, where):
+    """
+    The sittings that contain what the filter selected, newest first.
+
+    A session is the unit you actually remember -- "Tuesday night" -- and
+    a filter's hands usually belong to a few of them. Each row carries the
+    whole session's figures beside how many of its hands the filter hit, so
+    a bad night and a filter that happens to land on it are told apart.
+    """
+    keys = ("session_id", "site", "started", "minutes", "hands", "tables",
+            "net_bb", "ev_bb", "bb100", "ev100", "matched")
+    return [dict(zip(keys, r)) for r in con.execute(f"""
+        SELECT s.session_id, s.site, s.started, s.minutes, s.hands,
+               s.tables, s.net_bb, s.ev_bb, s.bb100, s.ev100,
+               COUNT(DISTINCT d.hand_id)
+        FROM sessions s JOIN decisions d ON d.session_id = s.session_id
+        WHERE ({where})
+        GROUP BY s.session_id ORDER BY s.started DESC""")]
+
+
+def show_sessions(con, where, label, parts=()):
+    rows = sessions_of(con, where)
+    print()
+    print(f"filter: {label}")
+    print("=" * (len(label) + 8))
+    if not rows:
+        print("no session holds a hand this filter selects")
+        return
+    print(f"{'#':>4} {'site':10} {'started':17} {'mins':>5} {'hands':>6} "
+          f"{'hit':>5} {'tbl':>4} {'net bb':>8} {'ev bb':>8} {'bb/100':>7}")
+    for r in rows:
+        rate = "" if r["bb100"] is None else f"{r['bb100']:+7.1f}"
+        print(f"{r['session_id']:4} {r['site']:10} {r['started'][:16]:17} "
+              f"{r['minutes']:5.0f} {r['hands']:6,} {r['matched']:5,} "
+              f"{r['tables']:4} {r['net_bb']:+8.1f} {r['ev_bb']:+8.1f} {rate}")
+    n = sum(r["hands"] for r in rows)
+    net = sum(r["net_bb"] for r in rows)
+    print()
+    print(f"{len(rows)} sessions, {n:,} hands, {net:+,.1f} bb")
+    print("The clock is the site's, not yours.")
 
 
 def show_stats(con, where, label, parts=()):
@@ -1729,6 +1828,8 @@ def check(db_path=DB):
         "--site": "acr", "--pos": "BTN", "--street": "flop",
         "--pot": "3bet", "--facing": "bet", "--combo": "AKs",
         "--stake": "0.1", "--deep": "50", "--short": "200",
+        "--hour": "18-23", "--weekday": "sat,sun",
+        "--session-len": "60-180", "--session-min": "0-60", "--tables": "1-2",
         "--made": "top pair", "--kicker": "top", "--fd": "nut",
         "--sd": "oesd",
         "--players": "6", "--live": "2",
@@ -1975,7 +2076,7 @@ def main(argv):
     cohort_spec, argv = players.parse_cohort(argv)
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart"):
+              "--chart", "--sessions"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -2098,6 +2199,8 @@ def main(argv):
         show_hands(con, where, label, parts=_parts)
     elif mode == "--range":
         show_range(con, where, label, _parts)
+    elif mode == "--sessions":
+        show_sessions(con, where, label, _parts)
     elif mode == "--chart":
         # `--show` names the columns of a report, and here it names the one
         # stat the chart is of. Without it the chart is the range itself,

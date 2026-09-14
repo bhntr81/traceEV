@@ -554,7 +554,9 @@ class App(ImportMixin, ttk.Frame):
         self.vals = {n: tk.StringVar() for n in
                      ("site", "stake", "player", "deep", "short",
                       "since", "until", "where",
-                      "line", "node", "pre", "flop", "turn", "river")}
+                      "line", "node", "pre", "flop", "turn", "river",
+                      "hour", "weekday", "session_len", "session_min",
+                      "tables")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -745,12 +747,13 @@ class App(ImportMixin, ttk.Frame):
 
         self.tabs = {}
         for name in ("stats", "range", "chart", "report", "results", "graph",
-                     "hands"):
+                     "hands", "sessions"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "range", "report", "results", "hands"):
+        for name in ("stats", "range", "report", "results", "hands",
+                     "sessions"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -824,7 +827,11 @@ class App(ImportMixin, ttk.Frame):
                            ("until", "--until"), ("where", "--where"),
                            ("line", "--line"), ("node", "--node"),
                            ("pre", "--pre"), ("flop", "--flop"),
-                           ("turn", "--turn"), ("river", "--river")):
+                           ("turn", "--turn"), ("river", "--river"),
+                           ("hour", "--hour"), ("weekday", "--weekday"),
+                           ("session_len", "--session-len"),
+                           ("session_min", "--session-min"),
+                           ("tables", "--tables")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -908,6 +915,8 @@ class App(ImportMixin, ttk.Frame):
                 out["n"], out["rows"] = query.stats_of(con, where)
             elif view == "range":
                 out.update(query.range_of(con, where))
+            elif view == "sessions":
+                out["rows"] = query.sessions_of(con, where)
             elif view == "chart":
                 out.update(query.chart_of(con, where, stat))
             elif view == "report":
@@ -1051,6 +1060,42 @@ class App(ImportMixin, ttk.Frame):
                               f"±{r['band']:.1f}" if r["band"] < 1
                               else f"±{r['band']:.0f}",
                               f"{r['n']:,}"))
+
+    def _render_sessions(self, tv, out):
+        """
+        The sittings the filter's hands belong to, newest first.
+
+        `hit` is how many of the sitting's hands the filter selected, beside
+        the sitting's whole result -- so a losing night and a filter that
+        happens to land on one are told apart at a glance. The clock is the
+        site's, which the last row says, because an "evening" that is
+        somebody else's evening is the kind of thing that reads as a finding.
+        """
+        self._cols(tv, ("started", "site", "mins", "hands", "hit", "tables",
+                        "net bb", "ev bb", "bb/100"),
+                   (150, 90, 60, 70, 60, 60, 90, 90, 80),
+                   {"started": "w", "site": "w"})
+        rows = out.get("rows") or []
+        if not rows:
+            tv.insert("", "end", tags=("note",), values=(
+                "no session holds a hand this filter selects",
+                "", "", "", "", "", "", "", ""))
+            return
+        for r in rows:
+            tag = ("pos",) if r["net_bb"] > 0 else ("neg",) if r["net_bb"] < 0 else ()
+            tv.insert("", "end", tags=tag, values=(
+                r["started"][:16], r["site"], f"{r['minutes']:.0f}",
+                f"{r['hands']:,}", f"{r['matched']:,}", r["tables"],
+                f"{r['net_bb']:+.1f}", f"{r['ev_bb']:+.1f}",
+                "" if r["bb100"] is None else f"{r['bb100']:+.1f}"))
+        n = sum(r["hands"] for r in rows)
+        net = sum(r["net_bb"] for r in rows)
+        tv.insert("", "end", values=("", "", "", "", "", "", "", "", ""))
+        tv.insert("", "end", tags=("group",), values=(
+            f"{len(rows)} SESSIONS", "", "", f"{n:,}", "", "",
+            f"{net:+.1f}", "", ""))
+        tv.insert("", "end", tags=("note",), values=(
+            "the clock is the site's, not yours", "", "", "", "", "", "", "", ""))
 
     def _render_range(self, tv, out):
         """
@@ -2084,6 +2129,24 @@ class FilterDialog(tk.Toplevel):
             ttk.Entry(row, textvariable=self.app.vals[name], width=14).pack(
                 side="left", padx=(6, 18))
 
+        self._heading(page, "when you were playing   (ranges are a-b)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text, width in (("hour", "hour of day", 8),
+                                  ("weekday", "weekday", 14),
+                                  ("session_len", "session length, min", 9),
+                                  ("session_min", "minutes into it", 9),
+                                  ("tables", "tables open", 6)):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
+                side="left", padx=(6, 16))
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="18-23 is the evening, mon,tue,wed the weekdays, "
+                       "120-300 the sessions of two to five hours, 0-60 the "
+                       "first hour of any session, 1-2 one or two tables. "
+                       "The hour is the site's clock, not yours."
+                  ).pack(anchor="w", padx=18, pady=(2, 0))
+
         self._heading(page, "anything else, as SQL over `decisions`")
         ttk.Entry(page, textvariable=self.app.vals["where"]).pack(
             fill="x", padx=18, pady=(0, 6))
@@ -2241,6 +2304,10 @@ def check(db_path=DB):
         # Picking a screen name would select one site's worth of hero's
         # hands and quietly drop the rest.
         ({"flags": [], "vals": {"player": HERO_CHOICE}}, ["--hero"]),
+        # When. A range typed into a box has to reach the same predicate
+        # the command line builds from it, or "evening" means two things.
+        ({"flags": ["--hero"], "vals": {"hour": "18-23", "session_len": "120-300"}},
+         ["--hero", "--hour", "18-23", "--session-len", "120-300"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
@@ -2262,7 +2329,7 @@ def check(db_path=DB):
     con = sqlite3.connect(db_path)
     broke = []
     views = ("stats", "range", "chart", "report", "results", "hands",
-             "graph")
+             "graph", "sessions")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:

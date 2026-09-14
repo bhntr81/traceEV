@@ -8,6 +8,71 @@ Newest first.
 
 ---
 
+## Sessions, and the opponent report onto the engine at last
+
+### Added — `sessions.py`: when you sat down, when you got up
+
+Three of the nine worked examples in Hand2Note's own manual are session
+questions — morning or evening, whether the fourth hour is worth playing,
+whether six tables is too many — and none of them could be asked here,
+because nothing knew where one sitting ended and the next began.
+
+A session is a run of your own hands on one site with no gap longer than
+ten minutes (Hand2Note's rule and default). On this data the threshold is
+almost irrelevant: 21,171 of the gaps between consecutive hands are under
+two minutes and 53 are over an hour. **83 sessions over 22,150 hands, 65 of
+them fifty hands or more, spread over one to nine tables at a time.**
+
+Four columns on `decisions` — the sitting, minutes into it, its length, and
+how many tables were dealing you hands at that moment — and five filters,
+five `--by` dimensions, a `--sessions` view and a tab.
+
+```
+python query.py --hero --results --by hour
+python query.py --hero --hour 18-23 --session-len 120-300 --stats
+```
+
+Two rules, both stated on every view that touches them. **Sessions are per
+site**: `played_at` is whatever clock the site wrote, and nothing says two
+sites agree, so sittings are never spliced across sites by timestamp. And
+**the hour is the site's hour**, not yours.
+
+The check is the arithmetic: hands in sessions equal your hands
+(22,150/22,150), money in sessions equals your money to the cent, no
+sitting holds a gap longer than the rule (longest 9.3 min), no two sittings
+on a site overlap.
+
+### Fixed — `opponents.py` took five minutes and used the wrong test
+
+Its check re-derived every reported deviation with two full-table queries
+each. At one site that was tolerable; at three sites and 1,217 opponents it
+was **275 seconds of CPU and still running**, which made the whole suite a
+thing nobody runs. And it still decided a deviation by whether two intervals
+overlap — the test CLAUDE.md retired on 5 September because it behaves like
+a test at the 99% level.
+
+Both fixed together, which is goal 3 of the roadmap. One pass per stat over
+every player (`rates_by_player`, which it already used for the leaderboard
+and not for the check), the interval on the *difference*, and Holm per
+player because thirty-six stats are asked about each. The baseline is now
+the pool **without the player in it** — a regular with two thousand hands
+is enough of the pool that leaving them in shrinks every difference they
+have. The check re-derives a sample of forty reads independently rather
+than all 214.
+
+**2m13s, 214 reads across three sites, 40/40 re-derived.**
+
+`show()` also still told hero to run `leaks.py` and `poptree.py` against
+the solver. Those were deleted nine days ago.
+
+### Also
+
+* The Filter dialog's General tab has a "when you were playing" row.
+* `importer.CHAIN` and the check that enforces it know about `sessions`,
+  so an import rebuilds them and a rebuild that skipped them would fail.
+
+---
+
 ## PokerStars, the third site -- one parser and one registry entry
 
 9,961 hands of NL100 6-max from `Downloads

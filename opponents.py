@@ -7,11 +7,21 @@ not a tell, it is Tuesday. The only figures worth a decision are the ones
 where THIS player is measurably unlike the pool, and "measurably" has to
 mean something stricter than "the number is bigger".
 
-So every line here has to clear one bar: the player's 95% interval and the
-pool's 95% interval must not overlap. That is a blunt test and it throws
-away a lot of true differences. It also throws away every false one, which
-at 700 hands a player is the trade worth making -- the alternative is a
-report full of confident nonsense about people who did something twice.
+So every line here has to clear one bar, and it is the bar the rest of the
+project uses: the interval on the DIFFERENCE between the player and their
+pool must not contain zero, and the p-value must survive being one of
+thirty-six questions asked about the same player. Until 14 Sep 2026 the
+rule here was that the two intervals must not overlap -- the test
+CLAUDE.md retired on 5 Sep because it behaves like a test at about the 99%
+level and throws away real differences. It also threw away time: the check
+re-derived every reported deviation with two full-table queries each, and
+at three sites took five minutes of CPU. Everything is one pass per stat
+now, for the leaderboard and for the check.
+
+The pool a player is measured against is their own site's pool WITHOUT
+them in it. A regular with two thousand hands is a noticeable fraction of
+the pool, and measuring them against a baseline they are part of shrinks
+every difference they have.
 
 What comes out is short. That is the point: three real reads beat thirty
 plausible ones.
@@ -26,7 +36,8 @@ import sys
 from pathlib import Path
 
 import sites
-from stats import BY_KEY, POOL, STATS, fmt, rate, rates_by_player, wilson
+from stats import (BY_KEY, POOL, STATS, difference, fmt, holm, rate,
+                   rates_by_player)
 
 DB = Path(__file__).parent / "hands.db"
 
@@ -97,40 +108,78 @@ EXPLOIT = {
 }
 
 
-def profile(con, player, site, baseline=None):
+def deviations(con, site, min_hands=MIN_HANDS):
     """
-    Every stat where this player is measurably not the pool.
+    Every player's reads on one site, from one pass per stat.
 
-    The baseline is the pool ON THEIR OWN SITE. Comparing a ACR player
-    against a mixed baseline would make every one of them look tight, since
-    the Ignition pool in this database is looser -- the deviation would be
-    between two populations rather than between a player and their peers.
+    Returns {player: [(stat, n, p, pool_p, "high"|"low", gap)]}, each list
+    sorted with the surest read first, and {player: hands} beside it.
+
+    The baseline is the pool ON THEIR OWN SITE, and without them in it.
+    Comparing an ACR player against a mixed baseline would make every one
+    of them look tight, since the Ignition pool here is looser -- the
+    deviation would be between two populations rather than between a player
+    and their peers. And a regular with two thousand hands is a noticeable
+    part of the pool, so leaving them in the baseline shrinks every
+    difference they have; their own chances and cases are subtracted out.
+
+    A read has to clear two bars. The interval on the difference must not
+    contain zero. And since thirty-six stats are asked about every player,
+    the p-values are corrected per player with Holm -- one player with one
+    read at p = 0.04 is what thirty-six questions about nothing look like.
+
+    Ranked by how far the difference interval sits from zero, not by the gap
+    between the point estimates. Sorting on the estimates ranks by sample
+    size in disguise: a 73% on 26 chances beats a 40% on 600 every time, so
+    the least reliable figure becomes the headline. That is the failure the
+    project's own post-mortem named -- quoting the extreme of a distribution
+    as though it were typical. The interval's near edge charges a small
+    sample for its width.
     """
-    where = f"player=? AND standard=1"
-    base = baseline or f"{POOL} AND site='{site}'"
-    out = []
+    everyone = con.execute(
+        "SELECT player, COUNT(DISTINCT hand_id) h FROM decisions "
+        "WHERE site=? AND is_hero=0 AND player IS NOT NULL "
+        "GROUP BY player", (site,)).fetchall()
+    hands_of = {p: h for p, h in everyone if h >= min_hands}
+    base = f"{POOL} AND site='{site}'"
+    where = f"standard=1 AND site='{site}' AND is_hero=0"
+
+    tested = {p: [] for p in hands_of}           # (stat, n, k, on, ok, pv)
     for s in STATS:
-        n, k, p, lo, hi = rate(con, s, where, (player,))
-        if n < MIN_CHANCES:
-            continue
-        bn, bk, bp, blo, bhi = rate(con, s, base)
+        bn, bk, _bp, _blo, _bhi = rate(con, s, base)
         if not bn:
             continue
-        if lo > bhi:
-            out.append((s, n, p, bp, "high", lo - bhi))
-        elif hi < blo:
-            out.append((s, n, p, bp, "low", blo - hi))
+        for player, (n, k) in rates_by_player(con, s, where).items():
+            if player not in tested or n < MIN_CHANCES:
+                continue
+            # Them, against everybody who is not them.
+            on, ok = bn - n, bk - k
+            if on < MIN_CHANCES:
+                continue
+            _d, _lo, _hi, pv = difference(k, n, ok, on)
+            tested[player].append((s, n, k, on, ok, pv))
 
-    # Ranked by how far apart the two INTERVALS are, not by the gap between
-    # the point estimates. Sorting on the point estimates ranks by sample
-    # size in disguise: a 73% on 26 chances beats a 40% on 600 every time,
-    # so the least reliable figure becomes the headline. That is the exact
-    # failure this project's own post-mortem named -- quoting the extreme of
-    # a distribution as though it were typical. Interval separation charges
-    # a small sample for its width, so a large gap measured on nothing sinks
-    # and a modest gap measured on plenty rises.
-    out.sort(key=lambda r: -r[5])
-    return out
+    out = {}
+    for player, rows in tested.items():
+        adjusted = holm([(s.key, pv) for s, _n, _k, _on, _ok, pv in rows])
+        reads = []
+        for s, n, k, on, ok, _pv in rows:
+            if adjusted.get(s.key, 1.0) >= 0.05:
+                continue
+            d, lo, hi, _p = difference(k, n, ok, on)
+            way = "high" if d > 0 else "low"
+            # The near edge of the interval: how far from zero it surely is.
+            gap = lo if d > 0 else -hi
+            reads.append((s, n, k / n, ok / on, way, gap))
+        reads.sort(key=lambda r: -r[5])
+        out[player] = reads
+    return out, hands_of
+
+
+def profile(con, player, site):
+    """One opponent's reads, by the same rule as everybody else's."""
+    reads, _hands = deviations(con, site, min_hands=1)
+    return reads.get(player, [])
 
 
 def show(con, player, site):
@@ -152,12 +201,12 @@ def show(con, player, site):
     # how the pool can play against you. Useful either way, and dishonest if
     # the heading does not say which.
     if is_hero:
-        print("\n  This is YOU against the pool, so read the last column as")
+        print()
+        print("  This is YOU against the pool, so read the last column as")
         print("  what the pool could do about you -- not as a list of leaks.")
-        print("\n  A leak is a difference from correct play, and the pool is")
-        print("  not correct: it under-raises at every depth (see poptree.py).")
-        print("  Being unlike it is usually right. `leaks.py` prices hero")
-        print("  against the solver, which is the report that finds money.")
+        print("  A leak is a difference from correct play, and the pool is")
+        print("  not correct, so being unlike it is often right. This says")
+        print("  where you are unlike it; it does not say which way is better.")
         header = "how the pool could use it"
     else:
         header = "read"
@@ -183,37 +232,15 @@ def leaderboard(con, site, limit=15):
     hidden -- how much of the pool cannot be profiled is itself the answer to
     whether this is working yet.
     """
-    everyone = con.execute(
-        "SELECT player, COUNT(DISTINCT hand_id) h FROM decisions "
-        "WHERE site=? AND is_hero=0 AND player IS NOT NULL "
-        "GROUP BY player ORDER BY h DESC", (site,)).fetchall()
-    eligible = [(p, h) for p, h in everyone if h >= MIN_HANDS]
-    hands_of = dict(eligible)
-    print(f"\n{site}: {len(everyone)} opponents seen, "
-          f"{len(eligible)} with {MIN_HANDS}+ hands")
+    seen = con.execute(
+        "SELECT COUNT(DISTINCT player) FROM decisions "
+        "WHERE site=? AND is_hero=0 AND player IS NOT NULL", (site,)).fetchone()[0]
+    devs_of, hands_of = deviations(con, site)
+    print(f"\n{site}: {seen} opponents seen, "
+          f"{len(hands_of)} with {MIN_HANDS}+ hands")
 
-    # One pass per stat, not one per player per stat, and the pool baseline
-    # computed once rather than recomputed for all 48 of them.
-    base = f"{POOL} AND site='{site}'"
-    where = f"standard=1 AND site='{site}' AND is_hero=0"
-    devs_of = {p: [] for p, _ in eligible}
-    for s in STATS:
-        bn, bk, bp, blo, bhi = rate(con, s, base)
-        if not bn:
-            continue
-        for player, (n, k) in rates_by_player(con, s, where).items():
-            if player not in devs_of or n < MIN_CHANCES:
-                continue
-            p, lo, hi = wilson(k, n)
-            if lo > bhi:
-                devs_of[player].append((s, n, p, bp, "high", lo - bhi))
-            elif hi < blo:
-                devs_of[player].append((s, n, p, bp, "low", blo - hi))
-
-    rows = []
-    for player, devs in devs_of.items():
-        devs.sort(key=lambda r: -r[5])
-        rows.append((len(devs), hands_of[player], player, devs))
+    rows = [(len(devs), hands_of[player], player, devs)
+            for player, devs in devs_of.items()]
     rows.sort(reverse=True, key=lambda r: (r[0], r[1]))
 
     none = sum(1 for r in rows if r[0] == 0)
@@ -236,7 +263,8 @@ def check(db_path=DB):
     """
     The goal for this run, checked rather than asserted.
 
-    (a) every reported deviation clears non-overlapping 95% intervals;
+    (a) a sample of reported reads, re-derived independently, clears zero
+        on the interval of the difference;
     (b) the count of players clearing the bar is reported, zero included;
     (c) any player under the hand threshold is excluded and counted.
     """
@@ -251,22 +279,26 @@ def check(db_path=DB):
     rows = [(site, r) for site in sites.named()
             for r in leaderboard(con, site, limit=0)]
 
-    # (a) re-derive every reported deviation the long way and confirm the
-    #     intervals really are disjoint. The report is not trusted to have
-    #     applied its own rule.
-    checked = bad = 0
-    for site, (count, h, p, devs) in rows:
-        for s, n, pr, bp, way, _gap in devs:
-            _, _, _, lo, hi = rate(con, s, "player=? AND standard=1", (p,))
-            _, _, _, blo, bhi = rate(con, s, f"{POOL} AND site='{site}'")
-            checked += 1
-            if not (lo > bhi or hi < blo):
-                bad += 1
-    print(f"deviations reported     {checked}")
-    print(f"intervals really disjoint {checked - bad}/{checked}"
+    # (a) re-derive a sample of the reported reads the long way -- one
+    #     query for the player, one for the pool -- and confirm the interval
+    #     on the difference really clears zero. The report is not trusted to
+    #     have applied its own rule. A sample, because re-deriving all of
+    #     them is thousands of full-table queries: the check took five
+    #     minutes of CPU at three sites, which is a check nobody runs.
+    every = [(site, p, dev) for site, (_c, _h, p, devs) in rows for dev in devs]
+    sample = every[:: max(1, len(every) // 40)][:40]
+    bad = 0
+    for site, p, (s, n, pr, bp, way, _gap) in sample:
+        n1, k1, _p1, _lo1, _hi1 = rate(con, s, "player=? AND standard=1", (p,))
+        bn, bk, _bp, _blo, _bhi = rate(con, s, f"{POOL} AND site='{site}'")
+        d, lo, hi, _pv = difference(k1, n1, bk - k1, bn - n1)
+        if not (lo > 0 or hi < 0):
+            bad += 1
+    print(f"reads reported          {len(every)}")
+    print(f"re-derived, clear zero  {len(sample) - bad}/{len(sample)}"
           f"{'' if not bad else '   <-- the rule is not being applied'}")
     if bad:
-        fails.append("intervals")
+        fails.append("difference intervals")
 
     # (b) and (c)
     total = con.execute(
