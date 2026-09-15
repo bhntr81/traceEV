@@ -381,6 +381,40 @@ Tags and notes live in `hands.db`, in tables of their own that nothing in
 the derivation chain touches, so a re-import never loses them. Back up
 the database and they come with it.
 
+### Aliases -- one person under two names
+
+```bash
+python notes.py --alias pokerstars old_name the_reg    # old_name IS the_reg
+python notes.py --aliases
+python notes.py --unalias pokerstars old_name
+python importer.py --rebuild                           # then this, once
+```
+
+An alias is applied where identity is decided -- `spots.identify` -- so
+after the rebuild every derived row under the alias carries the player's
+name and every view, note and report sees one person. That is why it
+needs a rebuild, and the command says so. Chains flatten (aliasing C to B
+when B is already A records C as A); loops are refused.
+
+Within a site only. The same name on two sites may be one person, but
+every pool baseline, note and report is per site, and merging across them
+would put ACR hands into a PokerStars profile measured against the
+PokerStars pool.
+
+### Exporting the hands a filter selects
+
+```bash
+python query.py --hero --tag review --export review.txt
+python query.py --site pokerstars --pot 3bet --street river --export river3bets.txt
+```
+
+The hands themselves, as the site wrote them, in one file -- to hand to
+somebody, to load into another tool, to keep. The database holds only
+what was derived from the text, so each hand is read back out of the
+file it came from; a hand whose file has moved is counted and named, not
+silently left out. `importer.py --check` exports ten hands and loads
+them into a fresh database to prove the round trip.
+
 ---
 
 ### Comparing two populations

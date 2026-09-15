@@ -84,9 +84,14 @@ CREATE INDEX bets_street ON bets(street, action);
 """
 
 
-def identify(hands, seats_by):
+def identify(hands, seats_by, aliases=None):
     """
     Who a seat belongs to, decided once for every site.
+
+    `aliases` is {site: {alias: player}} from `notes.alias_map`: a name
+    that is another name on the same site becomes that name here, and
+    nowhere else, so every derived row carries the merged identity and
+    no report has to know an alias exists.
 
     Sites answer this in two completely different ways, and the registry
     says which way each one takes -- the difference is the whole reason for
@@ -106,11 +111,13 @@ def identify(hands, seats_by):
     """
     out = {}
     last_seen, segment = {}, {}
+    aliases = aliases or {}
     for i, h in enumerate(hands):
         named = sites.of(h["site"]).names
+        known = aliases.get(h["site"], {})
         for s in seats_by.get(h["hand_id"], []):
             if named:
-                out[(h["hand_id"], s["seat"])] = s["label"]
+                out[(h["hand_id"], s["seat"])] = known.get(s["label"], s["label"])
                 continue
             if h["fmt"] != "RING":
                 continue
@@ -334,7 +341,9 @@ def build(db_path=DB):
     for r in con.execute("SELECT * FROM actions ORDER BY hand_id, n"):
         acts_by.setdefault(r["hand_id"], []).append(dict(r))
 
-    seat_ids = identify(hands, seats_by)
+    import notes
+    seat_ids = identify(hands, seats_by,
+                        {key: notes.alias_map(con, key) for key in sites.named()})
 
     spot_rows, bet_rows = [], []
     for h in hands:

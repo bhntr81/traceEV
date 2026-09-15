@@ -1,5 +1,5 @@
 """
-Marked hands and player notes -- the two things a tracker remembers for you.
+Marked hands, player notes, and aliases -- what a tracker remembers for you.
 
 A tag is a word on a hand: "review", "bluff-catch", "cooler". Mark a hand
 at the table or in the replayer, and `--tag review` is then a filter like
@@ -19,11 +19,27 @@ not the same person as that screen name on ACR, and an Ignition identity is
 a seat for a session and nobody after it -- `sites.named()` says where a
 note is worth writing at all, and the window only offers it there.
 
+An alias says two names on one site are one person -- a name change, a
+second account -- and from then on every hand under the alias counts
+under the player. It is applied where identity is decided and nowhere
+else: `spots.identify` asks for the site's aliases and maps the label,
+so `player` on every derived row is already the merged name and no view
+has to know. That is also why an alias needs a rebuild to take effect
+(`python importer.py --rebuild`), and the command says so.
+
+Within a site only. The same name on two sites may well be one person,
+but every pool baseline, note and report is per site, and merging across
+them would put ACR hands into a PokerStars profile measured against the
+PokerStars pool.
+
     python notes.py --tag <hand id> <tag> [<tag> ...]     mark a hand
     python notes.py --untag <hand id> <tag>              unmark it
     python notes.py --tags                               every tag, with its count
     python notes.py --note <site> <player> "<text>"      write a note (empty text removes)
     python notes.py --notes [<player>]                   read them
+    python notes.py --alias <site> <alias> <player>      the alias is the player
+    python notes.py --unalias <site> <alias>
+    python notes.py --aliases                            every alias
     python notes.py --check
 """
 
@@ -42,11 +58,13 @@ CREATE TABLE IF NOT EXISTS tags (
   hand_id TEXT, tag TEXT, made TEXT, PRIMARY KEY (hand_id, tag));
 CREATE TABLE IF NOT EXISTS notes (
   site TEXT, player TEXT, note TEXT, updated TEXT, PRIMARY KEY (site, player));
+CREATE TABLE IF NOT EXISTS aliases (
+  site TEXT, alias TEXT, player TEXT, made TEXT, PRIMARY KEY (site, alias));
 """
 
 
 def ensure(con):
-    """The two tables, if the database does not have them yet."""
+    """The three tables, if the database does not have them yet."""
     con.executescript(SCHEMA)
 
 
@@ -148,6 +166,52 @@ def all_notes(con, player=None):
     ).fetchall()
 
 
+def alias(con, site, alias_name, player):
+    """
+    The alias is the player, from the next rebuild on.
+
+    Chains are resolved when written rather than when read: aliasing B to
+    A and then C to B records C as A, so `identify` maps in one step and
+    an alias can never point at a name that is itself an alias. Aliasing a
+    name to itself, or making a loop, is refused.
+    """
+    ensure(con)
+    alias_name, player = alias_name.strip(), player.strip()
+    if not alias_name or not player:
+        raise ValueError("an alias and a player are both needed")
+    player = alias_map(con, site).get(player, player)
+    if alias_name == player:
+        raise ValueError(f"{alias_name!r} is already {player!r}")
+    # Anyone who was aliased TO the new alias follows it to the player.
+    con.execute("UPDATE aliases SET player=? WHERE site=? AND player=?",
+                (player, site, alias_name))
+    con.execute("INSERT OR REPLACE INTO aliases VALUES (?, ?, ?, ?)",
+                (site, alias_name, player, time.strftime("%Y-%m-%d %H:%M:%S")))
+    con.commit()
+
+
+def unalias(con, site, alias_name):
+    ensure(con)
+    n = con.execute("DELETE FROM aliases WHERE site=? AND alias=?",
+                    (site, alias_name.strip())).rowcount
+    con.commit()
+    return n
+
+
+def alias_map(con, site):
+    """{alias: player} for one site -- what `spots.identify` applies."""
+    ensure(con)
+    return dict(con.execute("SELECT alias, player FROM aliases WHERE site=?",
+                            (site,)).fetchall())
+
+
+def all_aliases(con):
+    ensure(con)
+    return con.execute(
+        "SELECT site, alias, player FROM aliases ORDER BY site, player, alias"
+    ).fetchall()
+
+
 def check(db_path=DB):
     """
     Round trips, on a database of its own, and the rules that make a tag
@@ -188,6 +252,31 @@ def check(db_path=DB):
         note(con, "acr", "dblj32", "")
         if note_of(con, "acr", "dblj32"):
             fails.append("an empty note did not remove the note")
+
+        # Aliases: chains flatten, loops are refused, and identify applies
+        # the map -- on the site it was written for and no other.
+        alias(con, "acr", "old_name", "the_reg")
+        alias(con, "acr", "older_name", "old_name")
+        amap = alias_map(con, "acr")
+        print(f"alias map                    {amap}")
+        if amap != {"old_name": "the_reg", "older_name": "the_reg"}:
+            fails.append(f"alias chain did not flatten: {amap}")
+        try:
+            alias(con, "acr", "the_reg", "old_name")
+            fails.append("a loop was accepted")
+        except ValueError:
+            pass
+        import spots
+        hands = [{"hand_id": "h1", "site": "acr", "fmt": "RING", "table_id": "t"},
+                 {"hand_id": "h2", "site": "pokerstars", "fmt": "RING", "table_id": "t"}]
+        seats = {"h1": [{"seat": 1, "label": "older_name"}, {"seat": 2, "label": "x"}],
+                 "h2": [{"seat": 1, "label": "older_name"}]}
+        who = spots.identify(hands, seats, {"acr": amap})
+        print(f"identify applies it          {who}")
+        if who.get(("h1", 1)) != "the_reg" or who.get(("h2", 1)) != "older_name":
+            fails.append(f"identify gave {who}")
+        if unalias(con, "acr", "older_name") != 1 or "older_name" in alias_map(con, "acr"):
+            fails.append("unalias did not remove the alias")
         con.close()
 
     # The derivation must never take these tables with it. `decisions.build`
@@ -242,6 +331,36 @@ def main(argv):
             raise SystemExit(f"no site {site!r}; one of {', '.join(sites.KEYS)}")
         note(con, site, player, text)
         print(f"{site} {player}: {note_of(con, site, player) or '(note removed)'}")
+        return 0
+    if "--alias" in argv:
+        i = argv.index("--alias")
+        if len(argv) < i + 4:
+            raise SystemExit("--alias <site> <alias> <player>")
+        site, alias_name, player = argv[i + 1], argv[i + 2], argv[i + 3]
+        if site not in sites.named():
+            raise SystemExit(f"{site!r} has no names to alias; one of "
+                             f"{', '.join(sites.named())}")
+        try:
+            alias(con, site, alias_name, player)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"{site}: {alias_name} is {alias_map(con, site)[alias_name]}")
+        print("takes effect on the next rebuild:  python importer.py --rebuild")
+        return 0
+    if "--unalias" in argv:
+        i = argv.index("--unalias")
+        if len(argv) < i + 3:
+            raise SystemExit("--unalias <site> <alias>")
+        n = unalias(con, argv[i + 1], argv[i + 2])
+        print(f"{n} alias removed; takes effect on the next rebuild:  "
+              "python importer.py --rebuild")
+        return 0
+    if "--aliases" in argv:
+        rows = all_aliases(con)
+        if not rows:
+            print("no aliases yet -- `python notes.py --alias <site> <alias> <player>`")
+        for site, a, p in rows:
+            print(f"  {site:10} {a:22} is {p}")
         return 0
     if "--notes" in argv:
         i = argv.index("--notes")

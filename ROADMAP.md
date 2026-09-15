@@ -969,5 +969,16 @@ by the tag; write a note on a player and see it wherever they appear.
 **Result: PASS**, 18 of 18. `notes.py`, two tables the chain never
 touches, `--tag` in the filter vocabulary and the window's dialog, hand
 ids in every listing, the replayer window as the place a hand is marked
-and a player annotated. Next on the list: aliases, table composition,
-export with a filter.
+and a player annotated.
+
+## Run 14 — aliases and export
+
+**Goal:** the next two: one person under two names, and the hands a
+filter selects out as text.
+
+**Result: PASS**, 18 of 18. Aliases within a site, applied in
+`spots.identify` and needing a rebuild, which `importer.py --rebuild`
+now does; `--export` reads each hand back out of its file and the
+importer's check proves the round trip. What remains of the manual's
+list: table composition, configurable hand categories, expression
+stats, bet size relative to the previous bet. Then goal 5.

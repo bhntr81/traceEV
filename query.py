@@ -15,6 +15,7 @@ Three questions, one filter:
     --sessions  which sittings those hands were part of
     --results   what the money did in them
     --graph     the four-line results graph, written as an HTML file
+    --export F  the hands themselves, as hand histories, into file F
 
 and one hand on its own:
 
@@ -154,7 +155,7 @@ WEEKDAY_NAME = {v: k for k, v in WEEKDAYS.items()}
 
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
-           "--preset",
+           "--preset", "--export",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -2129,6 +2130,8 @@ def main(argv):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
+    if "--export" in argv:
+        mode = "--export"
 
     def opt(name, default=None):
         if name not in argv:
@@ -2244,6 +2247,14 @@ def main(argv):
                  "c.player = decisions.player)")
     if mode == "--graph":
         show_graph(con, where, label, opt("--out", "graph.html"))
+    elif mode == "--export":
+        import importer
+        ids = sorted({r[0] for r in hands_of(con, where)})
+        print(f"\nfilter: {label}\n{len(ids)} hands")
+        if ids:
+            importer.export(con, ids, opt("--export"))
+        else:
+            print("  " + why_empty(con, _parts))
     elif mode == "--hands":
         show_hands(con, where, label, parts=_parts)
     elif mode == "--range":

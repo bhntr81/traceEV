@@ -18,6 +18,7 @@ needs nothing changed here.
     python importer.py --refresh            load anything new from those places
     python importer.py <folder-or-file>...  load them, whatever site they are
     python importer.py --merge other.db     take the hands from another database
+    python importer.py --rebuild            every derived table again (after an alias)
     python importer.py --check              PASS or FAIL
 """
 
@@ -425,6 +426,63 @@ def rebuild(db_path=DB, progress=None):
     decisions.index(db_path)
 
 
+def source_index():
+    """
+    Every hand history file on this machine, by name.
+
+    The database records the file each hand came from by name only, so
+    finding the text of a hand again means finding that name wherever the
+    file now lives -- the check does this, and so does an export.
+    """
+    index = {}
+    for place in (Path(os.path.expandvars(p)) for p in places()):
+        if place.exists():
+            for f in place.rglob("*.txt"):
+                index.setdefault(f.name, f)
+    return index
+
+
+def export(con, hand_ids, out, log=print):
+    """
+    The original text of these hands, into one file, as the sites wrote it.
+
+    A hand history a filter selected is worth having as a hand history:
+    to hand to somebody, to load into another tool, to keep. The database
+    holds what was derived from the text and not the text itself, so each
+    hand is read back out of the file it came from, by its own id, with
+    the site's own parser saying where one hand ends and the next begins.
+    Hands whose file has moved are counted and named, not silently left
+    out -- an export that is quietly short is the worst kind.
+    """
+    import sites
+    wanted = {}
+    for hid, source, site in con.execute(
+            "SELECT hand_id, source, site FROM hands WHERE hand_id IN (%s)"
+            % ",".join("?" * len(hand_ids)), list(hand_ids)):
+        wanted.setdefault((source, site), set()).add(hid)
+    index = source_index()
+    written, missing = 0, []
+    out = Path(out)
+    with open(out, "w", encoding="utf-8") as fh:
+        for (source, site), ids in sorted(wanted.items()):
+            f = index.get(source)
+            if f is None:
+                missing += sorted(ids)
+                continue
+            module = sites.of(site).module
+            text = f.read_text(encoding="utf-8", errors="replace")
+            for block in module.split_hands(text):
+                got = module.parse_hand(block, source=source)
+                if got and got["hand"]["hand_id"] in ids:
+                    fh.write(block.rstrip("\n") + "\n\n\n")
+                    written += 1
+    log(f"[+] {written} hands written to {out}")
+    if missing:
+        log(f"[!] {len(missing)} hands not written: their files are no "
+            f"longer where the importer looks -- e.g. {missing[0]}")
+    return written, missing
+
+
 def check(db_path=DB):
     """
     Sniffing is right on files whose site is already known.
@@ -442,11 +500,7 @@ def check(db_path=DB):
     con.close()
 
     # Find each recorded source file wherever it now lives, and re-sniff it.
-    index = {}
-    for place in (Path(os.path.expandvars(p)) for p in places()):
-        if place.exists():
-            for f in place.rglob("*.txt"):
-                index.setdefault(f.name, f)
+    index = source_index()
 
     tested = wrong = 0
     for source, site, _n in known:
@@ -556,6 +610,35 @@ def check(db_path=DB):
             fails.append(f"loading a {site} file left the high-water mark "
                          f"at {mark}, so it would be offered again")
 
+    # An export is the hands back out as text, and the proof is that they
+    # load again: a fresh database fed the export holds exactly the hands
+    # that were asked for. Ten hands, one from each site that has files
+    # on disk, through the whole loop.
+    con = sqlite3.connect(db_path)
+    sample = [r[0] for r in con.execute(
+        "SELECT hand_id FROM hands WHERE source IS NOT NULL "
+        "ORDER BY played_at DESC LIMIT 10")]
+    con.close()
+    if sample:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "export.txt"
+            con = sqlite3.connect(db_path)
+            written, missing = export(con, sample, out, log=lambda *a: None)
+            con.close()
+            fresh = Path(tmp) / "again.db"
+            got = load([out], fresh, None) if written else {"added": 0}
+            con = sqlite3.connect(fresh) if written else None
+            back = ({r[0] for r in con.execute("SELECT hand_id FROM hands")}
+                    if con else set())
+            if con:
+                con.close()
+        ok = written + len(missing) == len(sample) and back == set(sample) - set(missing)
+        print(f"{'export loads again':30} {'yes' if ok else 'NO'}   "
+              f"{written} written, {len(back)} loaded back, {len(missing)} missing")
+        if not ok:
+            fails.append(f"exporting {len(sample)} hands and loading them "
+                         f"again gave {len(back)} hands")
+
     places_found = scan()
     print(f"places holding hands          {len(places_found)}")
     for p in places_found:
@@ -586,6 +669,9 @@ def main(argv):
               f"{got['added']} hands added, {got['known']} already known")
         if not got["added"]:
             print("nothing new -- the derived tables were left alone")
+        return 0
+    if "--rebuild" in argv:
+        rebuild(progress=print)
         return 0
     if "--merge" in argv:
         got = merge(argv[argv.index("--merge") + 1], progress=print)

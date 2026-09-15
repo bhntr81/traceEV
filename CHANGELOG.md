@@ -8,6 +8,29 @@ Newest first.
 
 ---
 
+## Aliases, and export
+
+### Added -- aliases
+
+`python notes.py --alias pokerstars old_name the_reg`: two names on one
+site are one person. Applied in `spots.identify` and nowhere else, so
+after a rebuild every derived row under the alias carries the player's
+name and no view has to know an alias exists -- which keeps "only
+`spots.identify()` decides who a player is" true. Chains flatten when
+written; loops are refused; `importer.py --rebuild` is the new command
+that makes it take effect. Within a site only, because a profile is
+measured against its site's pool.
+
+### Added -- `--export`
+
+`python query.py <filter> --export file.txt` writes the hands a filter
+selects as hand histories, as the sites wrote them, read back out of the
+files they came from. A hand whose file has moved is counted and named
+rather than left out. `importer.py --check` now exports ten hands and
+loads them into a fresh database, and they must all come back.
+
+---
+
 ## Marked hands and player notes
 
 The two things a tracker remembers for you, and the next two on the
