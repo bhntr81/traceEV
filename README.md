@@ -61,6 +61,7 @@ strength.py     what the hand is against the board    --check
 update.py       fast-forward from github, safely      --check
 players.py      who each player is: reg, fish, unknown  --check
 sessions.py     when you sat down and got up          --check
+notes.py        marked hands and player notes         --check
         v
 stats.py        35 stats declaratively, plus your own   --check
 query.py        ask anything, filtered any way       --check

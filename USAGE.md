@@ -345,6 +345,44 @@ Weekdays are names: `--weekday sat,sun`.
 
 ---
 
+### Marking hands, and notes on players
+
+The two things a tracker remembers for you. A tag is a word on a hand;
+a note is text on a player.
+
+```bash
+python notes.py --tag ps-261810052519 review bluff-catch   # mark a hand
+python notes.py --untag ps-261810052519 review
+python notes.py --tags                                    # every tag, with counts
+python query.py --hero --tag review --hands               # your marked hands
+python query.py --hero --tag review --pot 3bet --stats    # ...as a filter like any other
+
+python notes.py --note pokerstars eodh "tight reg, folds to 3bets"
+python notes.py --notes                                   # all of them
+python notes.py --note pokerstars eodh ""                 # remove one
+```
+
+Every hand listing now prints the hand id and any tags, so a hand seen in
+`--hands` can be marked from the command line. In the window, double-click
+a hand: the replayer has a tag bar along the top (Enter adds; click a tag
+to remove it) and, when the seat it was opened for is a person, a note box
+that saves straight to the database. Each seat's note is shown beside it
+in the replayer, and `opponents.py NAME` prints the note above the numbers.
+
+`--tag` takes one or more tags, comma-separated, and matches any of them.
+It selects the whole hand, so on its own it lists every seat; `--hero
+--tag review` is "the hands I marked".
+
+A note is per site: a screen name on PokerStars is not the same person as
+that name on ACR, and an Ignition seat is nobody after the session -- the
+window offers a note box only where the site has names.
+
+Tags and notes live in `hands.db`, in tables of their own that nothing in
+the derivation chain touches, so a re-import never loses them. Back up
+the database and they come with it.
+
+---
+
 ### Comparing two populations
 
 ```bash

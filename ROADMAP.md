@@ -820,12 +820,20 @@ than any feature would. Nothing in code unblocks it.
 3. **Goal 4 closed out**: `opponents.py` and `population.py` onto
    `stats.rates_by`, their SQL deleted, the count of hardcoded modules
    down as the CEO's own metric demanded.
-4. **Goal 5, tested where it can be tested first**: Ignition alone has
+4. **The rest of the manual's list from Run 11, in its order**: hand
+   marking and tags, player notes, aliases, table composition, export
+   with a filter. Each is something used every session; each is a day or
+   less.
+5. **Goal 5, tested where it can be tested first**: Ignition alone has
    both halves -- the counted pool range as prior, a `table:seat:segment`
    identity as evidence -- at one stake in one pool, which removes the
-   modelling risk step 7 was scored "high" for. If prior-and-update cannot
-   beat the pool rate at predicting a seat's next decision there, it will
-   not across sites either.
+   modelling risk step 7 was scored "high" for. Moved below the manual's
+   list on 14 Sep 2026: it is in scope -- it answers "what does this
+   player do" with fewer hands than a raw rate needs, which is the
+   tracker's question and the answer to every popup's "sample too small"
+   -- but it is a better number in a column, and the items above it are
+   features. If prior-and-update cannot beat the pool rate at predicting
+   a seat's next decision there, it will not across sites either.
 
 ## What a site is
 
@@ -952,3 +960,14 @@ the engine's figure. `call_open` added to the registry for the report's
 bar from the hands instead of assuming 11.7bb per hand; the pool check's
 verdict is its exit code, which it had never been. Six modules once
 carried their own SQL; the count is zero.
+
+## Run 13 — marked hands and player notes
+
+**Goal:** the next two items on the manual's list: tag a hand and filter
+by the tag; write a note on a player and see it wherever they appear.
+
+**Result: PASS**, 18 of 18. `notes.py`, two tables the chain never
+touches, `--tag` in the filter vocabulary and the window's dialog, hand
+ids in every listing, the replayer window as the place a hand is marked
+and a player annotated. Next on the list: aliases, table composition,
+export with a filter.

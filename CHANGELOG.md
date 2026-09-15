@@ -8,6 +8,50 @@ Newest first.
 
 ---
 
+## Marked hands and player notes
+
+The two things a tracker remembers for you, and the next two on the
+manual's list after sessions. `notes.py`: a tag is a word on a hand, a
+note is text on a player.
+
+### Added -- `--tag`, and the hand id in every listing
+
+`python notes.py --tag <hand id> review` marks a hand; `--tag review` is
+then a filter over `decisions` like any other, so "the hands I marked, on
+the button, in 3bet pots" is one command, and the window's filter dialog
+has a box for it. The hand listings print the hand id now -- the window's
+had no id at all, so a hand seen there could not be marked from the
+command line -- and any tags beside it. The terminal and the window share
+one query for the listing (`query.hands_of`); each had its own copy.
+
+### Added -- the replayer marks and annotates
+
+The hand window has a tag bar along the top and, when the seat it was
+opened for is a person, a note box that writes straight to the database.
+Every seat's note is shown beside it in the replayer and
+`opponents.py NAME` prints it above the numbers. A note is keyed by site
+and player, because a name on PokerStars is not that name on ACR, and an
+Ignition seat gets no box: it is nobody after the session, and a note on
+it would attach to the next stranger in the chair.
+
+### Where they live
+
+In `hands.db`, in tables of their own, created on demand the way `meta`
+is. They are about hands and players, so a file beside the database would
+drift from it at the first re-import; and they are the user's, so the
+derivation never touches them -- `notes --check` asserts that the one
+DROP in the chain names only `decisions`. A backup of the database is a
+backup of these.
+
+### Also
+
+`sessions.py` had never been added to the packager's module lists.
+`importer.rebuild` imports it dynamically, which PyInstaller cannot see,
+so a packaged window would have failed at "deriving sessions" on its
+first import. Listed now, with `notes`.
+
+---
+
 ## The pool report onto the engine, and the last hardcoded module is gone
 
 `population.py` was the sixth and last module with its own SQL. Every

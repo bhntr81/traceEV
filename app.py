@@ -225,6 +225,7 @@ def dark(root):
     style.configure("Panel.TFrame", background=PANEL)
     style.configure("TLabel", background=BG, foreground=INK)
     style.configure("Dim.TLabel", background=BG, foreground=DIM)
+    style.configure("Tag.TButton", padding=(4, 0))
     style.configure("Head.TLabel", background=BG, foreground=DIM,
                     font=(UI, 8, "bold"))
     style.configure("Title.TLabel", background=BG, foreground=INK,
@@ -556,7 +557,7 @@ class App(ImportMixin, ttk.Frame):
                       "since", "until", "where",
                       "line", "node", "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
-                      "tables")}
+                      "tables", "tag")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -831,7 +832,7 @@ class App(ImportMixin, ttk.Frame):
                            ("hour", "--hour"), ("weekday", "--weekday"),
                            ("session_len", "--session-len"),
                            ("session_min", "--session-min"),
-                           ("tables", "--tables")):
+                           ("tables", "--tables"), ("tag", "--tag")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -933,13 +934,7 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = con.execute(
-                    f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site,"
-                    f" d.bb, d.position, d.combo, d.board, s.net_bb "
-                    f"FROM (SELECT * FROM decisions WHERE {where}) d "
-                    f"LEFT JOIN spots s ON s.hand_id=d.hand_id "
-                    f"AND s.seat=d.seat ORDER BY d.played_at DESC LIMIT 500"
-                ).fetchall()
+                out["rows"] = query.hands_of(con, where, limit=500)
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if not self._any(out):
@@ -1181,25 +1176,26 @@ class App(ImportMixin, ttk.Frame):
             "error on a win rate is about 1170/√n", ""))
 
     def _render_hands(self, tv, out):
-        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb", "board"),
-                   (140, 90, 60, 60, 70, 90, 200),
+        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb", "board",
+                        "tags"),
+                   (140, 90, 60, 60, 70, 90, 170, 160),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
-                    "board": "w"})
+                    "board": "w", "tags": "w"})
         self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net in out["rows"]:
+        for hid, seat, when, site, bb, pos, combo, board, net, marks in out["rows"]:
             iid = tv.insert("", "end", values=(
                 (when or "")[:16], site, f"{bb:g}" if bb else "",
                 pos or "", combo or "–",
                 f"{net:+.1f}" if net is not None else "",
-                board or ""),
+                board or "", ", ".join(marks)),
                 tags=("pos",) if (net or 0) > 0 else
                      ("neg",) if (net or 0) < 0 else ())
             self._hand_ids[iid] = (hid, seat)
         if out["rows"]:
-            tv.insert("", "end", values=("", "", "", "", "", "", ""))
+            tv.insert("", "end", values=("", "", "", "", "", "", "", ""))
             tv.insert("", "end", tags=("note",),
-                      values=("double-click a hand to replay it", "", "", "",
-                              "", "", ""))
+                      values=("double-click a hand to replay it, and tag it "
+                              "there", "", "", "", "", "", "", ""))
 
     def _open_hand(self, _event):
         tv = self.tree["hands"]
@@ -2147,6 +2143,19 @@ class FilterDialog(tk.Toplevel):
                        "The hour is the site's clock, not yours."
                   ).pack(anchor="w", padx=18, pady=(2, 0))
 
+        # Hands you marked. A hand is tagged in its replayer window; here
+        # the tag is a filter, so "the ones I marked review, on the button"
+        # is two clicks and a word.
+        self._heading(page, "hands you marked")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        ttk.Label(row, text="tag", style="Dim.TLabel").pack(side="left")
+        ttk.Entry(row, textvariable=self.app.vals["tag"], width=18).pack(
+            side="left", padx=(6, 16))
+        ttk.Label(row, style="Dim.TLabel",
+                  text="one or more, comma-separated; tag a hand from its "
+                       "replayer window").pack(side="left")
+
         self._heading(page, "anything else, as SQL over `decisions`")
         ttk.Entry(page, textvariable=self.app.vals["where"]).pack(
             fill="x", padx=18, pady=(0, 6))
@@ -2199,15 +2208,61 @@ class FilterDialog(tk.Toplevel):
 
 
 class HandWindow(tk.Toplevel):
-    """One hand, replayed in a window of its own."""
+    """
+    One hand, replayed in a window of its own -- and where it gets marked.
+
+    The tag bar and the note box are here rather than on the hands tab
+    because this is where a hand is being LOOKED at: "review this" is a
+    thought you have with the action in front of you, and the note about
+    the player is about what they just did. Both write straight to the
+    database; nothing has to be saved.
+    """
 
     def __init__(self, master, con, hand_id, seat):
         super().__init__(master)
         self.configure(background=BG)
         self.title(f"hand {hand_id}")
-        self.geometry("760x620")
+        self.geometry("760x680")
+        self.con, self.hand_id = con, hand_id
         d = query.hand_detail(con, hand_id, seat)
         mono = tkfont.Font(family=MONO, size=10)
+
+        # Tags along the top: the ones it has, clickable to remove, and a
+        # box to add one. Enter adds; the list redraws from the database
+        # so what is shown is always what is stored.
+        import notes
+        top = ttk.Frame(self)
+        top.pack(side="top", fill="x", padx=12, pady=(10, 4))
+        ttk.Label(top, text="tags", style="Dim.TLabel").pack(side="left")
+        self.tag_row = ttk.Frame(top)
+        self.tag_row.pack(side="left", padx=8)
+        self.tag_entry = ttk.Entry(top, width=16)
+        self.tag_entry.pack(side="left")
+        self.tag_entry.bind("<Return>", lambda e: self._add_tag())
+        ttk.Button(top, text="tag", command=self._add_tag).pack(side="left", padx=4)
+        self._draw_tags()
+
+        # The note on the seat this hand was opened for, when that seat is
+        # a person -- `sites.named()` decides, and an Ignition seat, which
+        # is nobody after the session, gets no box rather than a note that
+        # would silently attach to the next stranger in the chair.
+        focus = next((s for s in (d["seats"] if d else [])
+                      if s["seat"] == seat), None)
+        self.note_for = None
+        if d and focus and focus.get("player") and d["site"] in sites.named() \
+                and not focus.get("is_hero"):
+            self.note_for = (d["site"], focus["player"])
+            row = ttk.Frame(self)
+            row.pack(side="top", fill="x", padx=12, pady=(0, 6))
+            ttk.Label(row, text=f"note on {focus['player'][:24]}",
+                      style="Dim.TLabel").pack(side="left")
+            self.note_box = tk.Text(row, height=2, width=60, background=BG,
+                                    foreground=INK, insertbackground=INK,
+                                    font=(UI, 10), borderwidth=1, wrap="word")
+            self.note_box.pack(side="left", padx=8, fill="x", expand=True)
+            self.note_box.insert("1.0", focus.get("note") or "")
+            ttk.Button(row, text="save", command=self._save_note).pack(side="left")
+
         text = tk.Text(self, background=BG, foreground=INK, borderwidth=0,
                        font=mono, padx=16, pady=12, wrap="none",
                        insertbackground=BG)
@@ -2235,7 +2290,12 @@ class HandWindow(tk.Toplevel):
                                f"{(s['name'] or '')[:18]:18} "
                                f"{s['stack'] or 0:9.2f}  "
                                f"{s['cards'] or 'not shown':>10}  ")
-            text.insert("end", f"{net:+9.2f}\n", "good" if net > 0 else "bad")
+            text.insert("end", f"{net:+9.2f}", "good" if net > 0 else "bad")
+            # Every seat's note beside it, so the table reads the way a
+            # HUD popup would: who is who, at a glance.
+            if s.get("note"):
+                text.insert("end", f"   {s['note'][:50]}", "hi")
+            text.insert("end", "\n")
         for st in d["streets"]:
             head = st["street"].upper()
             if st["board"]:
@@ -2253,6 +2313,32 @@ class HandWindow(tk.Toplevel):
             rake = f"   rake {d['rake']:.2f}" if d["rake"] else ""
             text.insert("end", f"\nTOTAL POT {d['pot']:.2f}{rake}\n", "dim")
         text.configure(state="disabled")
+
+    def _draw_tags(self):
+        import notes
+        for w in self.tag_row.winfo_children():
+            w.destroy()
+        for t in notes.tags_of(self.con, self.hand_id):
+            b = ttk.Button(self.tag_row, text=f"{t} ×", style="Tag.TButton",
+                           command=lambda t=t: self._drop_tag(t))
+            b.pack(side="left", padx=2)
+
+    def _add_tag(self):
+        import notes
+        notes.tag(self.con, self.hand_id, self.tag_entry.get())
+        self.tag_entry.delete(0, "end")
+        self._draw_tags()
+
+    def _drop_tag(self, t):
+        import notes
+        notes.untag(self.con, self.hand_id, t)
+        self._draw_tags()
+
+    def _save_note(self):
+        import notes
+        if self.note_for:
+            notes.note(self.con, *self.note_for,
+                       self.note_box.get("1.0", "end"))
 
 
 def check(db_path=DB):
@@ -2308,6 +2394,9 @@ def check(db_path=DB):
         # the command line builds from it, or "evening" means two things.
         ({"flags": ["--hero"], "vals": {"hour": "18-23", "session_len": "120-300"}},
          ["--hero", "--hour", "18-23", "--session-len", "120-300"]),
+        # A marked hand, by the word it was marked with.
+        ({"flags": ["--hero"], "vals": {"tag": "review,cooler"}},
+         ["--hero", "--tag", "review,cooler"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():

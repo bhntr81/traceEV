@@ -35,6 +35,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import notes
 import sites
 from stats import (BY_KEY, POOL, STATS, difference, fmt, holm, rate,
                    rates_by_player)
@@ -188,6 +189,11 @@ def show(con, player, site):
         "WHERE player=?", (player,)).fetchone()
     print(f"\n{player}   ({site}, {hands} hands)")
     print("=" * (len(player) + 24))
+    # Your own words about them, above the numbers, because that is the
+    # order they are useful in at the table.
+    written = notes.note_of(con, site, player)
+    if written:
+        print(f"  note: {written}")
 
     devs = profile(con, player, site)
     if not devs:

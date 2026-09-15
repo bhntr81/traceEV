@@ -103,6 +103,10 @@ VALUE_FLAGS = {
     "--live": "n_live = {n}",
     "--since": "played_at >= {v}",
     "--until": "played_at <= {v}",
+    # Hands you marked, from `notes.py`. A subquery rather than a join so
+    # that every view that takes a WHERE over `decisions` takes this one
+    # unchanged; the table is the user's and is never rebuilt.
+    "--tag": "hand_id IN (SELECT hand_id FROM tags WHERE tag IN ({list}))",
     # When you were playing, from `sessions.py`. The hour is the SITE's
     # hour -- `played_at` is whatever clock the site wrote -- and every view
     # that uses it says so. Ranges are "a-b", inclusive, so `--hour 18-23`
@@ -1435,12 +1439,22 @@ def hand_detail(con, hand_id, seat=None):
     the difference is visible: a seat with no cards was not seen, rather than
     dealt nothing.
     """
+    import notes
     con.row_factory = sqlite3.Row
     h = con.execute("SELECT * FROM hands WHERE hand_id=?", (hand_id,)).fetchone()
     if h is None:
         return None
     seats = [dict(r) for r in con.execute(
         "SELECT * FROM seats WHERE hand_id=? ORDER BY seat", (hand_id,))]
+    # Who the seat IS, as `spots.identify` decided, so a note can be read
+    # and written against the same identity every other view uses -- the
+    # seat's label is "Small Blind" on Ignition and no use for that.
+    identity = {r["seat"]: r["player"] for r in con.execute(
+        "SELECT seat, player FROM spots WHERE hand_id=?", (hand_id,))}
+    for s in seats:
+        s["player"] = identity.get(s["seat"])
+        s["note"] = (notes.note_of(con, h["site"], s["player"])
+                     if s["player"] else "")
     pots = {r["n"]: (r["pot_before"], r["to_call"], r["pot_bb"])
             for r in con.execute(
                 "SELECT n, pot_before, to_call, pot_bb FROM decisions "
@@ -1478,7 +1492,9 @@ def hand_detail(con, hand_id, seat=None):
         "n_players": h["n_players"], "board": h["board"], "pot": h["pot"],
         "rake": (h["rake"] if "rake" in h.keys() else None),
         "focus": seat,
+        "tags": notes.tags_of(con, hand_id),
         "seats": [{"seat": r["seat"], "name": r["label"],
+                   "player": r["player"], "note": r["note"],
                    "position": r["position"], "stack": r["stack"],
                    "cards": r["cards"], "is_hero": r["is_hero"],
                    "won": r["won"], "put_in": (r["posted"] or 0) + (r["invested"] or 0)}
@@ -1496,12 +1512,14 @@ def show_hand(con, hand_id, seat=None):
     print(f"\n{d['hand_id']}   {d['site']}  {d['fmt']}  {stake}  "
           f"{d['played_at']}  ({d['table']})")
     print("=" * 78)
+    if d["tags"]:
+        print(f"  tags: {', '.join(d['tags'])}")
     for s in d["seats"]:
         mark = "*" if s["seat"] == seat else (">" if s["is_hero"] else " ")
         net = (s["won"] or 0) - s["put_in"]
         print(f" {mark} {s['position'] or '?':4} {(s['name'] or '')[:16]:16} "
               f"{s['stack'] or 0:9.2f}  {s['cards'] or '--':>7}  "
-              f"{net:+8.2f}")
+              f"{net:+8.2f}" + (f"   {s['note']}" if s.get("note") else ""))
     for st in d["streets"]:
         head = st["street"].upper()
         if st["board"]:
@@ -1710,31 +1728,53 @@ def show_results(con, where, label, parts=()):
         print(f"  won after flop   {100 * (wwsf or 0) / saw:8.1f}%")
 
 
+def hands_of(con, where, limit=None):
+    """
+    The (hand, seat) rows a filter selects, most recent first, with tags.
+
+    Rows are (hand_id, seat, played_at, site, bb, position, combo, board,
+    net_bb, tags). One query for the terminal and the window both, because
+    each had its own copy and the window's had no hand id -- so a hand
+    seen in the window could not be tagged from the command line.
+
+    The filter names bare columns, and `spots` shares several of them with
+    `decisions` -- is_hero, position, combo -- so it is applied inside a
+    subquery where there is only one table for a name to mean.
+    """
+    import notes
+    notes.ensure(con)
+    sql = (f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site, d.bb, "
+           f"       d.position, d.combo, d.board, s.net_bb "
+           f"FROM (SELECT * FROM decisions WHERE {where}) d "
+           f"LEFT JOIN spots s "
+           f"  ON s.hand_id = d.hand_id AND s.seat = d.seat "
+           f"ORDER BY d.played_at DESC")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = con.execute(sql).fetchall()
+    tagged = notes.tags_for(con, {r[0] for r in rows})
+    return [tuple(r) + (tagged.get(r[0], []),) for r in rows]
+
+
 def show_hands(con, where, label, limit=40, parts=()):
     """The hands themselves, most recent first."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
-    # The filter names bare columns, and `spots` shares several of them
-    # with `decisions` -- is_hero, position, combo -- so it is applied inside
-    # a subquery where there is only one table for a name to mean.
-    rows = con.execute(
-        f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site, d.bb, "
-        f"       d.position, d.combo, d.board, s.net_bb "
-        f"FROM (SELECT * FROM decisions WHERE {where}) d "
-        f"LEFT JOIN spots s "
-        f"  ON s.hand_id = d.hand_id AND s.seat = d.seat "
-        f"ORDER BY d.played_at DESC").fetchall()
+    rows = hands_of(con, where)
     print(f"{len(rows)} hands match; showing up to {limit}\n")
     if not rows:
         print("  " + why_empty(con, parts))
         return
     print(f"  {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
-          f"{'net bb':>7}  board")
-    print("  " + "-" * 74)
-    for hid, seat, when, site, bb, pos, combo, board, net in rows[:limit]:
+          f"{'net bb':>7}  {'hand id':16} board / tags")
+    print("  " + "-" * 96)
+    for hid, seat, when, site, bb, pos, combo, board, net, tags in rows[:limit]:
         print(f"  {when[:16]:17} {site:10} {bb or 0:5.2f} {pos or '?':4} "
               f"{combo or '--':5} {net if net is not None else 0:7.1f}  "
-              f"{board or ''}")
+              f"{hid:16} {board or ''}"
+              + (f"   [{', '.join(tags)}]" if tags else ""))
+    print("\n  mark one:  python notes.py --tag <hand id> <tag>     "
+          "your marked hands:  --hero --tag <tag>")
 
 
 def usage():
