@@ -1,7 +1,7 @@
-# poker_analysis
+# TraceEV
 
 A poker tracker built from scratch, over our own hand histories from
-**ACR** and **Ignition**.
+**PokerStars**, **ACR** and **Ignition**.
 
 Import hands, build a database, and ask it anything about any player or the
 pool, filtered any way you like. It never tells you what is *correct*. It

@@ -46,9 +46,9 @@ DIST = HERE / "dist"
 # and the bundle is the thing that opens without a terminal, so it is the
 # one named here.
 TARGETS = {
-    "Windows": ("poker_analysis.exe", "poker_analysis.exe"),
-    "Darwin": ("poker_analysis.app", "poker_analysis"),
-    "Linux": ("poker_analysis", "poker_analysis"),
+    "Windows": ("TraceEV.exe", "TraceEV.exe"),
+    "Darwin": ("TraceEV.app", "TraceEV"),
+    "Linux": ("TraceEV", "TraceEV"),
 }
 
 # Every module the app reaches at runtime. PyInstaller finds imports by
@@ -78,7 +78,7 @@ def build():
         # No console window behind the app. A GUI that drags a black
         # terminal around with it is the thing this was meant to stop.
         "--windowed",
-        "--name", "poker_analysis",
+        "--name", "TraceEV",
         "--distpath", str(DIST),
         "--workpath", str(HERE / "build"),
         "--specpath", str(HERE / "build"),

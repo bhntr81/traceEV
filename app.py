@@ -23,7 +23,7 @@ asserts the equality rather than trusting it.
     python app.py --debug     also print the log to the terminal
     python app.py --check   the window and the command line agree
 
-Anything that goes wrong is written to `poker_analysis.log` beside the
+Anything that goes wrong is written to `TraceEV.log` beside the
 program, including the failures Tk would otherwise swallow. `python diag.py`
 prints the end of it.
 
@@ -390,7 +390,7 @@ class ImportMixin:
     def show_version(self):
         where = "a packaged build" if getattr(sys, "frozen", False) else "source"
         messagebox.showinfo(
-            "poker_analysis",
+            "TraceEV",
             f"Running from {where}.\n\n"
             f"Commit: {update.head() or 'unknown'}\n"
             f"Repository: {update.remote_repo()}\n\n"
@@ -398,7 +398,7 @@ class ImportMixin:
 
     def show_log(self):
         win = tk.Toplevel(self.master)
-        win.title("poker_analysis.log")
+        win.title("TraceEV.log")
         win.configure(background=BG)
         win.geometry("900x560")
         text = tk.Text(win, background=BG, foreground=INK, borderwidth=0,
@@ -650,7 +650,7 @@ class App(ImportMixin, ttk.Frame):
     def _build(self):
         head = ttk.Frame(self)
         head.pack(fill="x", padx=18, pady=(12, 8))
-        ttk.Label(head, text="poker_analysis",
+        ttk.Label(head, text="TraceEV",
                   style="Title.TLabel").pack(side="left")
         self.sub = ttk.Label(head, text="", style="Dim.TLabel")
         self.sub.pack(side="left", padx=12)
@@ -2570,7 +2570,7 @@ def main(argv):
         print(f"no database at {DB} -- load some hands first")
         return 1
     root = tk.Tk()
-    root.title("poker_analysis")
+    root.title("TraceEV")
     root.geometry("1360x880")
     root.minsize(1050, 640)
     dark(root)

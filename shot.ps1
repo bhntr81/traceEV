@@ -18,7 +18,7 @@
 # checking that the target really is the foreground window. If it is not,
 # nothing is written at all: photographing the wrong window is worse than
 # photographing none, and that has now been demonstrated twice.
-param([string]$Out = "window.png", [string]$Title = "poker_analysis")
+param([string]$Out = "window.png", [string]$Title = "TraceEV")
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type @"
@@ -33,7 +33,7 @@ public class Shot {
 }
 "@
 
-$p = Get-Process pythonw, python, poker_analysis -ErrorAction SilentlyContinue |
+$p = Get-Process pythonw, python, TraceEV -ErrorAction SilentlyContinue |
      Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq $Title } |
      Select-Object -First 1
 if (-not $p) {

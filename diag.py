@@ -35,9 +35,9 @@ from pathlib import Path
 # rule the database follows, so the log sits where somebody would look.
 HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
         else Path(__file__).parent)
-LOG = HERE / "poker_analysis.log"
+LOG = HERE / "TraceEV.log"
 
-_log = logging.getLogger("poker_analysis")
+_log = logging.getLogger("TraceEV")
 _installed = False
 
 
@@ -116,7 +116,7 @@ def _show(root, value):
     try:
         from tkinter import messagebox
         messagebox.showerror(
-            "poker_analysis hit a problem",
+            "TraceEV hit a problem",
             f"{type(value).__name__}: {value}\n\n"
             f"The details are in:\n{LOG}\n\n"
             "The program is still running; what you just did did not finish.")

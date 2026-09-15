@@ -17,7 +17,7 @@ stats.json
 filters.json
 
 # runtime log
-poker_analysis.log*
+TraceEV.log*
 
 # screenshots taken while working on the window
 *.png

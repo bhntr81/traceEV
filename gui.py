@@ -201,7 +201,7 @@ def options(con):
 
 
 PAGE = r"""<!doctype html><html lang="en"><meta charset="utf-8">
-<title>poker_analysis</title>
+<title>TraceEV</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{
@@ -256,7 +256,7 @@ tr.click{cursor:pointer}
 .bar{height:5px;background:var(--accent);border-radius:3px;opacity:.5}
 </style>
 <header>
-  <h1>poker_analysis</h1>
+  <h1>TraceEV</h1>
   <span class="sub" id="sub">loading…</span>
 </header>
 <main>
@@ -681,7 +681,7 @@ def main(argv):
         return 1
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
-    print(f"poker_analysis  ->  {url}")
+    print(f"TraceEV  ->  {url}")
     print("ctrl-c to stop")
 
     threading.Timer(0.4, lambda: webbrowser.open(url)).start()

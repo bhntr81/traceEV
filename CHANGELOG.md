@@ -8,6 +8,17 @@ Newest first.
 
 ---
 
+## The program is TraceEV
+
+Everything that showed a name -- the window's title and heading, the
+crash log, the packaged build, the page `gui.py` serves, the two front
+documents -- says TraceEV now, which has been the repository's name on
+GitHub since it was made. The folder on the desktop is still
+`poker_analysis`; renaming it is a thing to do with every session closed,
+and the name inside it does not depend on it.
+
+---
+
 ## Table composition: which side of you the fish sits
 
 ### Added -- `fish_left`, `fish_right`, `reg_left`, `reg_right`

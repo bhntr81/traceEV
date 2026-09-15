@@ -1,7 +1,8 @@
-# poker_analysis
+# TraceEV
 
-A poker tracker over ACR and Ignition hand histories, built from
-scratch.
+A poker tracker over PokerStars, ACR and Ignition hand histories, built
+from scratch. The folder is still `Desktop/poker_analysis`; the program,
+the window, the log and the build are TraceEV.
 
 **Scope, and it is narrow on purpose: the tracking and filtering half of a
 Hand2Note. No HUD, no solver.** A tracker says what people do; a solver says
