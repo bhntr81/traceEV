@@ -43,6 +43,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import sqlite3
 
+import ask
 import diag
 import importer
 import players
@@ -234,6 +235,17 @@ def dark(root):
                     font=(UI, 8, "bold"))
     style.configure("Title.TLabel", background=BG, foreground=INK,
                     font=(UI, 11, "bold"))
+    # The subject line -- WHO the window is about -- is the largest text
+    # on it, because it was the hardest thing to find.
+    style.configure("Subject.TLabel", background=BG, foreground=INK,
+                    font=(UI, 15, "bold"))
+    style.configure("Warn.TLabel", background=BG, foreground=WARN,
+                    font=(UI, 10, "bold"))
+    style.configure("On.TButton", background=ACCENT, foreground="#08111f",
+                    font=(UI, 11, "bold"), padding=(14, 6))
+    style.map("On.TButton", background=[("active", "#5ea6ff")])
+    style.configure("Off.TButton", background=PANEL, foreground=DIM,
+                    font=(UI, 11), padding=(14, 6))
     style.configure("TCheckbutton", background=BG, foreground=DIM)
     style.map("TCheckbutton",
               foreground=[("selected", ACCENT), ("active", INK)],
@@ -552,7 +564,8 @@ class App(ImportMixin, ttk.Frame):
         self.multi = {"pos": set(), "vs": set(), "street": set(),
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
-                      "sd": set(), "turn_card": set(), "river_card": set()}
+                      "sd": set(), "turn_card": set(), "river_card": set(),
+                      "facing": set()}
         # The filter's values live here rather than on the widgets, because
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
@@ -659,6 +672,32 @@ class App(ImportMixin, ttk.Frame):
         self.status = ttk.Label(head, text="", style="Dim.TLabel")
         self.status.pack(side="right")
 
+        # WHO the window is about, before anything else. This was the last
+        # heading on the last page of the filter dialog, and nothing on the
+        # window said which was chosen -- the first thing a person needs to
+        # know, found by reading a dim line under a button. Now it is two
+        # buttons and a headline: ME, THE POOL, and the site, because a pool
+        # with no site is three games averaged into one number.
+        who = ttk.Frame(self)
+        who.pack(fill="x", padx=18, pady=(0, 6))
+        ttk.Label(who, text="looking at", style="Dim.TLabel").pack(
+            side="left", padx=(0, 10))
+        self.me_btn = ttk.Button(who, text="ME", command=lambda: self.set_who("--hero"))
+        self.me_btn.pack(side="left")
+        self.pool_btn = ttk.Button(who, text="THE POOL",
+                                   command=lambda: self.set_who("--pool"))
+        self.pool_btn.pack(side="left", padx=(4, 0))
+        ttk.Label(who, text="on", style="Dim.TLabel").pack(side="left", padx=(16, 6))
+        self.site_box = ttk.Combobox(who, textvariable=self.vals["site"],
+                                     values=["any site"], state="readonly",
+                                     width=14)
+        self.site_box.pack(side="left")
+        self.site_box.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
+        self.subject = ttk.Label(who, text="", style="Subject.TLabel")
+        self.subject.pack(side="left", padx=(24, 0))
+        self.subject_note = ttk.Label(who, text="", style="Warn.TLabel")
+        self.subject_note.pack(side="left", padx=(12, 0))
+
         # The filter lives behind a button rather than down the side. A rail
         # wide enough for every filter this database supports is a rail that
         # leaves no room for the answer, and the filter is looked at far less
@@ -683,14 +722,56 @@ class App(ImportMixin, ttk.Frame):
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
+        ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
         ttk.Separator(self).pack(fill="x")
 
-        right = ttk.Frame(self)
-        right.pack(fill="both", expand=True)
+        # The answer on the left, the assistant on the right when it is
+        # open. A panel rather than a window, because the point is to ask
+        # about what is on screen and read the answer beside it.
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True)
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True)
         self._views(right)
+        self.ask_panel = AskPanel(body, self)
 
     def open_filters(self):
         FilterDialog(self)
+
+    def toggle_ask(self):
+        self.ask_panel.toggle()
+
+    def set_who(self, flag):
+        """
+        ME or THE POOL, from the buttons. Pressing the lit one turns both
+        off, which is "everyone" -- me and the pool together -- and the
+        headline says so, since that is rarely what anybody means.
+        """
+        twin = OPPOSITES[flag]
+        if self.flags[flag].get():
+            self.flags[flag].set(False)
+        else:
+            self.flags[flag].set(True)
+            self.flags[twin].set(False)
+        self.refresh()
+
+    def paint_subject(self):
+        """The headline, and which button is lit, from the filter's state."""
+        me, pool = self.flags["--hero"].get(), self.flags["--pool"].get()
+        self.me_btn.configure(style="On.TButton" if me else "Off.TButton")
+        self.pool_btn.configure(style="On.TButton" if pool else "Off.TButton")
+        site = self.vals["site"].get().strip()
+        if not site or site.startswith("any "):
+            site = ""
+        subject = "ME" if me else "THE POOL" if pool else "EVERYONE"
+        self.subject.configure(text=subject + (f"  ·  {site}" if site else
+                                               "  ·  all sites"))
+        note = ""
+        if pool and not site:
+            note = "pick a site -- three sites are three different games"
+        elif not me and not pool:
+            note = "me and the pool together; pick one"
+        self.subject_note.configure(text=note)
 
     def clear_filters(self):
         for v in self.flags.values():
@@ -823,7 +904,8 @@ class App(ImportMixin, ttk.Frame):
                             ("made", "--made"), ("kicker", "--kicker"),
                             ("fd", "--fd"), ("sd", "--sd"),
                             ("turn_card", "--turn-card"),
-                            ("river_card", "--river-card")):
+                            ("river_card", "--river-card"),
+                            ("facing", "--facing")):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
         for name, flag in (("site", "--site"), ("stake", "--stake"),
@@ -850,6 +932,70 @@ class App(ImportMixin, ttk.Frame):
         return argv
 
 
+    # Which box each value flag fills, the inverse of the table in `argv`.
+    MULTI_OF = {"--pos": "pos", "--vs": "vs", "--street": "street",
+                "--pot": "pot", "--board": "board", "--quick": "quick",
+                "--made": "made", "--kicker": "kicker", "--fd": "fd",
+                "--sd": "sd", "--turn-card": "turn_card",
+                "--river-card": "river_card", "--facing": "facing"}
+    VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
+              "--deep": "deep", "--short": "short", "--since": "since",
+              "--until": "until", "--where": "where", "--line": "line",
+              "--node": "node", "--pre": "pre", "--flop": "flop",
+              "--turn": "turn", "--river": "river", "--hour": "hour",
+              "--weekday": "weekday", "--session-len": "session_len",
+              "--session-min": "session_min", "--tables": "tables",
+              "--tag": "tag"}
+    TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
+              "--range": "range", "--chart": "chart", "--sessions": "sessions",
+              "--graph": "graph"}
+
+    def apply_argv(self, argv):
+        """
+        A command line, into the window's own boxes -- the inverse of `argv`.
+
+        This is what makes the assistant's answer a starting point rather
+        than a dead end: the flags it ran become the window's filter, the
+        tab it implied is selected, and every view shows the same hands
+        the answer was about. Flags the window has no box for (`--show`,
+        `--min`, a cohort) are dropped, and the summary line beneath the
+        bar shows what was kept.
+        """
+        self.clear_filters()
+        tab, argv = "stats", list(argv)
+        i = 0
+        while i < len(argv):
+            a = argv[i]
+            if a in self.TAB_OF:
+                tab = self.TAB_OF[a]
+                i += 1
+            elif a in self.flags:
+                self.flags[a].set(True)
+                twin = OPPOSITES.get(a)
+                if twin:
+                    self.flags[twin].set(False)
+                i += 1
+            elif a in self.MULTI_OF and i + 1 < len(argv):
+                self.multi[self.MULTI_OF[a]] = set(argv[i + 1].split(","))
+                i += 2
+            elif a in self.VAL_OF and i + 1 < len(argv):
+                self.vals[self.VAL_OF[a]].set(argv[i + 1])
+                i += 2
+            elif a == "--by" and i + 1 < len(argv):
+                if argv[i + 1] in query.DIMENSIONS:
+                    self.by.set(argv[i + 1])
+                    if tab == "stats":
+                        tab = "report"
+                i += 2
+            elif a in query.OPTIONS and i + 1 < len(argv):
+                i += 2                    # --show, --min: no box for these
+            else:
+                i += 1
+        for name, frame in self.tabs.items():
+            if name == tab:
+                self.nb.select(frame)
+        self.refresh()
+
     def refresh(self):
         view = self.nb.tab(self.nb.select(), "text") if self.tabs else "stats"
         if view in ("report", "results"):
@@ -873,6 +1019,7 @@ class App(ImportMixin, ttk.Frame):
             return
         diag.event("refresh", view=view, filter=label)
         self.filter_line.configure(text="filter: " + label)
+        self.paint_subject()
         self.summary.configure(text=self.describe_filter())
         if self.argv():
             self.clear_btn.pack(side="left", padx=(6, 0))
@@ -1362,6 +1509,9 @@ class App(ImportMixin, ttk.Frame):
         hands = self.con.execute("SELECT COUNT(*) FROM hands").fetchone()[0]
         self.sub.configure(
             text=f"{' · '.join(self.options['sites'])}   {hands:,} hands")
+        self.site_box.configure(values=["any site"] + self.options["sites"])
+        if not self.vals["site"].get():
+            self.vals["site"].set("any site")
 
     def describe_filter(self):
         """The active filter as a sentence, for the bar above the answer."""
@@ -1923,6 +2073,10 @@ class FilterDialog(tk.Toplevel):
     # ---- the tabs ------------------------------------------------------
     def _quick_tab(self, nb):
         page = self._page(nb, "Quick Filters")
+        self._heading(page, "who is being measured")
+        self._grid(page, [(lambda parent, f=f, t=t: self._pick(
+            parent, t, *self._flag_item(f)))
+            for f, t in (("--hero", "me"), ("--pool", "the pool"))])
         by_group = {}
         for f in query.quick_filters():
             by_group.setdefault(f["group"], []).append(f)
@@ -1945,11 +2099,6 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "and that opponent is")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in VS_SIDE])
-        self._heading(page, "who is being measured")
-        self._grid(page, [(lambda parent, f=f, t=t: self._pick(
-            parent, t, *self._flag_item(f)))
-            for f, t in (("--hero", "me"), ("--pool", "the pool"))])
-
         self._heading(page, "what kind of player")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in WHO])
@@ -1977,6 +2126,13 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "situation")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in SITUATIONS])
+        # What the player is looking at when they act. "Facing a bet" is
+        # the shape of most river questions and the window could not ask
+        # it: the flag existed on the command line and had no box here, so
+        # the assistant's answers lost it on the way into the window.
+        self._heading(page, "facing  (what is in front of the player when they act)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._set_item("facing", v))) for v in query.FACINGS])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -2211,6 +2367,124 @@ class FilterDialog(tk.Toplevel):
         FilterDialog(self.app)
 
 
+class AskPanel(ttk.Frame):
+    """
+    A chat with the database, docked on the right.
+
+    Every answer is the engine's: the assistant turns the sentence into
+    `query.py` flags and runs them, and what comes back carries the n and
+    the interval exactly as the stats tab would show it. The command it
+    ran is printed under the answer, and RUN IT puts those flags into the
+    window -- so the answer is not the end of the question, it is a filter
+    you can keep working with.
+
+    The call runs on a thread, since it takes a while and the window must
+    not freeze; the reply is handed back through `after`, because Tk is
+    single-threaded and a widget touched from another thread is a crash
+    that looks like a click doing nothing.
+    """
+
+    def __init__(self, master, app):
+        super().__init__(master, width=420)
+        self.app = app
+        self.history = []
+        self.last_ran = []
+        self.shown = False
+
+        head = ttk.Frame(self)
+        head.pack(fill="x", padx=10, pady=(10, 4))
+        ttk.Label(head, text="ask the database", style="Title.TLabel").pack(side="left")
+        ttk.Button(head, text="×", width=3, command=self.toggle).pack(side="right")
+        self.log = tk.Text(self, background=PANEL, foreground=INK, borderwidth=0,
+                           font=(UI, 10), wrap="word", padx=10, pady=8,
+                           insertbackground=INK, state="disabled")
+        self.log.pack(fill="both", expand=True, padx=10)
+        for name, colour in (("you", ACCENT), ("dim", DIM), ("bad", BAD)):
+            self.log.tag_configure(name, foreground=colour)
+        self.log.tag_configure("mono", font=(MONO, 9))
+        self.run_btn = ttk.Button(self, text="run it in the window",
+                                  command=self.run_last)
+        self.entry = tk.Text(self, height=3, background=BG, foreground=INK,
+                             insertbackground=INK, font=(UI, 10), wrap="word",
+                             borderwidth=1)
+        self.entry.pack(fill="x", padx=10, pady=(6, 4))
+        self.entry.bind("<Return>", self._enter)
+        self.entry.bind("<Shift-Return>", lambda e: None)
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(row, text="ask", style="Accent.TButton",
+                   command=self.send).pack(side="left")
+        self.busy = ttk.Label(row, text="", style="Dim.TLabel")
+        self.busy.pack(side="left", padx=10)
+        self._say("Ask in English: \"how often does the pool fold to a river "
+                  "bet in 3bet pots, SB vs BTN, B-B-B?\" -- every number in "
+                  "the answer comes from a query the program ran, shown "
+                  "underneath.", "dim")
+
+    def toggle(self):
+        if self.shown:
+            self.pack_forget()
+        else:
+            self.pack(side="right", fill="y")
+            self.pack_propagate(False)
+            self.entry.focus_set()
+        self.shown = not self.shown
+
+    def _enter(self, _event):
+        self.send()
+        return "break"
+
+    def _say(self, text, tag=None):
+        self.log.configure(state="normal")
+        self.log.insert("end", text + "\n\n", tag or ())
+        self.log.configure(state="disabled")
+        self.log.see("end")
+
+    def send(self):
+        question = self.entry.get("1.0", "end").strip()
+        if not question:
+            return
+        self.entry.delete("1.0", "end")
+        self._say(question, "you")
+        self.busy.configure(text="asking…")
+        self.run_btn.pack_forget()
+        history = list(self.history)
+
+        def work():
+            try:
+                answer, ran, transcript, who = ask.ask(question, history=history)
+                self.after(0, lambda: self._answered(answer, ran, transcript, who))
+            except Exception as e:
+                self.after(0, lambda: self._failed(str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _answered(self, answer, ran, transcript, who):
+        # Who answered is shown because it is not always who was asked:
+        # `ask.ask` falls through to the next provider with a key when the
+        # chosen one is out of credit or overloaded, and an answer from
+        # Claude Code labelled as Gemini's would be a mystery the next time
+        # Gemini was asked directly.
+        self.busy.configure(text="")
+        self._say(answer)
+        self._say(f"(answered by {ask.who_label(who)})", "mono")
+        if ran:
+            self._say("\n".join("ran: python query.py " + " ".join(a) for a in ran),
+                      "mono")
+            self.last_ran = ran[-1]
+            self.run_btn.pack(fill="x", padx=10, pady=(0, 4))
+        self.history = transcript
+
+    def _failed(self, message):
+        self.busy.configure(text="")
+        self._say(message, "bad")
+
+    def run_last(self):
+        """The last query's flags, into the window's own filter."""
+        if not self.last_ran:
+            return
+        self.app.apply_argv(self.last_ran)
+
+
 class HandWindow(tk.Toplevel):
     """
     One hand, replayed in a window of its own -- and where it gets marked.
@@ -2401,6 +2675,10 @@ def check(db_path=DB):
         # A marked hand, by the word it was marked with.
         ({"flags": ["--hero"], "vals": {"tag": "review,cooler"}},
          ["--hero", "--tag", "review,cooler"]),
+        # What the player is facing, which the window could not ask until
+        # the assistant's answers lost it on the way in.
+        ({"flags": ["--pool"], "street": ["river"], "facing": ["bet"]},
+         ["--pool", "--street", "river", "--facing", "bet"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
@@ -2416,6 +2694,31 @@ def check(db_path=DB):
     print(f"window and command line agree  {len(cases) - len(fails)}/{len(cases)}")
     for f in fails:
         print(f"    {f}")
+
+    # And back the other way: a command line the assistant ran, put into
+    # the window, must come out as the same filter -- that is what "run it
+    # in the window" promises. Reporting options have no box and are
+    # dropped; everything that selects hands must survive.
+    round_trips = [
+        ["--pool", "--site", "pokerstars", "--pot", "3bet", "--pos", "BTN",
+         "--vs", "SB", "--flop", "BC", "--turn", "BC", "--street", "river",
+         "--facing", "bet", "--show", "fold_to_river_bet"],
+        ["--hero", "--fish-right", "--results"],
+        ["--hero", "--pot", "raised", "--street", "flop", "--board", "mono",
+         "--by", "position"],
+    ]
+    lost = []
+    for argv in round_trips:
+        app.apply_argv(argv)
+        a, _la, _pa = query.build(app.argv())
+        keep = [x for x in argv if x not in ("--results", "--stats", "--hands")]
+        b, _lb, _pb = query.build(keep)
+        if sorted(a.split(" AND ")) != sorted(b.split(" AND ")):
+            lost.append(f"{' '.join(argv)} -> {a!r}, wanted {b!r}")
+    print(f"a command line survives the window  {len(round_trips) - len(lost)}/{len(round_trips)}")
+    for l in lost:
+        fails.append(l)
+        print(f"    {l}")
 
     # Every view must build its rows without raising, including on a filter
     # that matches nothing -- which is one click away at all times.

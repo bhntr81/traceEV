@@ -43,6 +43,7 @@ CHECKS = [
     ("gui", "the page and the command line build the same filter"),
     ("population", "pool findings survive being split in half"),
     ("notes", "marked hands and player notes: round trips, and nothing rebuilds them away"),
+    ("ask", "the assistant's vocabulary covers every flag, and its tool only reads"),
 ]
 
 

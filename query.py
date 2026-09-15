@@ -1560,7 +1560,12 @@ def show_report(con, where, label, dim, columns, min_n=30):
 
     stats = [BY_KEY[c] for c in columns]
     grid = {s.key: rates_by(con, s, expr, where) for s in stats}
-    counts = rates_by(con, BY_KEY["vpip"], expr, where)
+    # The row's n is the first column's denominator, not VPIP's. VPIP counts
+    # preflop decisions, and a filter that begins at the turn has none:
+    # `--street turn --facing bet --by texture` printed a fold rate on every
+    # row over "n=0", and the assistant reading it reported the table as
+    # broken. The first column is the one `--show` named -- the question.
+    counts = grid[columns[0]]
     keys = sorted({k for g in grid.values() for k in g},
                   key=lambda k: order(k) if k is not None else "")
     if not keys:
@@ -1586,7 +1591,7 @@ def show_report(con, where, label, dim, columns, min_n=30):
     # The denominators, on their own line rather than beside every cell:
     # a percentage without its n is not a number anybody should act on, and
     # a table with n beside every cell is a table nobody can read.
-    print("\n  chances behind each row (VPIP's denominator):")
+    print(f"\n  chances behind each row ({stats[0].label}'s denominator):")
     for k in keys:
         n = counts.get(k, (0, 0))[0]
         print(f"    {str(k)[:width - 1]:<{width}} n={n}")
