@@ -95,9 +95,13 @@ Stat("probe_turn", "probe turn",
 ```
 
 **Do not write a new module and do not write SQL anywhere else.** Six
-modules already hardcode their own queries; that is the mistake this design
-exists to stop, and the measure of success is that their number goes *down*
-while the number of answerable questions goes up.
+modules once hardcoded their own queries; that was the mistake this design
+exists to stop, the last of them came off the engine's numbers on 14 Sep
+2026, and the measure of success is that the count stays at zero while the
+number of answerable questions goes up. A report with its own SQL drifts
+from every other view the first time a definition changes -- which is how
+`population.py` printed a wrong cbet rate for a week after the engine's own
+check had recorded the defect.
 
 If a stat cannot be expressed as two filters over `decisions`, the missing
 thing is a **column on `decisions`**, not a script. Add it there, rebuild,
@@ -206,7 +210,8 @@ and they are the ones that bind hardest here:
 - **`AppropriateComplexity`** — minimum necessary complexity, over- and
   under-engineering equally wrong.
 - **`PurityAndCleanliness`** — remove what you replace, in the same change.
-  Six modules still hardcode their own SQL; retiring them is the measure.
+  Six modules once hardcoded their own SQL; none do now, and keeping it
+  that way is the measure.
 - **`Consistency`** — the surrounding code is the spec.
 
 `ROADMAP.md` is the run log. Every run records the goal **set beforehand**

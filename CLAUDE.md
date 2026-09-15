@@ -229,11 +229,13 @@ Facts that stay true, and that have each been got wrong at least once:
 ## Adding a stat
 
 Add a `Stat(...)` to the registry in `stats.py`. Do not write a new module
-and do not write SQL elsewhere -- six modules already hardcode their own
-queries and that is the mistake this design exists to end. Per
-`AppropriateComplexity` and `PurityAndCleanliness`, the measure of progress
-is that their number goes **down** while the number of answerable questions
-goes up.
+and do not write SQL elsewhere -- six modules once hardcoded their own
+queries, the last of them (`population.py`) came off on 14 Sep 2026, and
+the number is zero. The cost of the old way was not tidiness: that module
+printed a cbet rate from a column the engine's check had recorded as wrong
+for a week. Per `AppropriateComplexity` and `PurityAndCleanliness`, the
+measure of progress is that the number stays at zero while the number of
+answerable questions goes up.
 
 If a stat cannot be expressed as two filters over `decisions`, the missing
 thing is a **column on `decisions`**, not a script.

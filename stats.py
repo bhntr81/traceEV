@@ -105,6 +105,10 @@ STATS = [
          "AND position NOT IN ('SB','BB')",
          "action IN ('C','A')", group="preflop",
          note="calling a raise cold -- first action, and not from a blind"),
+    Stat("call_open", "call vs open", "street='preflop' AND facing='open'",
+         "action IN ('C','A')", group="preflop",
+         note="calling a raise from any seat, blinds included -- the pool "
+              "leak map's line, which `coldcall` is too strict for"),
     Stat("squeeze", "squeeze",
          "street='preflop' AND facing='open' AND n_live>=4 AND pot_bb>4",
          "agg=1", group="preflop",
@@ -443,6 +447,23 @@ def wilson(k, n, z=1.96):
     centre = (p + z * z / (2 * n)) / d
     half = z * sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
     return p, max(0.0, centre - half), min(1.0, centre + half)
+
+
+def split_point(con, where="1=1", table="decisions"):
+    """
+    The moment that divides a filter's rows in half by time, or None.
+
+    Split-half is the rule for any population finding, and splitting by
+    DATE rather than at random is the harder test: a random split shares
+    tables and opponents between the halves, so a quirk of one table shows
+    up in both and looks like a population truth. Rows before the point are
+    half A, from it on are half B.
+    """
+    row = con.execute(
+        f"SELECT played_at FROM {table} WHERE {where} ORDER BY played_at "
+        f"LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM {table} WHERE {where})"
+    ).fetchone()
+    return row[0] if row else None
 
 
 def rate(con, stat, where="1=1", params=()):

@@ -15,6 +15,14 @@ fictions, so every line is recomputed on the first half of the sessions and
 the second half separately, and only the ones that agree are reported as
 real. `--check` prints that count against the goal.
 
+Every number comes from the stat engine: a spot is a registry key, a rate
+is `stats.rate`, the money is `query.results_of`, the chart is
+`query.chart_of`. This module had its own SQL over `spots` until 14 Sep
+2026, the last of six that did, and the cost was not tidiness: its cbet
+rate came from a column that gave the raiser a cbet chance when they had
+been bet into, a defect the engine's check had recorded against that
+column for a week while this report went on printing it.
+
 Tournaments are left out of everything involving money: MTT stacks are
 tournament chips, and adding them to dollars gives a pool that appears to
 have lost seventy thousand.
@@ -27,38 +35,43 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import query
 import sites
+import stats
 
 DB = Path(__file__).parent / "hands.db"
 
 # The pool, as opposed to hero: cash ring games of a size where the position
 # names mean what they usually mean.
 #
-# Ignition only, and that is not a default -- it is the premise. Everything
-# below counts the combos the pool folded, which can only be done on a site
-# that shows folded hands. ACR shows 23% of them. Loading it made
-# `fmt='RING'` match both sites, and this filter silently went from a pool
-# with 100% of its hole cards to one with 33%, which would have quietly
-# rewritten every revealed range in this module.
+# The revealing sites only, and that is not a default -- it is the premise.
+# Everything below counts the combos the pool folded, which can only be
+# done on a site that shows folded hands. ACR shows 23% of them. Loading it
+# made `fmt='RING'` match both sites, and this filter silently went from a
+# pool with 100% of its hole cards to one with 33%, which would have
+# quietly rewritten every revealed range in this module.
 POOL = f"is_hero=0 AND fmt='RING' AND n_players>=5 AND {sites.sql_in(sites.revealing())}"
 
 POSITIONS = ("UTG", "HJ", "CO", "BTN", "SB", "BB")
 RANKS = "AKQJT98765432"
 
-# Each spot is the chance to do something and the doing of it, so a rate is
-# always "of the times this was available". Counting 3-bets per hand dealt
-# instead of per chance to 3-bet is how a tight table looks like a passive one.
+# Each spot is a registry key, so a rate is always "of the times this was
+# available" as the engine defines it -- and the same figure `query.py
+# --pool` prints for the same filter. Counting 3-bets per hand dealt
+# instead of per chance to 3-bet is how a tight table looks like a passive
+# one; "call vs open" rather than `coldcall` because the leak map wants
+# every seat that called a raise, blinds included.
 SPOTS = [
-    ("open (RFI)",        "rfi_chance",     "rfi"),
-    ("limp",              "rfi_chance",     "limped"),
-    ("3bet",              "threebet_chance", "threebet"),
-    ("cold call",         "threebet_chance", "cold_call"),
-    ("fold to 3bet",      "faced_threebet", "fold_to_threebet"),
-    ("4bet",              "faced_threebet", "fourbet"),
-    ("fold to steal",     "faced_steal",    "fold_to_steal"),
-    ("cbet flop",         "cbet_chance",    "cbet"),
-    ("fold to cbet",      "faced_cbet",     "fold_to_cbet"),
-    ("raise cbet",        "faced_cbet",     "raised_cbet"),
+    ("open (RFI)",    "rfi"),
+    ("limp",          "limp"),
+    ("3bet",          "threebet"),
+    ("call vs open",  "call_open"),
+    ("fold to 3bet",  "fold_to_3bet"),
+    ("4bet",          "fourbet"),
+    ("fold to steal", "fold_to_steal"),
+    ("cbet flop",     "cbet_flop"),
+    ("fold to cbet",  "fold_to_cbet"),
+    ("raise cbet",    "raise_cbet"),
 ]
 
 # A rate on a handful of chances is not a read. Both halves must clear this
@@ -70,40 +83,18 @@ TOLERANCE = 8.0
 GOAL = 5                # findings that must survive, for the run to pass
 
 
-def halves(con):
-    """
-    The session split in two by time.
-
-    Splitting by date rather than at random is the harder test: a random
-    split shares tables and opponents between the halves, so a quirk of one
-    table shows up in both and looks like a population truth.
-    """
-    cut = con.execute(
-        "SELECT played_at FROM spots WHERE {} ORDER BY played_at "
-        "LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM spots WHERE {})"
-        .format(POOL, POOL)).fetchone()
-    return cut[0] if cut else None
-
-
-def rate(con, chance, action, where="", cut=None, half=None):
+def rate(con, key, where="", cut=None, half=None):
     """How often the action was taken, of the times it was available."""
-    sql = ("SELECT SUM({}), SUM({}) FROM spots WHERE {} AND {}=1"
-           .format(action, chance, POOL, chance))
-    args = []
-    if where:
-        sql += " AND " + where
+    clause = POOL + (" AND " + where if where else "")
     if half == "A":
-        sql += " AND played_at < ?"
-        args.append(cut)
+        clause += f" AND played_at < '{cut}'"
     elif half == "B":
-        sql += " AND played_at >= ?"
-        args.append(cut)
-    got, tot = con.execute(sql, args).fetchone()
-    got, tot = got or 0, tot or 0
-    return tot, (100.0 * got / tot if tot else 0.0)
+        clause += f" AND played_at >= '{cut}'"
+    n, _k, p, _lo, _hi = stats.rate(con, key, clause)
+    return n, 100.0 * (p or 0.0)          # p is None when nothing was seen
 
 
-def money(con, chance, action, taken, where=""):
+def money(con, key, taken, where=""):
     """
     bb/100 for the players who did, or did not, take the line, and its error.
 
@@ -118,28 +109,22 @@ def money(con, chance, action, taken, where=""):
     reads exactly like a discovery. Returned as one standard error; a figure
     is only worth repeating at two of them or more.
     """
-    sql = ("SELECT COUNT(net_bb), AVG(net_bb), "
-           "AVG(net_bb*net_bb) - AVG(net_bb)*AVG(net_bb) "
-           "FROM spots WHERE {} AND {}=1 AND {}={}"
-           .format(POOL, chance, action, 1 if taken else 0))
+    stat = stats.BY_KEY[key]
+    did = stat.action if taken else f"NOT ({stat.action})"
+    clause = f"({stat.chance}) AND ({did}) AND {POOL}"
     if where:
-        sql += " AND " + where
-    n, mean, var = con.execute(sql).fetchone()
-    if not n or mean is None:
+        clause += " AND " + where
+    got = query.results_of(con, query.matching_seats(con, clause))
+    if not got:
         return 0, 0.0, 0.0
-    # Sample variance from the population one, so a small n is not flattered.
-    var = (var or 0.0) * n / (n - 1) if n > 1 else 0.0
-    return n, 100.0 * mean, 100.0 * (var ** 0.5) / (n ** 0.5)
+    return got["hands"], got["bb100"], got["error"]
 
 
-def grid(con, chance, action, where=""):
+def grid(con, key, where=""):
     """The 13x13 chart: how often each combo takes the action."""
-    sql = ("SELECT combo, SUM({}), COUNT(*) FROM spots WHERE {} AND {}=1 "
-           "AND combo IS NOT NULL".format(action, POOL, chance))
-    if where:
-        sql += " AND " + where
-    sql += " GROUP BY combo"
-    return {c: (got or 0, tot) for c, got, tot in con.execute(sql)}
+    clause = POOL + (" AND " + where if where else "")
+    cells = query.chart_of(con, clause, key)["cells"]
+    return {c: (k or 0, n) for c, (n, k) in cells.items()}
 
 
 def print_grid(cells, min_n=3):
@@ -167,7 +152,6 @@ def print_grid(cells, min_n=3):
 
 def report(db_path=DB):
     con = sqlite3.connect(db_path)
-    cut = halves(con)
 
     print("=" * 68)
     print("POOL LEAK MAP -- ring cash, 5-6 handed, hero excluded")
@@ -175,13 +159,13 @@ def report(db_path=DB):
     print("\n{:16} {:5} {:>7} {:>6}   {:>18}".format(
         "spot", "pos", "chances", "freq", "bb/100 when taken"))
     rows = []
-    for label, chance, action in SPOTS:
+    for label, key in SPOTS:
         for pos in POSITIONS:
             where = "position='{}'".format(pos)
-            n, r = rate(con, chance, action, where)
+            n, r = rate(con, key, where)
             if n < 60:
                 continue
-            n_did, bb_did, se_did = money(con, chance, action, True, where)
+            n_did, bb_did, se_did = money(con, key, True, where)
             rows.append((label, pos, n, r, n_did, bb_did, se_did))
     for label, pos, n, r, n_did, bb_did, se_did in rows:
         print("{:16} {:5} {:7d} {:5.1f}%   {:+9.0f} +/- {:<5.0f} {}".format(
@@ -213,30 +197,30 @@ def report(db_path=DB):
     print("\n" + "=" * 68)
     print("REVEALED RANGES -- the combos the pool actually holds")
     print("=" * 68)
-    for title, chance, action, where in (
-            ("BTN opens, folded to them", "rfi_chance", "rfi", "position='BTN'"),
-            ("BB folds to a steal", "faced_steal", "fold_to_steal", "position='BB'"),
-            ("anyone 3bets", "threebet_chance", "threebet", ""),
-            ("anyone cold calls a raise", "threebet_chance", "cold_call", "")):
+    for title, key, where in (
+            ("BTN opens, folded to them", "rfi", "position='BTN'"),
+            ("BB folds to a steal", "fold_to_steal", "position='BB'"),
+            ("anyone 3bets", "threebet", ""),
+            ("anyone calls a raise", "call_open", "")):
         print("\n{}  (% of times dealt that combo)".format(title))
-        print_grid(grid(con, chance, action, where))
+        print_grid(grid(con, key, where))
     con.close()
 
 
 def check(db_path=DB):
     """Every line, split in two by time. Only the ones that agree count."""
     con = sqlite3.connect(db_path)
-    cut = halves(con)
+    cut = stats.split_point(con, POOL)
     print("split at {}\n".format(cut))
     print("{:16} {:5} {:>6} {:>6} {:>7} {:>7}  {}".format(
         "spot", "pos", "n A", "n B", "rate A", "rate B", "verdict"))
 
     survived = 0
-    for label, chance, action in SPOTS:
+    for label, key in SPOTS:
         for pos in POSITIONS:
             where = "position='{}'".format(pos)
-            n_a, r_a = rate(con, chance, action, where, cut, "A")
-            n_b, r_b = rate(con, chance, action, where, cut, "B")
+            n_a, r_a = rate(con, key, where, cut, "A")
+            n_b, r_b = rate(con, key, where, cut, "B")
             if n_a < MIN_HALF or n_b < MIN_HALF:
                 continue
             ok = abs(r_a - r_b) <= TOLERANCE
@@ -253,6 +237,9 @@ def check(db_path=DB):
 
 if __name__ == "__main__":
     if "--check" in sys.argv:
-        check()
+        # The verdict is the exit code, so `check.py` can read it. It
+        # never was: this check printed FAIL and returned success, and the
+        # suite would have stayed green through a pool that fell apart.
+        sys.exit(0 if check() >= GOAL else 1)
     else:
         report()

@@ -1652,17 +1652,25 @@ def select_cohort(con, spec):
 def results_of(con, pairs):
     """The money over a set of (hand, seat) pairs, tournaments excluded."""
     select_into(con, pairs)
-    n, net_bb, money, saw, wtsd, wwsf = con.execute(
+    n, net_bb, money, saw, wtsd, wwsf, mean, msq = con.execute(
         "SELECT COUNT(*), SUM(s.net_bb), SUM(s.won - s.put_in), "
-        "       SUM(s.saw_flop), SUM(s.wtsd), SUM(s.wwsf) "
+        "       SUM(s.saw_flop), SUM(s.wtsd), SUM(s.wwsf), "
+        "       AVG(s.net_bb), AVG(s.net_bb * s.net_bb) "
         "FROM spots s JOIN _sel ON _sel.hand_id = s.hand_id "
         "AND _sel.seat = s.seat WHERE s.fmt <> 'MTT'").fetchone()
     if not n:
         return None
+    # The error on bb/100 is measured from these hands rather than taken
+    # as 1170/sqrt(n), which assumed every spot's hand has an 11.7bb
+    # standard deviation. A line that is always a fold has almost none; a
+    # line that is always a shove has three times that; and the leak map
+    # sorts lines by whether their loss clears this bar, so the bar has to
+    # be the line's own. Sample variance, so a small n is not flattered.
+    var = ((msq or 0.0) - (mean or 0.0) ** 2) * n / (n - 1) if n > 1 else 0.0
     return {"hands": n, "net_bb": net_bb or 0.0, "money": money or 0.0,
             "saw_flop": saw or 0, "wtsd": wtsd or 0, "wwsf": wwsf or 0,
             "bb100": 100 * (net_bb or 0.0) / n,
-            "error": 1170 / n ** 0.5}
+            "error": 100 * max(var, 0.0) ** 0.5 / n ** 0.5 if n > 1 else 1170 / n ** 0.5}
 
 
 def show_results(con, where, label, parts=()):
@@ -1690,10 +1698,11 @@ def show_results(con, where, label, parts=()):
     print(f"  net              {net_bb or 0:+8.1f} bb   (${money or 0:+.2f})")
     print(f"  per 100 hands    {100 * (net_bb or 0) / n:+8.1f} bb/100")
     # A win rate over a few hundred hands is noise wearing a number's
-    # clothing: one hand's result has a standard deviation around 11.7bb, so
-    # the error on bb/100 is 1170/sqrt(n) and it is usually larger than
-    # anything being compared.
-    print(f"  error on that    {1170 / max(1, n) ** 0.5:8.0f} bb/100"
+    # clothing: one hand's result has a standard deviation around 11.7bb,
+    # so the error on bb/100 is of the order of 1170/sqrt(n) -- measured
+    # here from these hands -- and it is usually larger than anything
+    # being compared.
+    print(f"  error on that    {got['error']:8.0f} bb/100"
           f"   <- and this is why")
     if saw:
         print(f"  saw a flop       {saw:8d}   ({100 * saw / n:.1f}%)")

@@ -8,6 +8,48 @@ Newest first.
 
 ---
 
+## The pool report onto the engine, and the last hardcoded module is gone
+
+`population.py` was the sixth and last module with its own SQL. Every
+number in it now comes from the engine: a spot is a registry key, a rate
+is `stats.rate`, the money is `query.results_of` over `matching_seats`,
+the chart is `query.chart_of`, and the split-half cut is
+`stats.split_point`. The module contains no query.
+
+### What it cost to have been separate
+
+Its cbet rate came from `spots.cbet_chance`, a column that gives the
+raiser a cbet chance when they had been bet into. `stats.py --check` had
+that on record as a KNOWN discrepancy -- 60.6% on the engine against
+56.0% from the column -- and the pool report went on printing the
+column's figure, because nothing connected the two. On the engine it
+reads 59.6% for the same pool. Everything else agreed within a point,
+and the split-half check finds the same 22 findings holding either way.
+
+### Added — `call_open`, and a measured error bar
+
+The report's "cold call" was every seat that called an open, blinds
+included; the engine's `coldcall` is the standard one -- first action,
+not from a blind -- and reads 16.7% where the report read 24.9%. The
+report's meaning is now a stat of its own, `call_open`, so it is a
+column, a split and a filter like any other.
+
+`query.results_of` now returns the error on bb/100 measured from the
+hands it summed, in place of the constant 1170/sqrt(n) that assumed every
+line's hands have an 11.7bb standard deviation. The leak map sorts lines
+by whether their loss clears twice their own error, and a line that is
+always a fold has almost none while a line that is always a shove has
+three times that; the constant made both wrong in opposite directions.
+`query.py --results` prints the measured figure too.
+
+### Fixed — the pool check could not fail
+
+`population.py --check` printed FAIL and exited 0, so `check.py` would
+have stayed green through a pool that fell apart. The verdict is the
+exit code now.
+
+---
+
 ## Sessions, and the opponent report onto the engine at last
 
 ### Added — `sessions.py`: when you sat down, when you got up

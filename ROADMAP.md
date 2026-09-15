@@ -938,3 +938,17 @@ nobody ran; 2m13s now, 214 reads, 40 of 40 re-derived. `population.py`
 still carries its own SQL and is the last of the six.
 
 **Result: PASS**, 17 of 17.
+
+## Run 12 — goal 3, finished
+
+**Goal:** `population.py` onto the engine, its SQL deleted, its findings
+unchanged.
+
+**Result: PASS.** No query left in the module; the same 22 split-half
+findings hold, rates within a point of before except cbet, which moves
+from a spots column the engine's check had already recorded as wrong to
+the engine's figure. `call_open` added to the registry for the report's
+"every seat that called" meaning; `query.results_of` measures its error
+bar from the hands instead of assuming 11.7bb per hand; the pool check's
+verdict is its exit code, which it had never been. Six modules once
+carried their own SQL; the count is zero.
