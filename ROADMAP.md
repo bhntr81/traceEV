@@ -982,3 +982,14 @@ now does; `--export` reads each hand back out of its file and the
 importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
+
+## Run 15 — table composition
+
+**Goal:** where the fish sits, not just whether one is in the pot.
+
+**Result: PASS**, 18 of 18. Four columns from the liveness walk already
+in `players.py`, four switches, two exact identities checked on every
+row. Hero with a fish in the pot: +15 (right) and +19 (left) bb/100,
+each ±22; regs only, +0.5 ±10. What remains of the manual's list:
+configurable hand categories, expression stats, bet size relative to
+the previous bet. Then goal 5.

@@ -189,6 +189,14 @@ SWITCHES = {
     # a pot of any size, which is most of the rest.
     "--with-fish": "n_fish > 0",
     "--regs-only": "n_fish = 0 AND n_reg > 0",
+    # Which side the company sits. A fish on your left acts after you and
+    # has position on you all hand; on your right you have it on them.
+    # "How do I do with a fish on my right" is the question table
+    # selection is supposed to answer, and it is these four words.
+    "--fish-left": "fish_left > 0",
+    "--fish-right": "fish_right > 0",
+    "--reg-left": "reg_left > 0",
+    "--reg-right": "reg_right > 0",
     "--drawing": "(fd IS NOT NULL OR sd IS NOT NULL)",
     # Both at once, which is the hand that plays like neither: a flush draw
     # with a straight draw beside it is usually a favourite against a pair.

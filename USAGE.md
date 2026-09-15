@@ -381,6 +381,33 @@ Tags and notes live in `hands.db`, in tables of their own that nothing in
 the derivation chain touches, so a re-import never loses them. Back up
 the database and they come with it.
 
+### Table composition -- who is at the table, and where they sit
+
+```bash
+python query.py --hero --fish-right --results     # a fish acts before me (I have position)
+python query.py --hero --fish-left --results      # a fish acts after me (they have it)
+python query.py --hero --regs-only --results      # nobody left but regs
+python query.py --hero --fish-left --pot 3bet --street flop --stats
+```
+
+`n_fish` and `n_reg` count who else is still in the pot; `fish_left`,
+`fish_right`, `reg_left`, `reg_right` say which side of you each of them
+sits. Left is everybody still in who acts after you in the postflop
+order -- the seats clockwise from the button -- and has position on you
+for the whole hand; right is everybody who acts before you. Every fish
+in the pot is on one side or the other, and `players.py --check` holds
+every row to `fish_left + fish_right = n_fish`.
+
+The switches are in the window's filter dialog under "who". A class is
+only given to a player there is enough evidence about, so "a fish on my
+left" means a seat the rule was willing to call one, not every unknown.
+
+On this database: with a fish in the pot hero runs about +15 bb/100 with
+the fish on the right and +19 with it on the left, each ±22; with only
+regs left, +0.5 ±10. The gap is probably real and not yet seen; left
+against right cannot be told apart at all. That is what the filter is
+for -- the numbers sharpen with hands and with nothing else.
+
 ### Aliases -- one person under two names
 
 ```bash

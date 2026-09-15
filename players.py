@@ -84,9 +84,20 @@ CREATE INDEX players_class ON players(class, hands);
 # to face" or "the man opposite is a stranger", and those are different
 # facts. The seat is always known when there is one opponent, which is what
 # makes it the thing to check the walk against.
+#
+# `fish_left` and the three beside it are the same company split by where
+# it sits. A fish on your left acts after you postflop and has position on
+# you for the whole hand; one on your right does not, and the difference
+# is most of what "table selection" means. Left is everybody still in who
+# acts after this player in the postflop order -- the seats clockwise from
+# the button -- and right is everybody who acts before. Every fish in the
+# pot is on one side or the other, so `fish_left + fish_right = n_fish`
+# on every row, which is what the check holds them to.
 COLUMNS = (("player_class", "TEXT"), ("vs_player", "TEXT"),
             ("vs_class", "TEXT"), ("vs_seat", "INT"),
-            ("n_reg", "INT"), ("n_fish", "INT"))
+            ("n_reg", "INT"), ("n_fish", "INT"),
+            ("fish_left", "INT"), ("fish_right", "INT"),
+            ("reg_left", "INT"), ("reg_right", "INT"))
 NAMES = tuple(c for c, _t in COLUMNS)
 
 COHORT_FIELDS = {
@@ -378,10 +389,16 @@ def stamp(con):
     klass = {(r[0], r[1]): r[2]
              for r in con.execute("SELECT site, player, class FROM players")}
 
-    dealt, who_is = {}, {}
-    for r in con.execute("SELECT hand_id, seat, player FROM spots"):
+    dealt, who_is, button = {}, {}, {}
+    for r in con.execute("SELECT hand_id, seat, player, position FROM spots"):
         dealt.setdefault(r["hand_id"], set()).add(r["seat"])
         who_is[(r["hand_id"], r["seat"])] = r["player"]
+        # The postflop order runs clockwise from the button. Heads up the
+        # small blind IS the button and acts last, and there is no BTN
+        # label to find, so the small blind stands in for it.
+        if r["position"] == "BTN" or (r["position"] == "SB"
+                                      and r["hand_id"] not in button):
+            button[r["hand_id"]] = r["seat"]
 
     by_hand = {}
     for r in con.execute("SELECT hand_id, n, seat, player, site, action "
@@ -391,6 +408,11 @@ def stamp(con):
     out = []
     for hid, acts in by_hand.items():
         live = dealt.get(hid) or {a["seat"] for a in acts}
+        btn = button.get(hid, max(live))
+        # A seat's place in the postflop order: 0 for the first to act after
+        # the button, counting clockwise, so "after me" is a bigger number.
+        top = max(live) + 1
+        order = {seat: (seat - btn - 1) % top for seat in live}
         folded = set()
         for a in acts:
             here = live - folded
@@ -398,16 +420,23 @@ def stamp(con):
             if len(here) == 2:
                 other = next(iter(here - {a["seat"]}), None)
             who = who_is.get((hid, other)) if other is not None else None
-            # Everybody else still in, whether there is one of them or four.
-            company = [klass.get((a["site"], who_is.get((hid, seat))))
+            # Everybody else still in, whether there is one of them or four,
+            # and which side of this player each one sits.
+            mine = order.get(a["seat"], -1)
+            company = [(klass.get((a["site"], who_is.get((hid, seat)))),
+                        order.get(seat, -1) > mine)
                        for seat in here if seat != a["seat"]]
             out.append((
                 klass.get((a["site"], a["player"])),
                 who,
                 klass.get((a["site"], who)) if who else None,
                 other,
-                sum(c == "reg" for c in company),
-                sum(c == "fish" for c in company),
+                sum(c == "reg" for c, _left in company),
+                sum(c == "fish" for c, _left in company),
+                sum(c == "fish" and left for c, left in company),
+                sum(c == "fish" and not left for c, left in company),
+                sum(c == "reg" and left for c, left in company),
+                sum(c == "reg" and not left for c, left in company),
                 a["hand_id"], a["n"]))
             if a["action"] == "F":
                 folded.add(a["seat"])
@@ -415,7 +444,7 @@ def stamp(con):
     con.execute("CREATE TEMP TABLE stamped ("
                 + ", ".join(f"{c} {t}" for c, t in COLUMNS)
                 + ", hand_id TEXT, n INT)")
-    con.executemany("INSERT INTO stamped VALUES (?,?,?,?,?,?,?,?)", out)
+    con.executemany("INSERT INTO stamped VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", out)
     con.execute("CREATE INDEX temp.stamped_key ON stamped(hand_id, n)")
     con.execute(
         "UPDATE decisions SET "
@@ -431,6 +460,13 @@ def stamp(con):
     # two -- so "a fish is in this pot" read every row until this existed.
     con.execute("CREATE INDEX IF NOT EXISTS dec_company "
                 "ON decisions(n_fish, n_reg, street)")
+    # Which side. Two small indexes rather than one wide one, because the
+    # questions are "a fish on my left" and "a fish on my right" and
+    # almost never both at once.
+    con.execute("CREATE INDEX IF NOT EXISTS dec_left "
+                "ON decisions(fish_left, reg_left, street)")
+    con.execute("CREATE INDEX IF NOT EXISTS dec_right "
+                "ON decisions(fish_right, reg_right, street)")
     con.execute("ANALYZE")
 
 
@@ -580,6 +616,29 @@ def check(db_path=DB):
     if bad:
         fails.append(f"{bad} decisions where the liveness walk and n_live "
                      f"disagree for no reason")
+
+    # Every fish in the pot sits on one side of the player or the other,
+    # and so does every reg; a row where the sides do not add up to the
+    # company is a row where the order was read wrong.
+    sides = con.execute(
+        "SELECT COUNT(*), SUM(fish_left + fish_right <> n_fish "
+        "OR reg_left + reg_right <> n_reg) FROM decisions "
+        "WHERE n_fish IS NOT NULL").fetchone()
+    print(f"left + right = company            "
+          f"{sides[0] - (sides[1] or 0):,}/{sides[0]:,}"
+          f"{'' if not sides[1] else '   <-- DISAGREE'}")
+    if sides[1]:
+        fails.append(f"{sides[1]} decisions where the fish and regs on each "
+                     f"side do not add up to the company")
+    # And the sides mean what they say: the button, with everybody still
+    # in, has nobody on its left, since it acts last.
+    wrong_side = con.execute(
+        "SELECT COUNT(*) FROM decisions WHERE position='BTN' AND n_live=n_players "
+        "AND street<>'preflop' AND (fish_left > 0 OR reg_left > 0)").fetchone()[0]
+    print(f"nobody acts after the button      "
+          f"{'yes' if not wrong_side else f'NO, {wrong_side} rows'}")
+    if wrong_side:
+        fails.append(f"{wrong_side} button decisions with somebody on the left")
 
     # ---- the cohort, which nothing used to check ----------------------
     #

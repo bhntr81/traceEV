@@ -8,6 +8,30 @@ Newest first.
 
 ---
 
+## Table composition: which side of you the fish sits
+
+### Added -- `fish_left`, `fish_right`, `reg_left`, `reg_right`
+
+Four columns on `decisions`, stamped by `players.py` beside `n_fish` and
+`n_reg` from the same liveness walk: the company still in the pot, split
+by whether each seat acts after this player in the postflop order (left,
+with position on them) or before (right). Four switches -- `--fish-left`,
+`--fish-right`, `--reg-left`, `--reg-right` -- on the command line and
+in the window's dialog. "How do I do with a fish on my right" is the
+question table selection is supposed to answer, and it is now one flag.
+
+The order is the seats clockwise from the button, read from `spots`;
+heads up the small blind is the button and stands in for it. Two
+identities are checked on every row: the sides add up to the company,
+and the button with everybody still in has nobody on its left.
+
+On this database hero runs +15 bb/100 with a fish on the right and +19
+with one on the left, each ±22, against +0.5 ±10 with only regs left --
+a gap that is probably real and not yet seen, which the numbers say
+rather than the prose.
+
+---
+
 ## Aliases, and export
 
 ### Added -- aliases
