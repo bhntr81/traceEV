@@ -50,12 +50,14 @@ that is really twenty questions.
     python ask.py --mcp                    serve the tool to the Claude Desktop app (it runs this)
     python ask.py --install-desktop        tell the Claude Desktop app where TraceEV is
     python ask.py --check                  the executor and the vocabulary, no network
+    python ask.py --score [--with P] [--limit N]   the golden questions, marked against the answer
 """
 
 import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -94,6 +96,10 @@ def vocabulary():
              "  --range     what hands the players held there (with the seen-fraction)",
              "  --chart     the 13x13 chart of that",
              "  --sessions  which sittings",
+             "  --versus \"<flags>\"  A against B: both rates, the interval on the DIFFERENCE,",
+             "              a p-value corrected for how many stats were compared, and -- when",
+             "              nothing is real -- the smallest difference this much data could see.",
+             "              Add --show KEY so ONE stat is tested and not thirty.",
              "  --by DIM    split any of the above into a table by one dimension:",
              "              " + ", ".join(query.DIMENSIONS),
              "  --show KEYS which stat columns to show (comma-separated keys from below)",
@@ -142,7 +148,20 @@ def vocabulary():
         "## sites: " + ", ".join(__import__("sites").KEYS),
         "  Always add --site when the question is about the pool: three sites are three",
         "  different games and a pool with no site averages them.",
+        "  Which site: pokerstars for how often people DO things (the biggest sample).",
+        "  But for what people HOLD -- --range, --chart, or any --made/--kicker/--fd/--sd",
+        "  filter -- use ignition, the one site that writes every hand's cards including",
+        "  the folds. PokerStars and ACR show only the hands that reached showdown, which",
+        "  is the strong quarter of a range presented as the range.",
         "  'the pool' = --pool (everyone but me). 'me'/'I'/'hero' = --hero.",
+        "",
+        "## comparisons",
+        "  Any question of the form 'is X different when Y', 'more than', 'compared to',",
+        "  'better in A than B' is ONE query with --versus, never two queries eyeballed:",
+        "    --pool --site pokerstars --pot 3bet --street turn --facing bet --show fold_to_turn_bet",
+        "        --versus \"--pool --site pokerstars --pot raised --street turn --facing bet\"",
+        "  The tool decides. Its last lines say either 'Real: ...' or 'Nothing survives',",
+        "  and the second comes with the smallest difference the sample could have seen.",
         "",
         "## worked examples",
         "  how often does the pool fold to a river bet in 3bet pots, SB vs BTN, B-B-B (SB",
@@ -164,8 +183,9 @@ Rules that matter:
 - Every number you state must appear in a tool result. Never estimate, never recall poker theory as if it were this data. If the tool returned nothing, say so.
 - Always report the n beside a rate, and the interval when the tool printed one. If n is small say the number is not worth much yet.
 - Translate the question into the vocabulary below. Prefer the specific stat (--show KEY) over reading it off a table. For "how often does X do Y facing Z" use --street, --facing and the stat key. For money, use --results.
-- Pool questions need --pool and a --site. If the user did not name a site, use pokerstars (the biggest sample) and SAY you did.
+- Pool questions need --pool and a --site. If the user did not name a site, use pokerstars (the biggest sample) and SAY you did -- EXCEPT for anything about what hands people hold (--range, --chart, --made, --fd, --sd), which must use ignition, the only site that shows every hand's cards. Say that too.
 - Use as many tool calls as the question needs, one query per spot: "where does the pool overfold" means the fold stats over --by position, --by pot_type, --by street, and then the worst cells with their n. If a query errors, read the message and fix the flags once.
+- A comparison is ONE query with --versus and --show KEY. Report a difference as real ONLY if the tool's own verdict line says "Real:". If it says "Nothing survives", say there is no difference this data can see, and quote the "has to be about N points" line -- that is the finding. Never decide significance yourself from two rates, two intervals, or two separate queries; the tool corrects for how many questions were asked and you cannot.
 - End with one line: `ran: python query.py <the flags you used>` so the user can repeat it.
 - Be brief. A sentence or two and the numbers.
 
@@ -547,7 +567,30 @@ def ask_cli(question, log=None):
             raise RuntimeError("the claude command-line tool is not signed in -- "
                                "run `claude auth login` once")
         raise RuntimeError("the claude tool failed: " + text[:200])
-    return text, [], []
+    return text, ran_from_text(text), []
+
+
+def ran_from_text(text):
+    """
+    The queries an answer says it ran, read back out of the prose.
+
+    The command-line route hands back only the final answer, not the tool
+    calls, so what it ran is known only because the prompt makes it print
+    `ran: python query.py <flags>` at the end. Read from there. Anything
+    after `python query.py` up to a backtick, a bracket or the end of the
+    line is the command; the scorer needs it, and the panel's "repeat this"
+    button does too.
+    """
+    import re
+    out = []
+    for m in re.finditer(r"python query\.py\s+([^`\n)]+)", text):
+        try:
+            argv = shlex.split(m.group(1).strip())
+        except ValueError:
+            continue
+        if argv and argv not in out:
+            out.append(argv)
+    return out
 
 
 # What a provider says when the problem is the account or the service and
@@ -696,8 +739,157 @@ def install_desktop(path=DESKTOP_CONFIG):
 
 # ----------------------------------------------------------------- check
 
+GOLDEN = Path(__file__).parent / "golden.json"
+
+# The tokens that are a mode, not a filter. `query.build` ignores them,
+# and the scorer has to know which one a query was in.
+MODES = ("--stats", "--results", "--hands", "--range", "--chart",
+         "--sessions")
+
+
+def _parts(argv):
+    """(mode, by, show, where_a, where_b) for one command line."""
+    argv = [str(a) for a in argv]
+    mode = next((m for m in MODES if m in argv), "--stats")
+    rest = [a for a in argv if a not in MODES]
+
+    def opt(name):
+        if name not in rest:
+            return None
+        i = rest.index(name)
+        return rest[i + 1] if i + 1 < len(rest) else None
+
+    where_a = query.build(rest)[0]
+    versus = opt("--versus")
+    where_b = query.build(shlex.split(versus))[0] if versus else None
+    show = tuple(sorted((opt("--show") or "").split(","))) if opt("--show") else ()
+    return mode, opt("--by"), show, where_a, where_b
+
+
+def same_answer(con, want, got):
+    """
+    Whether two command lines answer the same question.
+
+    Not whether they are the same flags. "How often do I 3bet from the
+    blinds" is `--hero --pos SB,BB --show threebet`, and it is also the same
+    with `--street preflop --facing open` in front, because the stat's own
+    chance already says that. Comparing flag lists would mark the second
+    wrong. So the two are run against the database and it is the NUMBERS
+    that must agree: the shown stat's chances and cases under each filter,
+    both sides of a --versus, the grouping and the mode. That is the only
+    equivalence that means anything, and it is also what the user sees.
+    """
+    try:
+        a, b = _parts(want), _parts(got)
+    except SystemExit:
+        return False
+    if a[0] != b[0] or (a[1] or None) != (b[1] or None):
+        return False
+    if (a[4] is None) != (b[4] is None):
+        return False
+    # `want` is the golden answer, `got` is what ran. A table that shows
+    # every stat contains the one column that was wanted, and a table with
+    # the wanted columns and one more contains them too; both are right
+    # answers from the user's chair. The reverse -- a narrower table than
+    # wanted -- is not.
+    if a[2] and b[2] and not set(a[2]) <= set(b[2]):
+        return False
+    keys = a[2] or b[2] or tuple(st.key for st in stats.STATS
+                                 if st.source != "s")
+    for key in keys:
+        st = stats.BY_KEY.get(key)
+        if st is None or st.source == "s":
+            continue
+        for wa, wb in ((a[3], b[3]), (a[4], b[4])):
+            if wa is None:
+                continue
+            na, ka = stats.rate(con, st, wa)[:2]
+            nb, kb = stats.rate(con, st, wb)[:2]
+            if (na, ka) != (nb, kb):
+                return False
+    return True
+
+
+def score(provider=None, limit=None, log=print):
+    """
+    The golden questions through one provider, marked against the answer.
+
+    This is the number the whole idea rests on. A translator that is right
+    "most of the time" is worth exactly as much as knowing how often, and
+    the demo's silent narrowing to one site is the kind of thing that only a
+    scored set finds. Each question is asked cold -- no history -- and it
+    counts as right if ANY query the model ran answers the question, since
+    a model that breaks a question into a table and then a cell has still
+    found the right cell.
+    """
+    import sqlite3
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    if limit:
+        golden = golden[:limit]
+    con = sqlite3.connect(query.DB)
+    right, rows = 0, []
+    start = time.time()
+    for i, item in enumerate(golden, 1):
+        try:
+            _answer, ran, _t, who = ask(item["q"], log=None, provider=provider)
+        except RuntimeError as e:
+            ran, who = [], f"failed: {e}"
+        wants = [item["flags"]] + item.get("alt", [])
+        hit = next((r for r in ran for w in wants if same_answer(con, w, r)),
+                   None)
+        right += hit is not None
+        rows.append((item["q"], hit is not None, ran, who))
+        mark = "ok " if hit else "MISS"
+        log(f"{i:3} {mark}  {item['q'][:60]}")
+        if not hit:
+            for r in ran[:3]:
+                log("        ran: " + " ".join(r))
+            if not ran:
+                log(f"        ran nothing -- {who}")
+            log("        wanted: " + " ".join(item["flags"]))
+    took = time.time() - start
+    log("")
+    log(f"{right}/{len(golden)} right  ({100 * right / max(1, len(golden)):.0f}%)  "
+        f"via {provider or settings()['provider']}  in {took / 60:.1f} min")
+    return right, len(golden), rows
+
+
 def check():
     fails = []
+
+    # The golden set has to be a set of questions the program can answer:
+    # every expected command line builds and runs. Scoring needs a
+    # provider and the network, so it is `--score`, not here; but a golden
+    # entry that does not run would mark every provider wrong on it, and
+    # that is caught offline.
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    broken = []
+    for item in golden:
+        for flags in [item["flags"]] + item.get("alt", []):
+            got = run_query(flags)
+            if got.startswith(("refused", "query.py")):
+                broken.append((item["q"], got[:80]))
+    print(f"golden questions that run      {len(golden) - len(broken)}/{len(golden)}")
+    for q, why in broken[:4]:
+        print(f"    {q[:50]}: {why}")
+    if broken:
+        fails.append("golden questions that do not run")
+    # And the scorer knows a right answer when it sees one, in both
+    # directions: the same question phrased two ways agrees, and a
+    # different question does not.
+    import sqlite3
+    con = sqlite3.connect(query.DB)
+    agree = same_answer(con, ["--hero", "--pos", "SB,BB", "--show", "threebet"],
+                        ["--hero", "--street", "preflop", "--facing", "open",
+                         "--pos", "BB,SB", "--show", "threebet"])
+    differ = same_answer(con, ["--hero", "--pos", "SB", "--show", "threebet"],
+                         ["--hero", "--pos", "BB", "--show", "threebet"])
+    print(f"the scorer tells same from different  "
+          f"{'yes' if agree and not differ else 'NO'}")
+    if not (agree and not differ):
+        fails.append("same_answer is wrong about equivalence")
+    con.close()
+
     v = vocabulary()
     # Every flag the program takes is in the vocabulary, and every stat.
     missing = [k for k in list(query.SWITCHES) + list(query.VALUE_FLAGS)
@@ -801,6 +993,14 @@ def main(argv):
     if "--vocabulary" in argv:
         print(vocabulary())
         return 0
+    if "--score" in argv:
+        provider = limit = None
+        if "--with" in argv:
+            provider = argv[argv.index("--with") + 1]
+        if "--limit" in argv:
+            limit = int(argv[argv.index("--limit") + 1])
+        right, total, _rows = score(provider, limit)
+        return 0 if right == total else 1
     if "--mcp" in argv:
         mcp_serve()
         return 0

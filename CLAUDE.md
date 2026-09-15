@@ -278,6 +278,17 @@ between two populations will throw up one at p < 0.05 with nothing going on
 size of the family. A stat named in advance with `--show` is a test; the
 best of thirty is a hypothesis.
 
+**The assistant never judges significance; the tool does.** `ask.py`'s
+prompt sends every comparison through `--versus` and lets the model call a
+difference real only when the verdict line says "Real:". A model reading
+two rates back will use the overlap heuristic this project retired, and did,
+on 15 Sep 2026, in the first answer it ever gave.
+
+**Translation accuracy is measured, never assumed.** `golden.json` is
+fifty-one questions with their commands; `ask.py --score` marks a provider
+by whether what it ran gives the same numbers, not the same flags. Add a
+question there whenever the assistant gets one wrong in use.
+
 **When nothing is significant, print what could have been found.**
 `stats.detectable` gives the smallest difference the sample could see. "No
 difference" and "not enough hands to see one" are different findings and the

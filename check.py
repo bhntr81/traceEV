@@ -44,6 +44,7 @@ CHECKS = [
     ("population", "pool findings survive being split in half"),
     ("notes", "marked hands and player notes: round trips, and nothing rebuilds them away"),
     ("ask", "the assistant's vocabulary covers every flag, and its tool only reads"),
+    ("fixtures", "our parsers against FPDB's regression corpus, where it is present"),
 ]
 
 

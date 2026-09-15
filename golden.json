@@ -1,0 +1,682 @@
+[
+ {
+  "q": "how often does the pool fold to a cbet on the flop?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "what is my VPIP?",
+  "flags": [
+   "--hero",
+   "--show",
+   "vpip"
+  ]
+ },
+ {
+  "q": "how often do I 3bet from the blinds?",
+  "flags": [
+   "--hero",
+   "--pos",
+   "SB,BB",
+   "--show",
+   "threebet"
+  ]
+ },
+ {
+  "q": "how often does the pool cbet the flop in 3bet pots?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--pot",
+   "3bet",
+   "--street",
+   "flop",
+   "--show",
+   "cbet_flop"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a river bet?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how much do I win from the button?",
+  "flags": [
+   "--hero",
+   "--pos",
+   "BTN",
+   "--results"
+  ]
+ },
+ {
+  "q": "how do I do in 3bet pots?",
+  "flags": [
+   "--hero",
+   "--pot",
+   "3bet",
+   "--results"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a turn bet in 3bet pots?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--pot",
+   "3bet",
+   "--street",
+   "turn",
+   "--facing",
+   "bet",
+   "--show",
+   "fold_to_turn_bet"
+  ]
+ },
+ {
+  "q": "my cbet frequency on monotone flops",
+  "flags": [
+   "--hero",
+   "--street",
+   "flop",
+   "--board",
+   "mono",
+   "--show",
+   "cbet_flop"
+  ]
+ },
+ {
+  "q": "how often does the pool check-raise the flop on paired boards?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--board",
+   "paired",
+   "--show",
+   "checkraise_flop"
+  ]
+ },
+ {
+  "q": "how often does the pool fold the big blind to a steal?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--pos",
+   "BB",
+   "--show",
+   "fold_to_steal"
+  ]
+ },
+ {
+  "q": "how often do regs fold to a 3bet?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--reg",
+   "--show",
+   "fold_to_3bet"
+  ]
+ },
+ {
+  "q": "how often do fish limp?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--fish",
+   "--show",
+   "limp"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet when a fish is in the pot?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--with-fish",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often do regs fold to a river bet against other regs?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--reg",
+   "--regs-only",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--show",
+   "fold_to_river_bet"
+  ],
+  "alt": [
+   [
+    "--pool",
+    "--site",
+    "pokerstars",
+    "--reg",
+    "--vs-reg",
+    "--street",
+    "river",
+    "--facing",
+    "bet",
+    "--show",
+    "fold_to_river_bet"
+   ]
+  ]
+ },
+ {
+  "q": "my results by position",
+  "flags": [
+   "--hero",
+   "--results",
+   "--by",
+   "position"
+  ]
+ },
+ {
+  "q": "my results by month",
+  "flags": [
+   "--hero",
+   "--results",
+   "--by",
+   "month"
+  ]
+ },
+ {
+  "q": "my winrate by hour of the day",
+  "flags": [
+   "--hero",
+   "--results",
+   "--by",
+   "hour"
+  ]
+ },
+ {
+  "q": "do I win more in short sessions or long ones?",
+  "flags": [
+   "--hero",
+   "--results",
+   "--by",
+   "session_len"
+  ]
+ },
+ {
+  "q": "how do I do in the first hour of a session?",
+  "flags": [
+   "--hero",
+   "--session-min",
+   "0-60",
+   "--results"
+  ],
+  "alt": [
+   [
+    "--hero",
+    "--results",
+    "--by",
+    "session_hour"
+   ]
+  ]
+ },
+ {
+  "q": "how do I do when I have more than four tables open?",
+  "flags": [
+   "--hero",
+   "--tables",
+   "5-20",
+   "--results"
+  ]
+ },
+ {
+  "q": "my results on weekends",
+  "flags": [
+   "--hero",
+   "--weekday",
+   "sat,sun",
+   "--results"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet on the flop, by flop texture?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--show",
+   "fold_to_cbet",
+   "--by",
+   "texture"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a river bet when the river paired the board?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--river-card",
+   "pair",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a turn bet when the turn brings a flush card?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "turn",
+   "--facing",
+   "bet",
+   "--turn-card",
+   "flush",
+   "--show",
+   "fold_to_turn_bet"
+  ]
+ },
+ {
+  "q": "what hands does the pool have when it bets the river?",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "river",
+   "--aggressive",
+   "--range"
+  ]
+ },
+ {
+  "q": "what does the pool 3bet with from the blinds?",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "preflop",
+   "--facing",
+   "open",
+   "--pos",
+   "SB,BB",
+   "--aggressive",
+   "--range"
+  ],
+  "alt": [
+   [
+    "--pool",
+    "--site",
+    "ignition",
+    "--street",
+    "preflop",
+    "--facing",
+    "open",
+    "--pos",
+    "SB,BB",
+    "--aggressive",
+    "--chart"
+   ]
+  ]
+ },
+ {
+  "q": "show me the 13x13 chart of what the pool opens from the button",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "preflop",
+   "--facing",
+   "unopened",
+   "--pos",
+   "BTN",
+   "--aggressive",
+   "--chart"
+  ]
+ },
+ {
+  "q": "how often does the pool fold top pair to a river bet?",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--made",
+   "top pair",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold a flush draw to a flop bet?",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "flop",
+   "--facing",
+   "bet",
+   "--fd",
+   "nut,second,weak",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool call a flop bet with a gutshot?",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "flop",
+   "--facing",
+   "bet",
+   "--sd",
+   "gutshot",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a river bet after the flop went check bet call?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--flop",
+   "XBC",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a third barrel on the river in 3bet pots?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--pot",
+   "3bet",
+   "--flop",
+   "BC",
+   "--turn",
+   "BC",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a river bet in 3bet pots, big blind against the button?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--pot",
+   "3bet",
+   "--pos",
+   "BB",
+   "--vs",
+   "BTN",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet out of position?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--oop",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet when it is heads up?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--headsup",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet multiway?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--multiway",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet when deep, over 150 big blinds?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--deep",
+   "150",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet short stacked, under 40 big blinds?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--street",
+   "flop",
+   "--short",
+   "40",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to an overbet?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--quick",
+   "faces_overbet",
+   "--show",
+   "fold_to_turn_bet,fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet on ACR?",
+  "flags": [
+   "--pool",
+   "--site",
+   "acr",
+   "--street",
+   "flop",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does the pool fold to a cbet on Ignition?",
+  "flags": [
+   "--pool",
+   "--site",
+   "ignition",
+   "--street",
+   "flop",
+   "--show",
+   "fold_to_cbet"
+  ]
+ },
+ {
+  "q": "how often does dblj32 fold to a 3bet?",
+  "flags": [
+   "--player",
+   "dblj32",
+   "--show",
+   "fold_to_3bet"
+  ]
+ },
+ {
+  "q": "how do I do with a fish on my right?",
+  "flags": [
+   "--hero",
+   "--fish-right",
+   "--results"
+  ]
+ },
+ {
+  "q": "how do I do with a reg on my left?",
+  "flags": [
+   "--hero",
+   "--reg-left",
+   "--results"
+  ]
+ },
+ {
+  "q": "my results at the 25 cent big blind stake",
+  "flags": [
+   "--hero",
+   "--stake",
+   "0.25",
+   "--results"
+  ]
+ },
+ {
+  "q": "my results this year",
+  "flags": [
+   "--hero",
+   "--since",
+   "2026-01-01",
+   "--results"
+  ]
+ },
+ {
+  "q": "which sessions did I play in 3bet pots the most?",
+  "flags": [
+   "--hero",
+   "--pot",
+   "3bet",
+   "--sessions"
+  ]
+ },
+ {
+  "q": "does the pool fold to a turn bet more often in 3bet pots than in single raised pots?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--pot",
+   "3bet",
+   "--street",
+   "turn",
+   "--facing",
+   "bet",
+   "--versus",
+   "--pool --site pokerstars --pot raised --street turn --facing bet",
+   "--show",
+   "fold_to_turn_bet"
+  ]
+ },
+ {
+  "q": "do regs fold to a river bet more against other regs than when a fish is in the pot?",
+  "flags": [
+   "--pool",
+   "--site",
+   "pokerstars",
+   "--reg",
+   "--regs-only",
+   "--street",
+   "river",
+   "--facing",
+   "bet",
+   "--versus",
+   "--pool --site pokerstars --reg --with-fish --street river --facing bet",
+   "--show",
+   "fold_to_river_bet"
+  ]
+ },
+ {
+  "q": "do I cbet the flop more in position than out of position?",
+  "flags": [
+   "--hero",
+   "--street",
+   "flop",
+   "--ip",
+   "--versus",
+   "--hero --street flop --oop",
+   "--show",
+   "cbet_flop"
+  ]
+ }
+]

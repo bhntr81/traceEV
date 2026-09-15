@@ -122,6 +122,42 @@ table of decisions.
 
 ---
 
+## Asking questions in English
+
+```bash
+python ask.py "how often does the pool fold to a turn bet in 3bet pots?"
+python ask.py "do regs fold rivers more against regs than when a fish is in?"
+python ask.py --with gemini "..."        # a particular AI; gemini's API is free
+python ask.py --providers                # who has a key right now
+python ask.py --install-desktop          # let the Claude Desktop app use TraceEV
+```
+
+The assistant knows no poker numbers. It knows the program's vocabulary —
+every flag `query.py` takes, generated from `query.py` itself — and has one
+tool: run a query. Every number it says came from the tool, and the command
+it ran is printed under the answer so you can re-run it.
+
+**Comparisons go through the tool, not the model.** "Is it different when a
+fish is in the pot" is one query with `--versus`, and the assistant may only
+call a difference real if the tool's verdict line says so — the tool
+corrects for how many stats were compared, and a model reading two rates
+cannot. When nothing is real it quotes the smallest difference the sample
+could have seen, which is the finding.
+
+**How often it gets the translation right is a number.** `golden.json`
+holds fifty-one questions with the command that answers each. `python
+ask.py --score` asks every one cold and marks it right if any query the
+model ran gives the *same answer* — the same chances and cases for the
+stat asked — not the same flags, since "3bet from the blinds" is correct
+with or without `--street preflop` in front. Run it per provider; the
+result is what a provider is worth here.
+
+The writing options — `--export`, `--save`, `--define`, `--forget`,
+`--out` — are refused by the tool itself, so a misunderstanding cannot
+write a file.
+
+---
+
 ## Asking questions
 
 ### Filtering by how the betting went
