@@ -470,7 +470,7 @@ def check(db_path=DB):
         # neither, and the whole point of these lines is that a broken
         # derivation shows up as a number with the wrong shape.
         cells = []
-        for site in sites.KEYS:
+        for site in sites.loaded(con):
             got, tot = one("SELECT SUM({}), SUM({}) FROM spots WHERE "
                            "fmt='RING' AND n_players>=5 AND site='{}'".format(
                                num, den, site))
@@ -479,7 +479,7 @@ def check(db_path=DB):
                 100 * got / tot if tot else 0, tot))
         print("  {:14} {}".format(label, "   ".join(cells)))
 
-    for site in sites.KEYS:
+    for site in sites.loaded(con):
         print("\nopen sizes actually used, {} ring:".format(site))
         for size, cnt in con.execute(
                 "SELECT ROUND(open_size_bb,1), COUNT(*) FROM spots WHERE rfi=1 "
@@ -493,7 +493,7 @@ def check(db_path=DB):
             "SELECT COUNT(*) FROM bets WHERE street='flop' AND to_call=0 "
             "AND pot_frac>=? AND pot_frac<?", lo, hi)[0]))
 
-    for site in sites.KEYS:
+    for site in sites.loaded(con):
         print("\nhero, by position, {} ring (bb/100):".format(site))
         for pos, n, bb100 in con.execute(
                 "SELECT position, COUNT(*), 100.0*SUM(net_bb)/COUNT(*) FROM spots "

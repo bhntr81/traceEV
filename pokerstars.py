@@ -36,25 +36,41 @@ from acr import _all_money, _money, name_positions
 # check reads it, because a verb dropped here is money dropped silently.
 UNKNOWN = Counter()
 
-# A figure carries a dollar, a euro, a pound, or nothing on a play-money
-# table. `_money` reads the digits whatever is in front; these patterns had
-# `\$?` and a 69-hand euro file matched none of them.
-CUR = r"[$\u20ac\u00a3]?"
+# A figure carries a dollar, a euro, a pound, a yuan, a rupee, or nothing
+# on a play-money table. `_money` reads the digits whatever is in front;
+# these patterns had `\$?` and a 69-hand euro file matched none of them.
+CUR = r"[$\u20ac\u00a3\u00a5\u20b9]?"
 
-# PokerStars names itself on the first line of every hand. The header is
-# the only thing a file is identified by -- never the folder it was in.
-# "Hand #" since 2011 and "Game #" before it; "Zoom Hand #" and "Home Game
-# Hand #" as well. FPDB's corpus holds thirty-one PokerStars files this
-# program did not recognise as PokerStars, and every one of them was one of
-# these. A user with a decade of histories has the old ones too.
-HEADER = lambda line: (line.startswith("PokerStars ")
-                       and (" Hand #" in line[:40] or " Game #" in line[:40]))
+# Rooms that write this format under their own name, and the prefix each
+# one's hand ids carry so that two rooms' numbering can never collide.
+# PokerBros and PokerMaster are the app rooms: their histories come out of
+# a converter as PokerStars' text with the app's name on the first line,
+# and a tracker "supports" them by knowing the name. Each is a site in the
+# registry with this parser and its brand; the site's own room is first.
+BRANDS = {"PokerStars": "ps", "PokerBros": "pb", "PokerMaster": "pm"}
+
+
+def HEADER(line, brand="PokerStars"):
+    """
+    True if this line begins one of the brand's hands.
+
+    The header is the only thing a file is identified by -- never the
+    folder it was in. "Hand #" since 2011 and "Game #" before it; "Zoom Hand
+    #" and "Home Game Hand #" as well. FPDB's corpus holds thirty-one
+    PokerStars files this program did not recognise as PokerStars, and every
+    one of them was one of these. A user with a decade of histories has the
+    old ones too.
+    """
+    return (line.startswith(brand + " ")
+            and (" Hand #" in line[:48] or " Game #" in line[:48]))
+
 
 # "PokerStars Hand #261810334287:  Hold'em No Limit ($0.50/$1.00 USD) -
 # 2026/08/20 9:43:54 ET". The hour is not zero-padded. The stakes carry a
 # dollar, a euro, a pound, or nothing at all on a play-money table.
 HAND_RE = re.compile(
-    r"^PokerStars (?:Zoom |Home Game )?(?:Hand|Game) #(\d+):\s+(.+?)\s+"
+    r"^(" + "|".join(map(re.escape, BRANDS)) + r") (?:Zoom |Home Game )?"
+    r"(?:Hand|Game) #(\d+):\s+(.+?)\s+"
     r"\(" + CUR + r"([\d.,]+)/" + CUR + r"([\d.,]+)"
     r"(?: [A-Z]{3})?\)\s+-\s+(\d{4}/\d{2}/\d{2}) (\d{1,2}:\d{2}:\d{2})", re.M)
 # "Table 'Pemba III' 6-max Seat #3 is the button", on a play-money table
@@ -95,8 +111,8 @@ def parse_hand(text, source=""):
     m = HAND_RE.search(text)
     if not m:
         return None
-    hand_id, game_desc, sb, bb, day, clock = m.groups()
-    zoom = m.group(0).startswith("PokerStars Zoom ")
+    brand, hand_id, game_desc, sb, bb, day, clock = m.groups()
+    zoom = " Zoom " in m.group(0)
     legacy = " Game #" in m.group(0)          # the client before 2011
     if "hold'em" not in game_desc.lower():
         return None                      # Omaha files live in the same folder
@@ -133,7 +149,7 @@ def parse_hand(text, source=""):
     names_longest = sorted(by_name, key=len, reverse=True)
 
     board, actions, street, order = [], [], "preflop", 0
-    sb_seat = None
+    sb_seat, antes = None, {}
     for raw in text.splitlines():
         sm = STREET_RE.match(raw)
         if sm:
@@ -181,6 +197,11 @@ def parse_hand(text, source=""):
             s["posted"] += _money(pm.group(1)) or 0.0
             if rest.startswith("posts small blind"):
                 sb_seat = s["seat"]
+            # An ante is in the pot and not in front of the player: a
+            # raise "to $33" from a seat that anted $2 put in $33, not
+            # $31. The app rooms run antes at every table.
+            if rest.startswith("posts the ante"):
+                antes[s["seat"]] = antes.get(s["seat"], 0.0) + (_money(pm.group(1)) or 0.0)
             continue
         if rest.startswith(("shows", "mucks", "doesn't show")):
             cm = CARDS_RE.search(rest)
@@ -264,7 +285,7 @@ def parse_hand(text, source=""):
     # it that way here left every open a big blind short and the money
     # check at 0% on the first hand it saw. Blinds count as committed:
     # the big blind who "calls $1" a $2 open has $2 in, not $1.
-    street_in = {s["seat"]: s["posted"] for s in seats}
+    street_in = {s["seat"]: s["posted"] - antes.get(s["seat"], 0.0) for s in seats}
     on_street = "preflop"
     for a in actions:
         if a["street"] != on_street:
@@ -308,7 +329,7 @@ def parse_hand(text, source=""):
     standard = int(sb_seat is not None and posted_bb)
 
     return {
-        "hand": {"hand_id": "ps-" + hand_id, "played_at": played_at,
+        "hand": {"hand_id": BRANDS[brand] + "-" + hand_id, "played_at": played_at,
                  "table_id": table_name, "game": "HOLDEM",
                  "fmt": "ZOOM" if zoom else "RING",
                  "sb": _money(sb), "bb": _money(bb), "n_players": len(seats),

@@ -40,8 +40,14 @@ the main pot, seven run-twice hands recorded as winning one board, and a
 tournament folder in which every "Call 20" and "Fold(Blind Disconnected)"
 had been dropped as a verb the parser did not know.
 
-`acr.py` and `ignition.py` are parsers and nothing else; neither is run
-directly.
+`acr.py`, `ignition.py` and `pokerstars.py` are parsers and nothing else;
+none is run directly. Two more rooms ride on the last: **PokerBros** and
+**PokerMaster** are app rooms that write no history of their own, and what
+a converter exports for them is PokerStars' text with the app's name on
+the first line. Each is a site in the registry -- `--site pokerbros` --
+with the PokerStars parser told which name to answer to, and hand ids
+prefixed `pb-` and `pm-`. Drop the converter's folder on the importer as
+you would any other.
 
 ### Reading `sites.py --stats`
 

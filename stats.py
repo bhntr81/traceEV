@@ -925,9 +925,9 @@ def main(argv):
         safe = name.replace("'", "''")
         report(con, f"player='{safe}' AND standard=1", f"{name}")
         return 0
-    for site in sites.KEYS:
+    for site in sites.loaded(con):
         report(con, f"{POOL} AND site='{site}'", f"pool: {site}")
-    for site in sites.KEYS:
+    for site in sites.loaded(con):
         by_position(con, ["rfi", "threebet", "fold_to_cbet"],
                     f"{POOL} AND site='{site}'",
                     f"{site} pool, by position")

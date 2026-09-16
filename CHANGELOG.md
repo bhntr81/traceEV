@@ -8,6 +8,38 @@ Newest first.
 
 ---
 
+## Two app rooms, for the price of a name
+
+### Added -- `pokerbros` and `pokermaster` in the registry
+
+Neither room writes a history of its own; what a converter exports for
+them is PokerStars' text with the app's name on the first line. So a
+`Site` may now carry a `brand`, the parser's `HEADER` takes it, and the
+importer asks `site.header(line)` rather than the module's own. Two
+registry lines, hand ids prefixed `pb-` and `pm-`, and the three FPDB
+fixtures for them load and prove. This is how a tracker "supports" the
+app rooms, and it is the cheapest site this program will ever add.
+
+### Fixed -- antes, on the PokerStars parser
+
+A raise "to $33" from a seat that had anted $2 was read as $31 added: the
+street's tally was seeded with everything the seat had posted, and an ante
+is in the pot, not in front of the player. The app rooms run antes at
+every table; Stars cash does not, which is why 9,961 hands never showed
+it. Antes are kept apart now and the tally is seeded with the blinds.
+
+### Changed -- the proofs know an ante hand and a small corpus
+
+`sites.py --check`'s blinds test leaves out hands where everybody posted:
+an ante hand says nothing about who the blinds were. Its positions test
+says "no six-handed hands to ask" rather than failing a corpus that has
+none. Reports that walk the registry (`stats.py`, `spots.py --check`)
+walk `sites.loaded(con)` instead, so a registered room nobody here plays
+is not a table of dashes. Files in the Windows code page are read as
+such when they are not UTF-8.
+
+---
+
 ## The parsers against twenty years of files
 
 ### Fixed -- money that was wrong in the database, and passed the check

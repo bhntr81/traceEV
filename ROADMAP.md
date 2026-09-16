@@ -983,6 +983,20 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 19 — the app rooms
+
+**Goal:** the cheapest sites first. Thirteen of FPDB's "Stars" fixtures
+are other rooms writing PokerStars' format under their own name.
+
+**Result: PASS.** `Site.brand`, `HEADER(line, brand)`, two registry
+lines: PokerBros and PokerMaster, the rooms Hand2Note sells its app
+support on. Their fixtures found a real bug on the Stars parser -- an
+ante seeded the street's tally and every raise from an anted seat came
+out short -- which 9,961 Stars cash hands could never have shown. Run
+It Once and MPLPoker are the same format and are not added: the first
+closed in 2022 and the second's liveness is not known. Next: PartyPoker,
+31 fixtures, the first parser from scratch since Stars.
+
 ## Run 18 — the parsers against the world's files
 
 **Goal:** the user's "we can get just as many sites as H2N; it is a

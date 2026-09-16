@@ -97,7 +97,13 @@ def read_text(path, limit=None):
         raw = fh.read(limit) if limit else fh.read()
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         return raw.decode("utf-16", errors="replace")
-    return raw.decode("utf-8-sig", errors="replace")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # A Windows client of the old kind writes the system code page; in
+        # one of FPDB's files the yuan sign is a single byte, and read as
+        # UTF-8 it is a replacement mark that no currency pattern knows.
+        return raw.decode("cp1252", errors="replace")
 
 
 def sniff(path):
@@ -114,7 +120,7 @@ def sniff(path):
         if not line or not any(c.isalpha() for c in line):
             continue
         for site in sites.SITES:
-            if site.module.HEADER(line):
+            if site.header(line):
                 return site.key
         return None
     return None
@@ -639,8 +645,14 @@ def check(db_path=DB):
     # arrived, which is the only version of this check that would have
     # noticed.
     for site in sites.KEYS:
-        sample = next((f for place in scan()
-                       for f in survey([place["path"]])[site]), None)
+        module = sites.of(site).module
+        files = (f for place in scan() for f in survey([place["path"]])[site])
+        # The first of the site's files that holds a hold'em hand. An Omaha
+        # file is the site's and loads nothing, which is not the failure
+        # this exists to find.
+        sample = next((f for f in files if any(
+            module.parse_hand(b, source=f.name)
+            for b in module.split_hands(read_text(f)))), None)
         if sample is None:
             print(f"{site} loads a real file          no {site} file on disk")
             continue

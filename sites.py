@@ -15,7 +15,9 @@ happened when ACR arrived and `fmt='RING'` stopped naming one pool.
 So a site is an entry here, and the rest of the program asks. A new site is
 one parser module and one entry below, and the parser's whole contract is:
 
-  HEADER(line)               true if this line begins one of its hands
+  HEADER(line)               true if this line begins one of its hands;
+                             a parser shared by rooms that write its format
+                             under their own name takes the brand as well
   split_hands(text)          each hand in a file, as its own block
   parse_hand(block, source)  the shared dict shape -- {"hand", "seats",
                              "actions"} with every column the loader writes,
@@ -71,6 +73,15 @@ class Site:
     places: tuple
     # One line for a person, including which other rooms share the format.
     about: str
+    # The name on the first line, when this room writes another room's
+    # format. The parser is shared and this is what tells the rooms apart;
+    # empty for the room whose format it is.
+    brand: str = ""
+
+    def header(self, line):
+        """True if this line begins one of THIS site's hands."""
+        return (self.module.HEADER(line, self.brand) if self.brand
+                else self.module.HEADER(line))
 
 
 SITES = (
@@ -89,6 +100,16 @@ SITES = (
                  r"%LOCALAPPDATA%\PokerStars.EU\HandHistory",
                  r"%LOCALAPPDATA%\PokerStars.UK\HandHistory"),
          about="PokerStars -- the same text whichever licence the client is"),
+    # The app rooms. Neither writes a history of its own; the text a
+    # converter produces is PokerStars' with the app's name on the first
+    # line, so each is the PokerStars parser told which name to answer to.
+    # A player is an app id and it is the same person tomorrow.
+    Site("pokerbros", pokerstars, names=True, reveals=False, rake=True,
+         places=(), brand="PokerBros",
+         about="PokerBros -- an app room, read from a converter's export"),
+    Site("pokermaster", pokerstars, names=True, reveals=False, rake=True,
+         places=(), brand="PokerMaster",
+         about="PokerMaster -- an app room, read from a converter's export"),
 )
 
 KEYS = tuple(s.key for s in SITES)
@@ -119,6 +140,18 @@ def named():
 def revealing():
     """Sites that show every hand, folds included -- the ones a pool is."""
     return tuple(s.key for s in SITES if s.reveals)
+
+
+def loaded(con):
+    """
+    The registered sites this database actually holds hands from.
+
+    A report that walks the registry prints a section per site, and a
+    site registered for a room nobody here plays -- the app rooms, until a
+    converter's export arrives -- is a table of dashes. Reports walk this.
+    """
+    have = {r[0] for r in con.execute("SELECT DISTINCT site FROM hands")}
+    return tuple(s.key for s in SITES if s.key in have)
 
 
 def sql_in(keys):
@@ -261,9 +294,12 @@ def check(db_path=DB):
                        GROUP BY 1""", s.key)
         ns = [r["n"] for r in counts]
         spread = (max(ns) - min(ns)) / max(1, sum(ns) / len(ns)) if ns else 1
-        print(f"  positions balanced      {100 * (1 - spread):6.2f}%  "
-              f"(6 positions, {min(ns) if ns else 0}-{max(ns) if ns else 0} each)")
-        if len(ns) != 6 or spread > 0.02:
+        if ns:
+            print(f"  positions balanced      {100 * (1 - spread):6.2f}%  "
+                  f"(6 positions, {min(ns)}-{max(ns)} each)")
+        else:
+            print(f"  positions balanced      no six-handed hands to ask")
+        if ns and (len(ns) != 6 or spread > 0.02):
             fails.append(f"{s.key} positions")
 
         # 3. The blinds. Whoever the button says is the small blind is
@@ -272,12 +308,21 @@ def check(db_path=DB):
         #    from a non-blind seat, so this is never exactly 100%: measured
         #    1.0% on ACR and 1.5% on Ignition, against the ~100% that
         #    positions read one seat out would show.
+        #    An ante hand has everybody posting and says nothing about the
+        #    blinds; every seat posting, or more than three, is one, and it
+        #    is left out.
+        no_ante = """h.hand_id NOT IN (SELECT s2.hand_id FROM seats s2
+                                        JOIN hands h2 USING(hand_id)
+                                        WHERE s2.posted > 0 GROUP BY s2.hand_id
+                                        HAVING COUNT(*) > 3
+                                            OR COUNT(*) >= h2.n_players)"""
         bad = q(f"""SELECT COUNT(*) n FROM seats s JOIN hands h USING(hand_id)
                     WHERE {cash} AND h.standard=1 AND s.posted > 0
-                      AND s.position NOT IN ('SB','BB')""", s.key)[0]["n"]
+                      AND s.position NOT IN ('SB','BB') AND {no_ante}""",
+                s.key)[0]["n"]
         total = q(f"""SELECT COUNT(*) n FROM seats s JOIN hands h USING(hand_id)
-                      WHERE {cash} AND h.standard=1 AND s.posted > 0""",
-                  s.key)[0]["n"]
+                      WHERE {cash} AND h.standard=1 AND s.posted > 0
+                        AND {no_ante}""", s.key)[0]["n"]
         print(f"  blinds posted by blinds {100 * (1 - bad / max(1, total)):6.2f}%  "
               f"({bad} of {total} posts were dead posts from other seats)")
         # Judged by the interval, not the point: one dead post in nine is
