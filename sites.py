@@ -218,19 +218,28 @@ def check(db_path=DB):
         #    which is gross of rake on Ignition. Either identity catches a
         #    misread bet size, a missed call, a dropped post.
         rows = q(f"""SELECT h.hand_id, h.pot, SUM(s.won) w,
-                       SUM(s.posted + s.invested) inp,
+                       SUM(s.posted + s.invested) inp, h.rake,
                        COALESCE(h.rake,0) + COALESCE(h.jp_fee,0) house
                      FROM seats s JOIN hands h USING(hand_id)
                      WHERE {cash} GROUP BY h.hand_id""", s.key)
-        if s.rake:
-            off = [r for r in rows
-                   if abs((r["inp"] or 0) - r["house"] - (r["w"] or 0)) > 0.011]
-            how = "in - house = won"
-        else:
-            off = [r for r in rows
-                   if r["pot"] is None or abs((r["inp"] or 0) - r["pot"]) > 0.011
-                   or (r["w"] or 0) > r["pot"] + 0.011]
-            how = "in = stated pot, won <= pot"
+        # Which identity is the hand's to answer, not only the site's: the
+        # site says what its client writes today, and a hand from an older
+        # client may say more. Bovada wrote the rake in 2012 and does not
+        # now, and one of FPDB's 2012 hands carries a summary from a
+        # different hand entirely -- the stated pot is wrong and the money
+        # is right, which only the stronger identity can tell.
+        # Without the rake written, what came out can only be bounded: no
+        # more than the pot, and no less than the pot minus any rake a
+        # room takes. The lower bound was missing until 16 Sep 2026, and
+        # seven hands in which hero's side pot was overwritten by the main
+        # pot -- $44.80 recorded as $4.88 -- passed the check for a month.
+        off = [r for r in rows
+               if (abs((r["inp"] or 0) - r["house"] - (r["w"] or 0)) > 0.011
+                   if r["rake"] is not None or s.rake else
+                   r["pot"] is None or abs((r["inp"] or 0) - r["pot"]) > 0.011
+                   or (r["w"] or 0) > r["pot"] + 0.011
+                   or (r["w"] or 0) < 0.8 * r["pot"] - 0.011)]
+        how = "in - house = won" if s.rake else "in = stated pot, 0.8 pot <= won <= pot"
         ok = 100 * (1 - len(off) / max(1, len(rows)))
         print(f"  money adds up           {ok:6.2f}%  "
               f"({len(rows) - len(off)}/{len(rows)} hands within a cent, "
@@ -271,7 +280,12 @@ def check(db_path=DB):
                   s.key)[0]["n"]
         print(f"  blinds posted by blinds {100 * (1 - bad / max(1, total)):6.2f}%  "
               f"({bad} of {total} posts were dead posts from other seats)")
-        if bad / max(1, total) > 0.05:
+        # Judged by the interval, not the point: one dead post in nine is
+        # 11% and says nothing, one in nine hundred says positions are
+        # right. The fixture corpus is the small case and it is real.
+        from stats import wilson          # stats imports this module
+        _p, low, _high = wilson(bad, total) if total else (0, 0, 0)
+        if low > 0.05:
             fails.append(f"{s.key} blinds")
 
         # 4. Identity, where the site has it. The point of a site with names
@@ -282,10 +296,14 @@ def check(db_path=DB):
                         JOIN hands h USING(hand_id)
                         WHERE h.site=? AND s.is_hero=0 GROUP BY 1""", s.key)
             over = {k: sum(1 for r in seen if r["n"] >= k) for k in (30, 100, 500)}
+            hands = q("SELECT COUNT(*) n FROM hands WHERE site=?", s.key)[0]["n"]
             print(f"  named opponents         {len(seen):6d}  "
                   f"({over[30]} with 30+ hands, {over[100]} with 100+, "
                   f"{over[500]} with 500+)")
-            if over[100] < 20:
+            # Twenty regulars at a hundred hands is a claim about a
+            # database of thousands; a few hundred fixture hands could not
+            # hold them whatever the parser did, and are not asked.
+            if over[100] < 20 and hands >= 2000:
                 fails.append(f"{s.key} identity")
         else:
             print(f"  named opponents         none -- this site has no names")

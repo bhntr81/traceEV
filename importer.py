@@ -18,6 +18,7 @@ needs nothing changed here.
     python importer.py --refresh            load anything new from those places
     python importer.py <folder-or-file>...  load them, whatever site they are
     python importer.py --merge other.db     take the hands from another database
+    python importer.py --reread <folder>... read these again (after a parser was corrected)
     python importer.py --rebuild            every derived table again (after an alias)
     python importer.py --check              PASS or FAIL
 """
@@ -83,24 +84,38 @@ def migrate(con):
     con.commit()
 
 
+def read_text(path, limit=None):
+    """
+    A history file as text, whatever it was saved as.
+
+    UTF-8 nearly always, sometimes with a byte-order mark; but the Winning
+    client of 2016 wrote UTF-16, and read as UTF-8 that is a file of NULs
+    between letters that no header matches -- five fixtures sniffed as
+    nothing at all. The mark at the front says which, so it is asked.
+    """
+    with open(path, "rb") as fh:
+        raw = fh.read(limit) if limit else fh.read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
 def sniff(path):
     """Which site wrote this file, by reading it rather than by asking."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            # The header is at the top, but an export can begin with a blank
-            # line or a stray byte-order mark, so a few lines are allowed.
-            for _ in range(6):
-                line = fh.readline()
-                if not line:
-                    break
-                line = line.lstrip("﻿").strip()
-                if not line:
-                    continue
-                for site in sites.SITES:
-                    if site.module.HEADER(line):
-                        return site.key
-                return None
+        head = read_text(path, limit=4096)
     except OSError:
+        return None
+    # The header is at the top, but an export can begin with a blank line,
+    # a stray byte-order mark, or PokerStars' archive rule of asterisks, so
+    # a few lines are allowed and a line of no letters is passed over.
+    for line in head.splitlines()[:6]:
+        line = line.strip()
+        if not line or not any(c.isalpha() for c in line):
+            continue
+        for site in sites.SITES:
+            if site.module.HEADER(line):
+                return site.key
         return None
     return None
 
@@ -287,7 +302,7 @@ def load(paths, db_path=DB, progress=None):
         for f in files:
             n_files += 1
             try:
-                text = f.read_text(encoding="utf-8", errors="replace")
+                text = read_text(f)
             except OSError:
                 continue
             for block in site.module.split_hands(text):
@@ -326,6 +341,51 @@ def load(paths, db_path=DB, progress=None):
         result["known"] += skipped
         result["files"] += n_files
     con.close()
+    return result
+
+
+def reread(paths, db_path=DB, progress=None):
+    """
+    Read these files again with the parsers as they are now.
+
+    `load` skips a hand it already has, which is right for a refresh and
+    wrong after a parser is corrected: the hands it misread stay misread,
+    and no refresh will ever touch them. So every hand these files hold is
+    dropped first, by the site's own id, and loaded afresh, and the derived
+    tables are rebuilt as after any load. Nothing is lost that the files do
+    not still say -- which is the whole of what the database knows anyway.
+    First needed on 16 Sep 2026, when seven hands' side pots and a
+    tournament's every call had been read wrong for a month.
+    """
+    got = survey(paths)
+    ids = set()
+    for site in sites.SITES:
+        for f in got[site.key]:
+            try:
+                text = read_text(f)
+            except OSError:
+                continue
+            for block in site.module.split_hands(text):
+                parsed = site.module.parse_hand(block, source=f.name)
+                if parsed:
+                    ids.add(parsed["hand"]["hand_id"])
+    con = sqlite3.connect(db_path)
+    migrate(con)
+    ids = list(ids)
+    dropped = 0
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for table in ("actions", "seats", "hands"):
+            cur = con.execute(f"DELETE FROM {table} WHERE hand_id IN ({marks})", chunk)
+            if table == "hands":
+                dropped += cur.rowcount
+    con.commit()
+    con.close()
+    if progress:
+        progress(f"{dropped} hands dropped, to be read again")
+    result = load(paths, db_path, progress)
+    result["dropped"] = dropped
     return result
 
 
@@ -470,7 +530,7 @@ def export(con, hand_ids, out, log=print):
                 missing += sorted(ids)
                 continue
             module = sites.of(site).module
-            text = f.read_text(encoding="utf-8", errors="replace")
+            text = read_text(f)
             for block in module.split_hands(text):
                 got = module.parse_hand(block, source=source)
                 if got and got["hand"]["hand_id"] in ids:
@@ -676,6 +736,16 @@ def main(argv):
     if "--merge" in argv:
         got = merge(argv[argv.index("--merge") + 1], progress=print)
         print(f"{got['added']} hands merged, {got['known']} already known")
+        rebuild(progress=print)
+        return 0
+    if "--reread" in argv:
+        paths = [a for a in argv if not a.startswith("--")]
+        if not paths:
+            print("--reread needs the folders or files to read again")
+            return 1
+        got = reread(paths, progress=print)
+        print(f"\n{got['dropped']} hands dropped, {got['added']} read again, "
+              f"{got['known']} already known, {got['unknown']} unrecognised")
         rebuild(progress=print)
         return 0
     paths = [a for a in argv if not a.startswith("--")]

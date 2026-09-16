@@ -108,7 +108,14 @@ before any schema change.
 ```bash
 python check.py                 # every module's check, in dependency order
 python population.py --check    # split-half validation of the pool findings
+python fixtures.py --check      # the parsers against FPDB's corpus, 2005 to 2023
 ```
+
+`fixtures.py` reads a corpus kept outside the repository
+(`Desktop/hand_samples/fpdb-chaz`, AGPL, never copied in) and passes with
+a note when it is absent. When a parser is corrected, **`python
+importer.py --reread <paths>`**: a refresh skips known hands and would
+leave the misread ones misread for ever.
 
 A change to a derivation is not done until `check.py` passes. In one session
 these caught five defects that raised no error and would each have produced
@@ -183,7 +190,19 @@ Facts that stay true, and that have each been got wrong at least once:
   parser has had a silent bug the money test found and nothing else would
   have: ACR's jackpot fee and bare `posts`, Ignition's `Posts dead chip`.
   Where the history writes the rake the identity is `in - house = won`;
-  where it does not, `in = stated pot`. `Site.rake` says which.
+  where it does not, `in = stated pot` and `0.8 pot <= won <= pot`.
+  `Site.rake` says which, and a hand that writes the rake anyway gets the
+  stronger one. The floor on `won` arrived on 16 Sep 2026, after seven
+  hands recorded as winning a tenth of the pot had passed for a month.
+- **A parser tallies every line it does not understand, and the tally
+  must be empty.** Each parser's `UNKNOWN` counts the verbs its action
+  loop met and did not know, and `fixtures.py --check` fails on any. The
+  alternative is the silent `continue` that dropped 391 tournament calls
+  and 367 folds without a sound; a fold not recorded is a seat that never
+  folds and reaches every showdown.
+- **`won` is added, never set.** A seat collects twice in a hand with a
+  side pot and in a hand run twice, and `won = amount` recorded the
+  second collection alone -- $4.88 for a $49.68 pot -- on both sites.
 - **`won` is what came back from the pot, never profit.** Profit is
   `won - posted - invested`. Summing `won` alone once said hero was up
   390bb/100.

@@ -17,6 +17,7 @@ That is the intended way to use it as you keep playing.
 python importer.py "C:/path/to/any/HH"      # load, whatever sites are in it
 python importer.py --scan                   # where hand histories are on this machine
 python importer.py --refresh                # load what is new from those places
+python importer.py --reread "C:/path/HH"    # read these again, after a parser was corrected
 
 python sites.py                             # the sites this program knows
 python sites.py --stats                     # what is in the database, per site
@@ -24,7 +25,20 @@ python sites.py --check                     # prove every site's import
 ```
 
 Folders are walked recursively for `*.txt`. Omaha files are skipped. ACR
-hand ids are prefixed `cp-` so the sites can never collide.
+hand ids are prefixed `cp-` so the sites can never collide. Files are read
+as UTF-8, with or without a byte-order mark, or as UTF-16 when the mark
+says so -- the Winning client of 2016 wrote that, and read as UTF-8 it is
+a file no header matches.
+
+**`--reread` is for after a parser is corrected.** A refresh skips every
+hand it already has, which is right until the parser that read them is
+found wrong -- then the hands it misread stay misread for ever. `--reread`
+drops every hand the given files hold and loads them again, then rebuilds.
+Nothing is lost that the files do not still say. It was first needed on
+16 Sep 2026: seven hands in which hero's side pot had been overwritten by
+the main pot, seven run-twice hands recorded as winning one board, and a
+tournament folder in which every "Call 20" and "Fold(Blind Disconnected)"
+had been dropped as a verb the parser did not know.
 
 `acr.py` and `ignition.py` are parsers and nothing else; neither is run
 directly.
@@ -956,6 +970,38 @@ where every table is individually fine and the set of them is wrong.
 
 If something fails, **fix the earliest one first**; the later ones read its
 tables and will fail as a consequence.
+
+### The parsers against the world's files
+
+```bash
+python fixtures.py              # what FPDB's regression corpus holds, per room
+python fixtures.py --check      # our parsers against every fixture they claim
+```
+
+Your own histories are one client, one year, one format. FPDB -- the free
+tracker, AGPL, so its files are read and never copied in -- keeps a
+regression corpus of hand histories from forty rooms and twenty years, and
+`fixtures.py` runs our three parsers over every file in it whose header
+they claim: fifty-one files, 971 hands, PokerStars from 2005 to the
+Zoom archive export, Bovada from the 2012 client through Bodog and Ignition, ACR
+with a Cap table. The corpus lives outside the repository at
+`Desktop/hand_samples/fpdb-chaz`; with it absent the check passes with a
+note.
+
+Three things are proved. Every hand in a claimed file produces a row -- a
+file half read is a silent drop and fails whatever the money says. No
+parser met a verb it did not know: each keeps a tally of the lines it
+dropped, and the tally must be empty, because a dropped line is money not
+counted and there is no other way to hear it. And `sites.py --check`'s
+three proofs hold on the fixtures as they hold on your database. A file
+the parser reads as well as the file allows -- two hands glued under one
+header -- is listed in `fixtures.KNOWN` with its reason and left out of
+the proofs, so a real gap can never be averaged away by it.
+
+`python fixtures.py` alone surveys the corpus: how many files each room
+has, and which our parsers do not yet claim. That list, in order of how
+much there is to write a parser against, is where the next site comes
+from.
 
 ---
 

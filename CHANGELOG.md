@@ -8,6 +8,113 @@ Newest first.
 
 ---
 
+## The parsers against twenty years of files
+
+### Fixed -- money that was wrong in the database, and passed the check
+
+Three real bugs, found by running the parsers over FPDB's regression
+corpus and then over your own files with the corrected code, comparing
+every seat's money with what the database held:
+
+- **Ignition, a hand with a side pot.** "Hand result-Side pot $44.80" and
+  "Hand result $4.88" to the same seat; the second *set* `won` instead of
+  adding. Seven hands in the database had hero winning the main pot alone.
+  `won +=` now, and the same fix in `acr.py`, where a hand run twice has a
+  summary per board and a seat that won both was recorded as winning the
+  second.
+- **Ignition tournaments.** The tournament client writes "Call 20" for
+  the ring client's "Calls $0.25", "Fold(Blind Disconnected)" for a
+  disconnected player's forced fold, and "Hand Result" with a capital.
+  All three were verbs the parser did not know and dropped: 391 calls, 367
+  folds, 137 results in one folder. A fold not recorded is a seat that
+  never folds. 749 decisions came back on the re-read.
+- **Ignition, an ante for the last of a stack.** "All-in 20" before the
+  hole cards is the ante, not a shove; it was an action. Now a post, like
+  anything before the deal.
+
+### Why the check let them through
+
+The Ignition money identity was `in = stated pot, won <= pot`, because the
+history does not write the rake. A seat recorded as winning a tenth of the
+pot satisfies it. The identity now has a floor: `0.8 pot <= won <= pot`,
+which those seven hands fail and every real hand passes. And where a hand
+*does* write the rake -- the 2012 Bovada client did -- the stronger
+identity `in - house = won` is used for that hand whatever the site's rule
+is, because one FPDB fixture carries a summary from a different hand: the
+stated pot is wrong and the money is right, and only the stronger identity
+can tell.
+
+### Added -- `fixtures.py`, `importer.py --reread`, and the tallies
+
+`fixtures.py --check` runs the three parsers over every FPDB fixture they
+claim -- fifty-one files, 971 hands, 2005 to 2023 -- and requires every hand
+read, no verb dropped, and the site proofs to hold. Each parser now keeps
+`UNKNOWN`, a tally of the verbs it met and did not know, and the check
+reads it; a parser that drops a line silently is the failure this project
+is built against and this is the first time it has been audible.
+
+`importer.py --reread <paths>` drops the hands the files hold and loads
+them again, for exactly this case: a refresh skips known hands and would
+have left the seven wrong for ever.
+
+### Fixed -- formats the parsers did not know
+
+From the fixtures: PokerStars "Game #" (before 2011), "Home Game Hand #",
+euro and pound tables, play money, tables with no "-max", the archive
+export that indents every line under a rule of asterisks, and the 2005
+client's habit of handing an uncalled bet back with no line for it (only
+then, only when one seat collected). Bovada and Bodog headers on the
+Ignition parser; the 2012 client's "Ante/Small Blind", "Big blind/Bring
+in", one-figure raises that name the street total, boards dealt as "Card
+dealt to table" with no street markers, and a written rake. Format and
+stakes from the hand when the filename has lost them. ACR "caps $0.55" on
+a Cap table. A hand run twice, on both sites: first board recorded, the
+second's markers skipped. UTF-16 files read. A block with a seat number
+listed twice -- two hands glued under one header -- refused rather than
+read as one.
+
+`sites.py --check` judges its blinds test by the Wilson interval rather
+than the point -- one dead post in nine says nothing -- and asks the
+identity test only of a site with two thousand hands, so the proofs mean
+the same on a fixture corpus as on a database.
+
+---
+
+## The assistant is scored, and comparisons go through the tool
+
+### Added -- `golden.json`, `ask.py --score`
+
+Fifty-one questions with the command that answers each. `--score` asks
+every one cold and marks it right if any query the model ran gives the
+same answer -- the same chances and cases for the stat asked, by
+`ask.same_answer` -- not the same flags. A wider table than wanted is
+right; a narrower one is not; an entry may list alternatives. The first
+run scored 32 of 41: five misses were hold-questions sent to PokerStars,
+which shows a quarter of its hands, and the vocabulary now says which
+site answers which kind of question.
+
+### Changed -- the prompt
+
+A comparison is one query with `--versus` and `--show`, and the model may
+call a difference real only when the tool's verdict line does. The first
+answer the assistant ever gave compared two rates by whether their
+intervals overlapped, which is the test this project retired on 5 Sep.
+
+---
+
+## Ask the database in English
+
+### Added -- `ask.py`, and a chat panel in the window
+
+The model is given the program's vocabulary, generated from `query.py`,
+and one read-only tool. Every number in an answer came from the tool and
+the command is printed under it. Providers: Gemini, Claude, OpenAI, Grok,
+and the Claude Code command line; `--mcp` serves the same tool to the
+Claude Desktop app. Keys in `ai.json`, which is gitignored. Carried over
+from a parallel session and consolidated here.
+
+---
+
 ## The program is TraceEV
 
 Everything that showed a name -- the window's title and heading, the

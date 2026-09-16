@@ -28,42 +28,63 @@ returns. Loading, the schema and the checks are `importer.py` and
 
 import re
 
+from collections import Counter
+
 from acr import _all_money, _money, name_positions
+
+# Verbs the action loop met and did not know, by first word -- the fixture
+# check reads it, because a verb dropped here is money dropped silently.
+UNKNOWN = Counter()
+
+# A figure carries a dollar, a euro, a pound, or nothing on a play-money
+# table. `_money` reads the digits whatever is in front; these patterns had
+# `\$?` and a 69-hand euro file matched none of them.
+CUR = r"[$\u20ac\u00a3]?"
 
 # PokerStars names itself on the first line of every hand. The header is
 # the only thing a file is identified by -- never the folder it was in.
-HEADER = lambda line: line.startswith("PokerStars ") and " Hand #" in line[:40]
+# "Hand #" since 2011 and "Game #" before it; "Zoom Hand #" and "Home Game
+# Hand #" as well. FPDB's corpus holds thirty-one PokerStars files this
+# program did not recognise as PokerStars, and every one of them was one of
+# these. A user with a decade of histories has the old ones too.
+HEADER = lambda line: (line.startswith("PokerStars ")
+                       and (" Hand #" in line[:40] or " Game #" in line[:40]))
 
 # "PokerStars Hand #261810334287:  Hold'em No Limit ($0.50/$1.00 USD) -
-# 2026/08/20 9:43:54 ET". The hour is not zero-padded, and a Zoom hand
-# reads "PokerStars Zoom Hand #".
+# 2026/08/20 9:43:54 ET". The hour is not zero-padded. The stakes carry a
+# dollar, a euro, a pound, or nothing at all on a play-money table.
 HAND_RE = re.compile(
-    r"^PokerStars (Zoom )?Hand #(\d+):\s+(.+?)\s+\(\$?([\d.,]+)/\$?([\d.,]+)"
+    r"^PokerStars (?:Zoom |Home Game )?(?:Hand|Game) #(\d+):\s+(.+?)\s+"
+    r"\(" + CUR + r"([\d.,]+)/" + CUR + r"([\d.,]+)"
     r"(?: [A-Z]{3})?\)\s+-\s+(\d{4}/\d{2}/\d{2}) (\d{1,2}:\d{2}:\d{2})", re.M)
-# "Table 'Pemba III' 6-max Seat #3 is the button"
-TABLE_RE = re.compile(r"^Table '(.+?)' (\d+)-max(?: Zoom)? Seat #(\d+) is the button", re.M)
+# "Table 'Pemba III' 6-max Seat #3 is the button", on a play-money table
+# "9-max (Play Money) Seat #4", and before 2006 no "-max" at all.
+TABLE_RE = re.compile(r"^Table '(.+?)'(?: (\d+)-max)?(?: \([^)]*\))?(?: Zoom)? "
+                      r"Seat #(\d+) is the button", re.M)
 # "Seat 1: eodh ($193.94 in chips)" and "... ($100 in chips) is sitting out"
-SEAT_RE = re.compile(r"^Seat (\d+): (.+) \(\$?([\d.,]+) in chips\)(.*)$", re.M)
+SEAT_RE = re.compile(r"^Seat (\d+): (.+) \(" + CUR + r"([\d.,]+) in chips\)(.*)$", re.M)
 CARDS_RE = re.compile(r"\[([2-9TJQKA][cdhs](?:\s+[2-9TJQKA][cdhs])*)\]")
-STREET_RE = re.compile(r"^\*\*\* (HOLE CARDS|FLOP|TURN|RIVER|SHOW DOWN|SUMMARY) \*\*\*(.*)$", re.M)
+# "*** FIRST FLOP ***", "*** SECOND RIVER ***": a hand run twice, and the
+# first board is the one recorded, as in `acr.py`.
+STREET_RE = re.compile(r"^\*\*\* (?:(FIRST|SECOND) )?(HOLE CARDS|FLOP|TURN|RIVER|SHOW DOWN|SUMMARY) \*\*\*(.*)$", re.M)
 DEALT_RE = re.compile(r"^Dealt to (.+?) \[", re.M)
-RETURN_RE = re.compile(r"^Uncalled bet \(\$?([\d.,]+)\) returned to (.+)$")
+RETURN_RE = re.compile(r"^Uncalled bet \(" + CUR + r"([\d.,]+)\) returned to (.+)$")
 # "red2652 collected $4.28 from pot", "... from side pot", "... from main pot-2"
-COLLECTED_RE = re.compile(r"^collected \$?([\d.,]+) from (?:main |side )?pot")
+COLLECTED_RE = re.compile(r"^collected " + CUR + r"([\d.,]+) from (?:main |side )?pot")
 # "Seat 4: eL2P TRabbit showed [Ts Ac] and won ($112.78) with two pair ...
 # (pot not awarded as player cashed out)". A player who takes the All-in
 # Cash Out is paid by the house and the "collected" line never appears,
 # but the pot still went where the cards said and the summary says so.
 # Read only when the body gave nobody anything, so it never counts twice.
-SUMMARY_WON_RE = re.compile(r"^Seat (\d+): .*? (?:and won|collected) \(\$?([\d.,]+)\)", re.M)
+SUMMARY_WON_RE = re.compile(r"^Seat (\d+): .*? (?:and won|collected) \(" + CUR + r"([\d.,]+)\)", re.M)
 # "Total pot $4.50 | Rake $0.22" -- with side pots the line runs "Total pot
 # $50 Main pot $40. Side pot $10. | Rake $2", so the rake is found after
 # the bar rather than right after the total.
-POT_RE = re.compile(r"^Total pot \$?([\d.,]+).*?\|\s*Rake \$?([\d.,]+)", re.M)
+POT_RE = re.compile(r"^Total pot " + CUR + r"([\d.,]+).*?\|\s*Rake " + CUR + r"([\d.,]+)", re.M)
 # "posts small blind $0.50", "posts big blind $1", "posts the ante $0.10",
 # "posts small & big blinds $1.50" -- a returning player's out-of-turn post
 # -- and a bare "posts $1". All of it is live money in the pot.
-POST_RE = re.compile(r"^posts (?:small blind|big blind|the ante|small & big blinds|)\s*\$?([\d.,]+)")
+POST_RE = re.compile(r"^posts (?:small blind|big blind|the ante|small & big blinds|)\s*" + CUR + r"([\d.,]+)")
 
 STREETS = {"HOLE CARDS": "preflop", "FLOP": "flop",
            "TURN": "turn", "RIVER": "river"}
@@ -74,7 +95,9 @@ def parse_hand(text, source=""):
     m = HAND_RE.search(text)
     if not m:
         return None
-    zoom, hand_id, game_desc, sb, bb, day, clock = m.groups()
+    hand_id, game_desc, sb, bb, day, clock = m.groups()
+    zoom = m.group(0).startswith("PokerStars Zoom ")
+    legacy = " Game #" in m.group(0)          # the client before 2011
     if "hold'em" not in game_desc.lower():
         return None                      # Omaha files live in the same folder
     hh, mm, ss = clock.split(":")
@@ -83,7 +106,7 @@ def parse_hand(text, source=""):
     tm = TABLE_RE.search(text)
     if not tm:
         return None
-    table_name, max_seats, button = tm.group(1), int(tm.group(2)), int(tm.group(3))
+    table_name, button = tm.group(1), int(tm.group(3))
 
     seats, by_name = [], {}
     for seat_no, name, stack, trailing in SEAT_RE.findall(text):
@@ -94,6 +117,9 @@ def parse_hand(text, source=""):
         by_name[name] = s
     if len(seats) < 2:
         return None
+    # A 2005 history does not say how many seats the table had; the highest
+    # seat number occupied is the nearest thing the hand knows.
+    max_seats = int(tm.group(2)) if tm.group(2) else max(s["seat"] for s in seats)
 
     dm = DEALT_RE.search(text)
     hero = by_name.get(dm.group(1)) if dm else None
@@ -111,10 +137,10 @@ def parse_hand(text, source=""):
     for raw in text.splitlines():
         sm = STREET_RE.match(raw)
         if sm:
-            marker, rest = sm.groups()
+            run, marker, rest = sm.groups()
             if marker == "SUMMARY":
                 break                    # what came back was read as it came
-            if marker == "SHOW DOWN":
+            if marker == "SHOW DOWN" or run == "SECOND":
                 continue
             street = STREETS[marker]
             if street != "preflop":
@@ -165,7 +191,10 @@ def parse_hand(text, source=""):
                             "is connected", "is disconnected", "has timed out",
                             "was removed", "will be allowed", "said,",
                             "has returned", "stands up", "re-buys",
-                            "doesn't show")):
+                            "doesn't show",
+                            # not a Stars line: a converter's Bovada
+                            # history in Stars clothing carries it
+                            "Table deposit")):
             continue
 
         allin = "and is all-in" in rest
@@ -185,6 +214,7 @@ def parse_hand(text, source=""):
             amount = nums[0] if nums else None
             total = nums[1] if len(nums) > 1 else None
         if verb is None:
+            UNKNOWN[rest.split(" ")[0]] += 1
             continue
         order += 1
         actions.append({"street": street, "n": order, "position": None,
@@ -255,10 +285,28 @@ def parse_hand(text, source=""):
     for s in seats:
         s["invested"] = round(s["invested"] - s["returned"], 4)
 
+    # The client before 2011 handed an uncalled bet back without writing
+    # a line for it: a raise nobody calls "collected $2.50 from pot" and
+    # the pot is $2.50, with the $1 that came back mentioned nowhere. Only
+    # then, only when nothing was written and one seat collected, the
+    # money that went in and did not come out is that seat's own, and is
+    # marked returned so that profit is right. Never on a modern hand,
+    # where the line is always written and its absence would be a bug
+    # this would hide.
+    pot_m = POT_RE.search(text)
+    collectors = [s for s in seats if s["won"]]
+    if legacy and pot_m and len(collectors) == 1 and not any(
+            s["returned"] for s in seats):
+        went_in = sum(s["posted"] + s["invested"] for s in seats)
+        excess = round(went_in - (_money(pot_m.group(2)) or 0.0)
+                       - collectors[0]["won"], 2)
+        if 0 < excess <= collectors[0]["posted"] + collectors[0]["invested"]:
+            collectors[0]["returned"] += excess
+            collectors[0]["invested"] = round(collectors[0]["invested"] - excess, 4)
+
     posted_bb = any(s["posted"] and s["position"] == "BB" for s in seats)
     standard = int(sb_seat is not None and posted_bb)
 
-    pot_m = POT_RE.search(text)
     return {
         "hand": {"hand_id": "ps-" + hand_id, "played_at": played_at,
                  "table_id": table_name, "game": "HOLDEM",
@@ -276,7 +324,16 @@ def parse_hand(text, source=""):
     }
 
 
+# The client's archive export writes "*********** # 1 **************"
+# above each hand and indents every line of it by one space, which puts
+# every "^" in this file one character off. Peeled here, once, rather than
+# allowed for in eleven patterns.
+ARCHIVE_RE = re.compile(r"^\*{5,} # \d+ \*{5,}\s*$", re.M)
+
+
 def split_hands(text):
+    if ARCHIVE_RE.search(text):
+        text = re.sub(r"(?m)^ (?=\S)", "", ARCHIVE_RE.sub("", text))
     starts = [m.start() for m in HAND_RE.finditer(text)]
     for i, a in enumerate(starts):
         yield text[a:starts[i + 1] if i + 1 < len(starts) else len(text)]

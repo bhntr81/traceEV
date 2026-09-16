@@ -983,6 +983,53 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 18 — the parsers against the world's files
+
+**Goal:** the user's "we can get just as many sites as H2N; it is a
+matter of finding hand histories online." First, the three parsers we
+have against a corpus we did not write.
+
+**Result: PASS**, 20 of 20. FPDB's regression corpus fetched (AGPL; read,
+never copied in); `fixtures.py --check` over fifty-one claimed files and 971
+hands, every hand read, no verb dropped, proofs held. Then the corrected
+parsers over the user's own files against the database, seat by seat:
+seven Ignition side pots recorded as the main pot alone, seven ACR
+run-twice hands recorded as one board, and a tournament folder with 895
+lines dropped as unknown verbs. `--reread` for exactly that; 174,298
+decisions from 173,549. The Ignition money identity gained the floor
+that would have caught the first of these a month ago.
+
+The survey is the plan for goal 5's sites: PartyPoker 31 fixtures, iPoker
+12, Winamax 11, BetOnline 11, Microgaming 5, KingsClub 4, 888 3, Unibet 1,
+plus the Winning client's 2015–2017 format, eight files in UTF-16 under
+"Game started at:". Each is a parser module and a registry line. Cheaper than any of them: Run It Once, PokerBros, PokerMaster and
+MPLPoker write the PokerStars format under their own name -- thirteen
+Stars-folder fixtures are these -- so a brand list on the one parser is
+four rooms, and it is how a tracker "supports" the app rooms. GGPoker
+writes no usable text and is not on the list.
+
+## Run 17 — the assistant scored
+
+**Goal:** the user's "can we implement Gemini's text-to-SQL idea, will it
+sell" -- with the improvements: filters not SQL, the tool judges
+significance, translation accuracy measured.
+
+**Result: PASS.** `golden.json`, `ask.py --score`, answer-equivalence
+scoring; 32 of 41 on the first run, the misses traced to one rule (which
+site answers hold-questions) and written into the vocabulary. Re-score
+when a provider's limit resets. The honest market answer, given at the
+time: a hundred people at twenty dollars is the ceiling and not the
+likely case; the assistant is a feature, not the product.
+
+## Run 16 — ask in English
+
+**Goal:** carried over from a parallel session and consolidated: the
+database asked in English, with the model confined to the program's own
+vocabulary and one read-only tool.
+
+**Result: PASS.** `ask.py`, the chat panel, five providers, an MCP server
+for the desktop app.
+
 ## Run 15 — table composition
 
 **Goal:** where the fish sits, not just whether one is in the pot.

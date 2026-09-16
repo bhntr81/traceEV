@@ -66,6 +66,15 @@ GONE = {
 }
 
 
+# Fixtures a parser reads as well as the file allows, and why that is not
+# all the way. Each is a fact about a file, not a gap in a parser, and is
+# excluded from the proofs so that a real gap is never averaged away by it.
+KNOWN = {
+    "NLHE-USD-5-10-201511.concatenated.partial.txt":
+        "two hands under one header, cut mid-summary and glued; refused",
+}
+
+
 def fixture_files():
     """Every text fixture under the cash tree, tagged with FPDB's site folder."""
     out = []
@@ -142,20 +151,24 @@ def check():
         print("\nPASS (nothing to check)")
         return True
 
-    claimed = {}
+    claimed, known = {}, []
     for folder, f in fixture_files():
         key = importer.sniff(f)
-        if key:
+        if key and f.name in KNOWN:
+            known.append((key, f.name))
+        elif key:
             claimed.setdefault(key, []).append((folder, f))
     print(f"fixtures our parsers claim   "
           + ", ".join(f"{k}:{len(v)}" for k, v in sorted(claimed.items())))
+    for key, name in known:
+        print(f"    known, not proved: {key:10} {name[:44]:46} {KNOWN[name]}")
 
     tmp = Path(tempfile.mkdtemp()) / "fixtures.db"
     partial = []
     for key, items in sorted(claimed.items()):
         site = sites.of(key)
         for folder, f in items:
-            text = f.read_text(encoding="utf-8", errors="replace")
+            text = importer.read_text(f)
             blocks = list(site.module.split_hands(text))
             parsed = 0
             for block in blocks:
@@ -185,6 +198,15 @@ def check():
     n = con.execute("SELECT COUNT(*) FROM hands").fetchone()[0]
     con.close()
     print(f"hands loaded from fixtures   {n:,}")
+    # And nothing a parser met that it did not understand. A verb it does
+    # not know is a line of money it did not count, and it is dropped in
+    # silence but for these tallies.
+    unknown = {s.key: dict(s.module.UNKNOWN) for s in sites.SITES
+               if getattr(s.module, "UNKNOWN", None)}
+    print(f"verbs no parser knew         "
+          f"{unknown if unknown else 'none'}")
+    if unknown:
+        fails.append("a parser dropped lines it did not understand")
     if n:
         print()
         ok = sites.check(db_path=tmp)

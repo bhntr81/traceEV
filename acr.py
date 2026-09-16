@@ -27,6 +27,13 @@ found when one hand in five came up short.
 """
 
 import re
+from collections import Counter
+
+# Verbs the action loop met and did not know, by first word. A parser that
+# drops a line it cannot read fails silently and every figure downstream is
+# slightly wrong and entirely plausible; this is the tally the check reads
+# so that it fails loudly instead.
+UNKNOWN = Counter()
 
 # The Winning Poker Network writes a bare hand number followed by the game.
 # The header is the only thing a file is identified by -- never the folder
@@ -48,7 +55,11 @@ TABLE_RE = re.compile(r"^(.*?)\s*(\d+)-max\s+Seat #(\d+) is the button", re.M)
 SEAT_RE = re.compile(r"^Seat (\d+): (.+) \(\$?([\d.,]+)\)(.*)$", re.M)
 CARDS_RE = re.compile(r"\[([2-9TJQKA][cdhs](?:\s+[2-9TJQKA][cdhs])*)\]")
 MONEY_RE = re.compile(r"\$?([\d,]+(?:\.\d+)?)")
-STREET_RE = re.compile(r"^\*\*\* (HOLE CARDS|FLOP|TURN|RIVER|SHOW DOWN|SUMMARY) \*\*\*(.*)$", re.M)
+# "*** FLOP 1 ***", "*** TURN 2 ***": a hand run twice has two boards,
+# and the first is the one recorded -- there is no decision after the
+# all-in that made it, so which board it was changes nothing but the
+# texture filters, and one board is what a hand has.
+STREET_RE = re.compile(r"^\*\*\* (HOLE CARDS|FLOP|TURN|RIVER|SHOW DOWN|SUMMARY)(?: (\d))? \*\*\*(.*)$", re.M)
 DEALT_RE = re.compile(r"^Dealt to (.+?) \[", re.M)
 RETURN_RE = re.compile(r"^Uncalled bet \(\$?([\d.,]+)\) returned to (.+)$")
 # "Seat 3: M3dus4 did not show and won $0.04", "Seat 2: X showed [..] and won $1.10"
@@ -154,18 +165,24 @@ def parse_hand(text, source=""):
     # The action, street by street.
     board, actions, street, order = [], [], "preflop", 0
     in_summary = False
+    # What each seat has put in on the current street, blinds included. A
+    # "caps" line names the street total and nothing else, so the amount
+    # added has to be worked out from what was already there.
+    street_in = {}
 
     for raw in text.splitlines():
         sm = STREET_RE.match(raw)
         if sm:
-            marker, rest = sm.groups()
+            marker, run, rest = sm.groups()
             if marker == "SUMMARY":
                 in_summary = True
                 continue
-            if marker == "SHOW DOWN":
+            if marker == "SHOW DOWN" or (run and run != "1"):
                 continue
             street = STREETS[marker]
             if street != "preflop":
+                # Not on HOLE CARDS: the blinds went in before it.
+                street_in = {}
                 got = CARDS_RE.findall(rest)
                 if got:
                     board += got[-1].split()
@@ -176,7 +193,11 @@ def parse_hand(text, source=""):
                 seat_no = int(wm.group(1))
                 for s in seats:
                     if s["seat"] == seat_no:
-                        s["won"] = _money(wm.group(2)) or 0.0
+                        # Added, not set: a hand run twice has a summary
+                        # per board, and a seat that won both was recorded
+                        # as winning the second alone -- half the pot, in
+                        # seven hands the money check had let through.
+                        s["won"] += _money(wm.group(2)) or 0.0
             continue
 
         rm = RETURN_RE.match(raw)
@@ -200,6 +221,7 @@ def parse_hand(text, source=""):
         pm = POST_RE.match(rest)
         if pm:
             s["posted"] += _money(pm.group(1)) or 0.0
+            street_in[s["seat"]] = street_in.get(s["seat"], 0.0) + (_money(pm.group(1)) or 0.0)
             continue
         if rest.startswith(("shows", "mucks", "does not show")):
             cm = CARDS_RE.search(rest)
@@ -232,8 +254,21 @@ def parse_hand(text, source=""):
             verb = "R"
             amount = nums[0] if nums else None
             total = nums[1] if len(nums) > 1 else None
+        elif rest.startswith("caps"):
+            # A Cap table: "caps $0.55" is a raise to the table's cap, and
+            # the figure is the street total. The FPDB fixture that has it
+            # lost 0.49 of 1.19 in the pot until this branch existed, and
+            # the money check is the only thing that noticed.
+            total = _money(rest)
+            verb = "R"
+            amount = (total - street_in.get(s["seat"], 0.0)) if total else None
         if verb is None:
+            # Not silently. A verb this parser does not know is a line of
+            # money it did not count, and the tally is what the check reads.
+            UNKNOWN[rest.split(" ")[0]] += 1
             continue
+        if amount:
+            street_in[s["seat"]] = street_in.get(s["seat"], 0.0) + amount
         order += 1
         actions.append({"street": street, "n": order, "position": None,
                         "seat": s["seat"], "action": verb, "amount": amount,
