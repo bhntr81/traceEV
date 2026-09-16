@@ -83,6 +83,13 @@ VALUE_FLAGS = {
     # about a pool actually have. Add `--vs-hero` or `--vs-pool` to say
     # which side of the table the other seat is.
     "--vs": "vs_pos IN ({list})",
+    # The pot's matchup, in the user's words: "BTN vs BB is any time the
+    # button raised and the big blind did not fold". A pair of positions
+    # in either order, or several pairs; the rows selected are the two
+    # seats' own, so hero's open is in it and the seats that folded around
+    # it are not. `--vs` is the other seat at the moment of the decision
+    # and preflop an open has none -- see VS_NOTE.
+    "--matchup": "MATCHUP",
     "--opener": "opener_pos IN ({list})",
     "--raiser": "pfa_pos IN ({list})",
     "--street": "street IN ({list})",
@@ -123,6 +130,11 @@ VALUE_FLAGS = {
     # "checked to somebody, who bet, and then anything at all".
     "--line": None, "--node": None,
     "--pre": None, "--flop": None, "--turn": None, "--river": None,
+    # One player's own actions, the way a line is said aloud: "XC-XC-XF"
+    # is check-call, check-call, check-fold, and `--my-line "*/B/B/B"` is
+    # a triple barrel. `--my-node` is the same up to this decision, so
+    # `--my-node "*/X"` is "checked, and now has to act again".
+    "--my-line": None, "--my-node": None,
     "--board": None,        # handled separately: named textures
     "--turn-card": None,    # what the turn did to the board
     "--river-card": None,   # and the river
@@ -143,6 +155,7 @@ VALUE_FLAGS = {
 # switch to say which was meant.
 LINE_FLAGS = {
     "--line": ("line", "sized"), "--node": ("node", "node_sz"),
+    "--my-line": ("own", "own"), "--my-node": ("own_node", "own_node"),
     "--pre": ("pre", "pre_sz"), "--flop": ("flop", "flop_sz"),
     "--turn": ("turn", "turn_sz"), "--river": ("river", "river_sz"),
 }
@@ -173,8 +186,12 @@ SWITCHES = {
     "--multiway": "n_live > 2",
     "--headsup": "n_live = 2",
     "--vs-pfa": "vs_pfa = 1",
-    "--vs-hero": "vs_hero = 1",
-    "--vs-pool": "vs_hero = 0",
+    # The other seat: at the moment of the decision when the pot is heads
+    # up, and otherwise the other seat of the pot's matchup -- so that in a
+    # BTN/BB pot the open itself, made against two blinds, still knows who
+    # answered it.
+    "--vs-hero": "(vs_hero = 1 OR (vs_hero IS NULL AND mu_vs_hero = 1))",
+    "--vs-pool": "(vs_hero = 0 OR (vs_hero IS NULL AND mu_vs_hero = 0))",
     "--standard": "standard = 1",
     # Who is playing, which is the distortion this whole tracker averaged
     # over until now: people isolate wider and value-bet thinner against a
@@ -231,6 +248,11 @@ DIMENSIONS = {
     "vs": ("vs_pos", lambda k: (
         ["UTG", "HJ", "CO", "BTN", "SB", "BB"].index(k)
         if k in ("UTG", "HJ", "CO", "BTN", "SB", "BB") else 99)),
+    "matchup": ("matchup", lambda k: (
+        # Opener's seat first, then the answering seat, in preflop order.
+        tuple(["UTG", "HJ", "CO", "BTN", "SB", "BB"].index(p)
+              if p in ("UTG", "HJ", "CO", "BTN", "SB", "BB") else 99
+              for p in (k or "/").split("/")))),
     "opener": ("opener_pos", lambda k: (
         ["UTG", "HJ", "CO", "BTN", "SB", "BB"].index(k)
         if k in ("UTG", "HJ", "CO", "BTN", "SB", "BB") else 99)),
@@ -279,12 +301,65 @@ DIMENSIONS = {
     "straight_draw": ("sd", str),
 }
 
+# The spots people ask about, by the names they ask with. Each is a
+# filter that selects a SPOT -- the moment before the decision -- so that
+# the stats table beneath it says what was done there; the last group are
+# whole lines, for the hands view. The user asked for "a large list of
+# common filters, triple barrel, double barrel, etc", and this is it; the
+# names are the ones Hand2Note's reports use where it has one.
 SMART_REPORTS = {
-    "3-bet pots": ("--pot", "3bet"),
-    "Flop c-bets": ("--street", "flop", "--pfa", "--facing", "check"),
+    # preflop
+    "Open spots (first in)": ("--street", "preflop", "--facing", "unopened"),
+    "Steal spots (CO, BTN, SB first in)":
+        ("--pos", "CO,BTN,SB", "--street", "preflop", "--facing", "unopened"),
+    "Facing an open (3-bet or call)": ("--street", "preflop", "--facing", "open"),
     "Blind defense": ("--pos", "SB,BB", "--facing", "open"),
+    "Facing a 3-bet": ("--street", "preflop", "--facing", "3bet"),
+    "Facing a 4-bet": ("--street", "preflop", "--facing", "4bet"),
+    "BTN vs BB pots": ("--matchup", "BTN,BB"),
+    "CO vs BB pots": ("--matchup", "CO,BB"),
+    "SB vs BB pots": ("--matchup", "SB,BB"),
+    "BTN vs SB pots": ("--matchup", "BTN,SB"),
+    "3-bet pots": ("--pot", "3bet"),
+    "4-bet pots": ("--pot", "4bet"),
+    "Limped pots": ("--pot", "limped"),
+    # flop
+    "Flop c-bets": ("--street", "flop", "--pfa", "--facing", "check"),
+    "Facing a flop c-bet": ("--street", "flop", "--facing", "bet", "--vs-pfa"),
+    "C-bet raised": ("--street", "flop", "--pfa", "--facing", "raise"),
+    "Donk-bet spots (out of position, not the raiser, first to act)":
+        ("--street", "flop", "--oop", "--not-pfa", "--node", "*/"),
+    "Check-raise spots (flop)":
+        ("--street", "flop", "--facing", "bet", "--my-node", "*/X"),
+    # turn
+    "Double barrel spots": ("--street", "turn", "--pfa", "--facing", "check",
+                            "--my-node", "*/B/"),
+    "Facing a double barrel": ("--street", "turn", "--facing", "bet", "--vs-pfa",
+                               "--my-node", "*/*C/*"),
+    "Delayed c-bet spots (checked back the flop)":
+        ("--street", "turn", "--pfa", "--facing", "check", "--my-node", "*/X/"),
+    "Probe spots (raiser checked back, out of position on the turn)":
+        ("--street", "turn", "--oop", "--not-pfa", "--facing", "check",
+         "--node", "*/XX/"),
+    "Check-raise spots (turn)":
+        ("--street", "turn", "--facing", "bet", "--my-node", "*/*/X"),
+    # river
+    "Triple barrel spots": ("--street", "river", "--pfa", "--facing", "check",
+                            "--my-node", "*/B/B/"),
+    "Facing a triple barrel": ("--street", "river", "--facing", "bet",
+                               "--vs-pfa", "--my-node", "*/*C/*C/*"),
     "River bets": ("--street", "river", "--facing", "bet"),
+    "Check-raise spots (river)":
+        ("--street", "river", "--facing", "bet", "--my-node", "*/*/*/X"),
     "All-in decisions": ("--allin",),
+    # whole lines, for the hands view
+    "Line: triple barrel": ("--my-line", "*/B/B/B"),
+    "Line: double barrel, gave up": ("--my-line", "*/B/B/X*"),
+    "Line: bet-fold flop": ("--my-line", "*/BF"),
+    "Line: check-raise flop": ("--my-line", "*/XR*"),
+    "Line: check-call, check-call, check-fold": ("--my-line", "*/XC/XC/XF"),
+    "Line: called down": ("--my-line", "*/*C/*C/*C"),
+    "Line: check-call, check-raise": ("--my-line", "*/XC/XR*"),
 }
 
 # Where a filter somebody built keeps its name.
@@ -584,6 +659,27 @@ def q(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def matchup_sql(value):
+    """
+    `--matchup BTN,BB` or `BTN/BB`, or several pairs, as a predicate.
+
+    Either order: the seat that opened is whichever acts first preflop,
+    because a later seat can only have answered. The rows are the pair's
+    own -- the folds around the pot are not the pot.
+    """
+    order = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
+    clauses = []
+    for pair in value.split(";"):
+        seats = [p.strip().upper() for p in pair.replace("/", ",").split(",")
+                 if p.strip()]
+        if len(seats) != 2 or any(p not in order for p in seats) or seats[0] == seats[1]:
+            raise SystemExit(f"--matchup wants two different positions, "
+                             f"e.g. BTN,BB -- got {pair!r}")
+        a, b = sorted(seats, key=order.index)
+        clauses.append(f"(matchup = '{a}/{b}' AND position IN ('{a}', '{b}'))")
+    return "(" + " OR ".join(clauses) + ")"
+
+
 def build(argv):
     """
     The command line as one WHERE clause over `decisions`.
@@ -655,6 +751,10 @@ def build(argv):
                 described.append("board " + v)
                 continue
             tpl = VALUE_FLAGS[a]
+            if a == "--matchup":
+                parts.append(matchup_sql(v))
+                described.append(f"matchup {v}")
+                continue
             if a == "--weekday":
                 # Names, because nobody remembers that Sunday is 0.
                 days = [WEEKDAYS.get(x.strip().lower()[:3], x.strip())
@@ -1177,6 +1277,24 @@ def show_sessions(con, where, label, parts=()):
     print("The clock is the site's, not yours.")
 
 
+# What `--vs` selects, said where a preflop number is shown under it. The
+# opponent is the ONE seat still live when the decision was made, so a
+# button open -- two blinds still to act -- is against nobody in
+# particular and is not in "vs BB"; what is in it preflop is the answer
+# to that seat's 3bet. "PFR vs BB" then reads as a 4bet rate, and it read
+# 9% to the user who first asked where the number came from, against an
+# open rate of 43%. The number is right; the filter is not the question.
+VS_NOTE = ("  --vs picks decisions made with that seat as the ONLY live opponent.\n"
+           "  Preflop that is after everyone else folded: an open faces two blinds\n"
+           "  and is not here, so PFR/RFI under --vs are re-raise rates. For how\n"
+           "  often you open, drop --vs; for the matchup after the flop, keep it.")
+
+
+def vs_note(where, groups):
+    """The note above, if this filter and this table need it."""
+    return VS_NOTE if "vs_pos" in where and "preflop" in groups else ""
+
+
 def show_stats(con, where, label, parts=()):
     """Every stat that has anything to say under this filter."""
     print(f"\nfilter: {label}")
@@ -1197,6 +1315,9 @@ def show_stats(con, where, label, parts=()):
     if not rows:
         print("  no stat has a chance to occur inside this filter.")
         print("  (asking for a preflop stat inside --street flop does this)")
+    note = vs_note(where, {r["group"] for r in rows})
+    if note:
+        print("\n" + note)
 
 
 # The four lines every tracker draws, and what each one is for.
@@ -1597,6 +1718,9 @@ def show_report(con, where, label, dim, columns, min_n=30):
         print(f"    {str(k)[:width - 1]:<{width}} n={n}")
     print("\n  '?' marks a cell measured on fewer than "
           f"{min_n} chances -- ignore it.")
+    note = vs_note(where, {st.group for st in stats})
+    if note:
+        print("\n" + note)
 
 
 def show_results_by(con, where, label, dim):
@@ -1905,6 +2029,7 @@ def check(db_path=DB):
         # "actually narrows" half of this check without anything being wrong.
         "--line": "*/XBC*", "--node": "*/XB", "--pre": "*R*",
         "--flop": "XBC", "--turn": "XX", "--river": "*B*",
+        "--my-line": "*/XC/XC/XF", "--my-node": "*/X",
     }
     cases = [(k, [k]) for k in SWITCHES]
     cases += [(k, [k, v]) for k, v in samples.items()]

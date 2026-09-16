@@ -69,6 +69,13 @@ CREATE TABLE decisions (
   tn_over INT, tn_pair INT, tn_flush INT, tn_straight INT,
   rv_over INT, rv_pair INT, rv_flush INT, rv_straight INT,
 
+  -- the pot's matchup, which is a fact about the hand and not about the
+  -- moment: "BTN/BB" when the button opened, the big blind alone put
+  -- money in behind it, and everybody else folded. NULL for a limped pot,
+  -- a multiway one, or an open nobody answered. `mu_vs_hero` says whether
+  -- the other seat of it is hero.
+  matchup TEXT, mu_vs_hero INT,
+
   PRIMARY KEY (hand_id, n));
 """
 
@@ -140,6 +147,10 @@ CREATE INDEX IF NOT EXISTS dec_depth ON decisions(eff_bb, n_live);
 CREATE INDEX IF NOT EXISTS dec_flags
     ON decisions(is_ip, is_pfa, agg, vs_pfa, vs_hero, standard, street);
 CREATE INDEX IF NOT EXISTS dec_game ON decisions(bb, n_players, fmt);
+-- "vs hero" is the other seat at the moment, or failing that the other
+-- seat of the pot's matchup; written as an OR of the two so that each
+-- half seeks this index, where a COALESCE over them read the whole table.
+CREATE INDEX IF NOT EXISTS dec_other ON decisions(vs_hero, mu_vs_hero);
 CREATE INDEX IF NOT EXISTS dec_size
     ON decisions(pot_frac, to_call, pot_before, street);
 CREATE INDEX IF NOT EXISTS dec_runout
@@ -286,6 +297,12 @@ def build(db_path=DB):
         pf_raises, pfa = 0, None
         opener = None       # seat of the first player to raise preflop
         prev_street_agg, checked_through, first_of_street = None, 0, True
+        # The rows of this hand, held back until the preflop has played
+        # out, because the matchup stamped on every one of them is known
+        # only then. And who put money in by choice before the open (a
+        # limp) and after it (a call or a raise): a matchup is exactly one
+        # of the second and none of the first.
+        hand_rows, limped, answered = [], set(), []
 
         for a in actions:
             if a["street"] != street:
@@ -347,7 +364,7 @@ def build(db_path=DB):
                 else:
                     pot_frac = amount / pot if pot else None
 
-            rows.append((
+            hand_rows.append((
                 hid, a["n"], street, seat, who.get((hid, seat)),
                 s.get("is_hero"), site, h["table_id"], h["fmt"], h["bb"],
                 h["played_at"], h["n_players"], h["standard"], a["position"],
@@ -429,6 +446,11 @@ def build(db_path=DB):
                     put_in[seat] = max(total, contributed + amount)
                 else:
                     put_in[seat] = contributed + amount
+            if street == "preflop" and a["action"] in ("C", "R", "A") and a["amount"]:
+                if opener is None and not agg:
+                    limped.add(seat)
+                elif opener is not None and seat != opener and seat not in answered:
+                    answered.append(seat)
             if agg:
                 street_agg += 1
                 last_agg = seat
@@ -436,6 +458,28 @@ def build(db_path=DB):
                     pf_raises += 1
                     if opener is None:
                         opener = seat
+
+        # "BTN vs BB" means the button raised and the big blind did not
+        # fold -- the user's words, and the shape every tracker gives the
+        # question. It is a property of the pot, so it goes on every row of
+        # the hand; `vs_pos` beside it is the opponent at the moment of the
+        # decision, which preflop an open does not have.
+        matchup, pair = None, ()
+        if opener is not None and not limped and len(answered) == 1:
+            other = answered[0]
+            if opener in by_seat and other in by_seat:
+                matchup = f"{by_seat[opener]['position']}/{by_seat[other]['position']}"
+                pair = (opener, other)
+        for r in hand_rows:
+            seat_of_row = r[3]                      # seat is the fourth column
+            # For the two seats of the matchup: is the OTHER one hero. The
+            # seats that folded around it get nothing, so that "vs hero"
+            # never selects a fold that was made against nobody.
+            other_is_hero = None
+            if seat_of_row in pair:
+                other_is_hero = int(any(by_seat[x].get("is_hero")
+                                        for x in pair if x != seat_of_row))
+            rows.append(r + (matchup, other_is_hero))
 
     n = len(con.execute("SELECT * FROM decisions LIMIT 0").description)
     con.executemany(
@@ -575,6 +619,27 @@ def check(db_path=DB):
     ]:
         n = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
         print(f"  {label:24} {n:>7}")
+
+    # The matchup is re-derived from the actions for every hand that has
+    # one: an open with no limp before it, exactly one seat putting money
+    # in behind it. A hand stamped with a matchup that the actions do not
+    # support would put a real name on an invented pot.
+    off = con.execute("""
+        SELECT COUNT(*) FROM (
+          SELECT d.hand_id, d.matchup, d.opener_pos,
+                 (SELECT COUNT(DISTINCT seat) FROM decisions x
+                   WHERE x.hand_id = d.hand_id AND x.street = 'preflop'
+                     AND x.action IN ('C', 'R', 'A') AND x.amount > 0) vol
+          FROM decisions d WHERE d.matchup IS NOT NULL
+          GROUP BY d.hand_id)
+        WHERE vol != 2 OR substr(matchup, 1, instr(matchup, '/') - 1) != opener_pos
+        """).fetchone()[0]
+    n_mu = con.execute("SELECT COUNT(DISTINCT hand_id) FROM decisions "
+                       "WHERE matchup IS NOT NULL").fetchone()[0]
+    print(f"\n  matchup pots           {n_mu:>7}   "
+          f"({off} disagree with their actions)")
+    if off:
+        fails.append("matchup")
 
     con.close()
     print()

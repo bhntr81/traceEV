@@ -86,11 +86,19 @@ BUCKETS = "smlpo"
 # no wildcard in it at all, and without an index it reads every row.
 INDEXED = ("line", "node",
            "pre", "flop", "turn", "river",
-           "pre_sz", "flop_sz", "turn_sz", "river_sz")
+           "pre_sz", "flop_sz", "turn_sz", "river_sz",
+           "own", "own_node")
 
+# `own` is one player's actions and nobody else's, per street: the shape
+# a player talks about -- "check-call, check-call, check-fold" is
+# XC/XC/XF, a triple barrel is B/B/B after the preflop -- and the shape
+# Hand2Note's popups are written in. `own_node` is the same cut short of
+# this decision, so "checked the flop and now facing a bet" is a node that
+# ends in X. The whole-table strings above cannot say either, because
+# they interleave every seat's actions.
 LINE_COLUMNS = ("pre", "flop", "turn", "river",
                 "pre_sz", "flop_sz", "turn_sz", "river_sz",
-                "line", "sized", "node", "node_sz")
+                "line", "sized", "node", "node_sz", "own", "own_node")
 
 
 def letter(action, agg):
@@ -129,7 +137,9 @@ def normalise(pattern):
     rather than as a typo.
     """
     out = []
-    for ch in pattern:
+    # A dash between streets is how lines are written by hand and in
+    # Hand2Note's popups -- "XC-XC-XF" -- and it means the slash here.
+    for ch in pattern.replace("-", "/").replace(" ", ""):
         if ch.upper() in VERBS:
             out.append(ch.upper())
         elif ch.lower() in BUCKETS:
@@ -181,7 +191,20 @@ def strings_for(acts):
         acc += v
         acc_sz += v + bucket(a["pot_frac"])
 
-    return plain, sized, order, nodes
+    # And each player's own walk. A street they took no action on is left
+    # out of their line rather than written empty, so a player who folded
+    # preflop has a one-segment line and never matches a flop pattern.
+    own_by, own_nodes = {}, []
+    for a in acts:
+        mine = own_by.setdefault(a["seat"], [])
+        if not mine or mine[-1][0] != a["street"]:
+            mine.append([a["street"], ""])
+        own_nodes.append("/".join(seg for _st, seg in mine))
+        mine[-1][1] += letter(a["action"], a["agg"])
+    own = {seat: "/".join(seg for _st, seg in segs) for seat, segs in own_by.items()}
+    own_rows = [(own[a["seat"]], node) for a, node in zip(acts, own_nodes)]
+
+    return plain, sized, order, nodes, own_rows
 
 
 def build(db_path=DB):
@@ -190,20 +213,20 @@ def build(db_path=DB):
     migrate(con)
 
     acts_by = {}
-    for r in con.execute("SELECT hand_id, n, street, action, agg, pot_frac "
+    for r in con.execute("SELECT hand_id, n, seat, street, action, agg, pot_frac "
                          "FROM decisions ORDER BY hand_id, n"):
         acts_by.setdefault(r["hand_id"], []).append(r)
 
     rows = []
     for hid, acts in acts_by.items():
-        plain, sized, order, nodes = strings_for(acts)
+        plain, sized, order, nodes, own_rows = strings_for(acts)
         line = "/".join(plain[s] for s in order)
         line_sz = "/".join(sized[s] for s in order)
         street_cols = (tuple(plain.get(s, "") for s in STREETS)
                        + tuple(sized.get(s, "") for s in STREETS))
-        for a, (node, node_sz) in zip(acts, nodes):
+        for a, (node, node_sz), (own, own_node) in zip(acts, nodes, own_rows):
             rows.append(street_cols + (line, line_sz, node, node_sz,
-                                       hid, a["n"]))
+                                       own, own_node, hid, a["n"]))
 
     # Ninety thousand separate UPDATEs against an eighty-megabyte database is
     # a minute of work for something that should take a second. Staged in a

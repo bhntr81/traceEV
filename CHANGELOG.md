@@ -8,6 +8,54 @@ Newest first.
 
 ---
 
+## The matchup, a player's own line, and the common spots by name
+
+### Fixed -- "PFR vs BB" read 9%
+
+`--vs` is the other seat at the moment of the decision, which exists only
+once the pot is heads up. Preflop an open faces two blinds and has none,
+so `--pos BTN --vs BB --show pfr` was the button's 4-bet rate against a
+big-blind 3-bet -- a correct number for a question nobody asked. The user
+asked where it came from, and defined what they meant: "BTN vs BB is any
+time the button raised and the big blind did not fold."
+
+### Added -- `matchup`, `--matchup`, `--by matchup`
+
+A column on every row of a hand: the opener's seat and the one seat that
+put money in behind it, "BTN/BB", NULL for a limped pot, a multiway one
+or an open nobody answered. `--matchup BTN,BB` in either order, several
+pairs with `;`; the rows are the two seats' own. `mu_vs_hero` beside it
+says whether the other seat is hero, and `--vs-hero`/`--vs-pool` fall
+back to it when the moment has no single opponent. 8,080 such pots in
+the database; `decisions.py --check` re-derives every one from the
+actions. The window's "against" box builds this, and a preflop number
+under `--vs` now carries a note saying what it is.
+
+### Added -- `--my-line`, `--my-node`
+
+One player's own actions per street, `own` and `own_node` on `decisions`,
+in the notation lines are said in: `XC/XC/XF`, dashes accepted. The table
+strings could not say it. Both indexed; `lines.py --check` covers them.
+
+### Added -- thirty-five reports
+
+The spots people ask about by name: open and steal spots, blind defense,
+facing a 3-bet or 4-bet, four matchups, 3-bet and 4-bet and limped pots,
+flop c-bets and facing one, c-bet raised, donk and check-raise spots on
+each street, double and triple barrels and facing them, delayed c-bets,
+probes, all-in decisions, and seven whole lines for the hands view. Each
+is a filter in `SMART_REPORTS`, so the report box, `--preset` and the
+assistant's vocabulary all have them without being told.
+
+### Changed -- the graph's empty canvas
+
+It said "not enough hands to draw a line" before any query had run, which
+read as a verdict on the filter. It now says the graph is drawn once the
+filter has run, and when a query really returns fewer than two hands it
+says that.
+
+---
+
 ## Two app rooms, for the price of a name
 
 ### Added -- `pokerbros` and `pokermaster` in the registry

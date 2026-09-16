@@ -572,7 +572,8 @@ class App(ImportMixin, ttk.Frame):
         self.vals = {n: tk.StringVar() for n in
                      ("site", "stake", "player", "deep", "short",
                       "since", "until", "where",
-                      "line", "node", "pre", "flop", "turn", "river",
+                      "line", "node", "my_line", "my_node",
+                      "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
                       "tables", "tag")}
         self.options = {"sites": [], "stakes": [], "players": []}
@@ -845,6 +846,10 @@ class App(ImportMixin, ttk.Frame):
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self._draw_graph())
         self.series = None
+        # Whether a graph query has answered yet. Before it has, the canvas
+        # is empty for no reason the filter can be blamed for, and it used
+        # to say "not enough hands" -- which was read as a verdict.
+        self.graph_ran = False
         # The chart is drawn and not tabulated, so like the graph it gets a
         # canvas rather than a Treeview. A range is a shape; 169 numbers in
         # rows is the same information in the one form nobody can read it in.
@@ -898,7 +903,16 @@ class App(ImportMixin, ttk.Frame):
                 argv += ["--class", klass]
             if durable is not None:
                 argv += ["--durable", str(durable)]
-        for group, flag in (("pos", "--pos"), ("vs", "--vs"),
+        # "Against" is the pot's matchup, in the user's words: BTN vs BB is
+        # any time the button raised and the big blind did not fold. With
+        # no "my position" chosen it is every seat's pots against those.
+        if self.multi.get("vs"):
+            mine = sorted(self.multi.get("pos") or set(POSITIONS))
+            pairs = [f"{a},{b}" for a in mine
+                     for b in sorted(self.multi["vs"]) if a != b]
+            if pairs:
+                argv += ["--matchup", ";".join(pairs)]
+        for group, flag in (("pos", "--pos"),
                             ("street", "--street"), ("pot", "--pot"),
                             ("board", "--board"), ("quick", "--quick"),
                             ("made", "--made"), ("kicker", "--kicker"),
@@ -913,6 +927,7 @@ class App(ImportMixin, ttk.Frame):
                            ("short", "--short"), ("since", "--since"),
                            ("until", "--until"), ("where", "--where"),
                            ("line", "--line"), ("node", "--node"),
+                           ("my_line", "--my-line"), ("my_node", "--my-node"),
                            ("pre", "--pre"), ("flop", "--flop"),
                            ("turn", "--turn"), ("river", "--river"),
                            ("hour", "--hour"), ("weekday", "--weekday"),
@@ -941,7 +956,8 @@ class App(ImportMixin, ttk.Frame):
     VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
               "--deep": "deep", "--short": "short", "--since": "since",
               "--until": "until", "--where": "where", "--line": "line",
-              "--node": "node", "--pre": "pre", "--flop": "flop",
+              "--node": "node", "--my-line": "my_line", "--my-node": "my_node",
+              "--pre": "pre", "--flop": "flop",
               "--turn": "turn", "--river": "river", "--hour": "hour",
               "--weekday": "weekday", "--session-len": "session_len",
               "--session-min": "session_min", "--tables": "tables",
@@ -975,6 +991,15 @@ class App(ImportMixin, ttk.Frame):
                 if twin:
                     self.flags[twin].set(False)
                 i += 1
+            elif a == "--matchup" and i + 1 < len(argv):
+                # Pairs back into the two boxes: the positions named on
+                # the left go to "my position" unless one is already
+                # chosen, the ones on the right to "against".
+                pairs = [p.replace("/", ",").split(",") for p in argv[i + 1].split(";")]
+                self.multi["vs"] = {b.strip().upper() for _a, b in pairs if b.strip()}
+                if not self.multi.get("pos"):
+                    self.multi["pos"] = {a.strip().upper() for a, _b in pairs if a.strip()}
+                i += 2
             elif a in self.MULTI_OF and i + 1 < len(argv):
                 self.multi[self.MULTI_OF[a]] = set(argv[i + 1].split(","))
                 i += 2
@@ -1149,6 +1174,7 @@ class App(ImportMixin, ttk.Frame):
         view = out["view"]
         if view == "graph":
             self.series = out.get("series")
+            self.graph_ran = True
             self._draw_graph(out.get("why") or out.get("error"))
             return
         if view == "chart":
@@ -1449,8 +1475,11 @@ class App(ImportMixin, ttk.Frame):
             return
         s = self.series
         if not s:
+            idle = "the graph is drawn once the filter has run"
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10),
-                          text=message or "not enough hands to draw a line")
+                          text=message or (
+                              "fewer than two of your hands match -- a line "
+                              "needs two points" if self.graph_ran else idle))
             return
         L, R, T, B = 70, 210, 30, 40
         n = len(s["total"])
@@ -2093,7 +2122,7 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "my position")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("pos", v))) for v in POSITIONS])
-        self._heading(page, "against  (heads-up pots only)")
+        self._heading(page, "against  (they opened or answered, and nobody else stayed)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("vs", v))) for v in POSITIONS])
         self._heading(page, "and that opponent is")
@@ -2252,6 +2281,28 @@ class FilterDialog(tk.Toplevel):
                        "player had to act, so it never contains what they "
                        "did next -- which is what makes it the right thing "
                        "to measure a decision against."
+                  ).pack(anchor="w", padx=18, pady=(8, 0))
+
+        self._heading(page, "this player's own line, the way it is said")
+        for name, label, example in (
+                ("my_line", "my line", "*/XC/XC/XF   check-call, check-call, "
+                                       "check-fold  (dashes work too)"),
+                ("my_node", "my node", "*/B/B/   bet the flop and the turn, "
+                                       "now on the river")):
+            row = ttk.Frame(page)
+            row.pack(fill="x", padx=18, pady=3)
+            ttk.Label(row, text=label, style="Dim.TLabel", width=9).pack(
+                side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=40).pack(
+                side="left")
+            ttk.Label(row, text=example, style="Dim.TLabel").pack(
+                side="left", padx=14)
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="Streets from preflop, separated by / or -, and * "
+                       "for anything: B/B/B after a * is a triple barrel, "
+                       "XR on the flop is a check-raise. Only this "
+                       "player's actions, so the other seats' bets and "
+                       "calls are not in it."
                   ).pack(anchor="w", padx=18, pady=(8, 0))
 
     def _general_tab(self, nb):
@@ -2646,7 +2697,7 @@ def check(db_path=DB):
         # The matchup, which is the reason these columns exist.
         ({"flags": ["--pool", "--vs-pool"], "pos": ["BTN"], "vs": ["BB"],
           "street": [], "pot": ["3bet"], "board": []},
-         ["--pool", "--vs-pool", "--pos", "BTN", "--vs", "BB",
+         ["--pool", "--vs-pool", "--matchup", "BTN,BB", "--pos", "BTN",
           "--pot", "3bet"]),
         ({"flags": [], "pos": [], "vs": [], "street": [], "pot": [],
           "board": ["mono", "paired"]},
@@ -2700,9 +2751,9 @@ def check(db_path=DB):
     # in the window" promises. Reporting options have no box and are
     # dropped; everything that selects hands must survive.
     round_trips = [
-        ["--pool", "--site", "pokerstars", "--pot", "3bet", "--pos", "BTN",
-         "--vs", "SB", "--flop", "BC", "--turn", "BC", "--street", "river",
-         "--facing", "bet", "--show", "fold_to_river_bet"],
+        ["--pool", "--site", "pokerstars", "--pot", "3bet",
+         "--matchup", "BTN,SB", "--pos", "BTN", "--flop", "BC", "--turn", "BC",
+         "--street", "river", "--facing", "bet", "--show", "fold_to_river_bet"],
         ["--hero", "--fish-right", "--results"],
         ["--hero", "--pot", "raised", "--street", "flop", "--board", "mono",
          "--by", "position"],

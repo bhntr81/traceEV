@@ -213,6 +213,56 @@ they did next. `--line` is the whole hand and includes it.
 
 `python lines.py --common flop` lists the lines that actually occur.
 
+### Your own line, the way it is said
+
+The strings above interleave every seat's actions, which is right for
+"what happened at the table" and wrong for "what did *I* do". `--my-line`
+is one player's actions and nobody else's, per street, in the notation a
+line is said in: check-call, check-call, check-fold is `XC/XC/XF`, and a
+dash works as well as a slash, so `XC-XC-XF` is the same filter.
+
+```bash
+python query.py --hero --my-line "*/B/B/B"          # triple barrel
+python query.py --hero --my-line "*/XC/XC/XF"       # called twice, folded the river
+python query.py --hero --my-line "*/XR*"            # check-raised the flop
+python query.py --hero --street river --pfa --facing check --my-node "*/B/B/"
+                                                    # bet flop and turn; river now
+```
+
+Streets run from preflop, so the leading `*` is "whatever happened
+preflop". `--my-node` is your own line cut short of this decision, which
+makes it the one to measure a spot with: `--my-node "*/X"` on the flop is
+"checked, and now facing a bet" -- the check-raise spot. A street you took
+no action on is not in your line at all, so a preflop fold is a
+one-segment line and never matches a flop pattern.
+
+### The matchup
+
+"BTN vs BB" means the button raised and the big blind did not fold: an
+open, one seat calling or raising behind it, everybody else out. That is
+a fact about the pot rather than about one decision, so it is stamped on
+every row of the hand and asked with `--matchup`, in either order:
+
+```bash
+python query.py --hero --matchup BTN,BB                     # your BTN/BB pots, both seats
+python query.py --hero --matchup BTN,BB --pos BB            # you defending the big blind
+python query.py --pool --matchup BTN,BB --pos BB --street flop --facing bet
+python query.py --hero --matchup "BTN,BB;CO,BB"             # several pairs
+python query.py --hero --by matchup --show cbet_flop        # every matchup, one per row
+```
+
+The rows selected are the two seats' own, so your open is in it and the
+seats that folded around it are not. That also means PFR reads 100% for
+the opening seat -- every hand in the set began with its raise -- which is
+what the filter says and not a finding; for how often you open, drop the
+matchup. In the window, "against" on the Positions tab is this.
+
+`--vs` is a different question: the other seat at the moment of the
+decision, which only exists once the pot is heads up. Preflop an open faces
+two blinds and has no `--vs` at all, so `--pos BTN --vs BB --show pfr` is
+the rate at which the button re-raised the big blind's 3-bet -- 9% here --
+and the table says so beneath the number. After the flop the two agree.
+
 ---
 
 ### The 13x13 chart
@@ -261,8 +311,15 @@ really is 0.1% of the range.
 
 ### Saving the filter as a report
 
-The five reports in the box are the ones this project guessed at. The sixth
-is whatever you were looking at last Tuesday:
+The reports in the box are the spots people ask about by name -- open
+spots, blind defense, facing a 3-bet, the matchups, flop c-bets and facing
+one, donk and check-raise spots, double and triple barrels and facing
+them, delayed c-bets, probes, all-in decisions -- and a set of whole lines
+for the hands view: triple barrel, bet-fold, check-raise, check-call
+check-call check-fold, called down. `python query.py --presets` prints
+each with the filter behind it. Each is a *spot*, the moment before the
+decision, so the stats table under it says what was done there. The
+thirty-sixth report is whatever you were looking at last Tuesday:
 
 ```bash
 python query.py --pot 3bet --ip --street river --save "my river spot"

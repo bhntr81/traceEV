@@ -241,6 +241,20 @@ Facts that stay true, and that have each been got wrong at least once:
   recorded against six position names, so 1,076 hands have one label
   covering two seats. Anything keyed on position must expect that; the
   order of action never has the problem.
+- **`--vs` is the other seat at the moment; `--matchup` is the pot.**
+  `vs_pos` is filled only when one opponent is left, so preflop an open --
+  two blinds still to act -- has none, and "PFR vs BB" came out as a 4-bet
+  rate, 9% against an open rate of 43%, in the first report the user
+  looked at. "BTN vs BB" in the user's words is "the button raised and the
+  big blind did not fold", which is `matchup`, a column on every row of
+  the hand; the window's "against" box is that, and a preflop number under
+  `--vs` says what it is.
+- **A player's own line is not the table's line.** `line` interleaves every
+  seat's actions, which cannot say "check-call, check-call, check-fold";
+  `own` and `own_node` are one seat's, in the notation lines are said in,
+  and `--my-line`/`--my-node` read them. The common spots -- barrels,
+  check-raises, probes, delayed c-bets -- are `SMART_REPORTS` entries
+  written against those, not new stats.
 - **Money is a property of a hand, a spot is a property of a decision.** So
   `query.py --results` selects decisions and then sums whole hands. A player
   in position on a monotone flop won or lost the whole pot, not the part

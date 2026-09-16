@@ -983,6 +983,20 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 20 — what the user saw
+
+**Goal:** three things said while looking at the window: "PFR vs BB says
+9%, where does that come from"; "BTN vs BB should mean the button raised
+and the big blind did not fold"; "we should use H2N notation for lines,
+and have a large list of common filters -- triple barrel, double barrel".
+
+**Result: PASS**, 20 of 20. The number was right and the filter was the
+wrong question: `--vs` is the seat at the moment, and an open has none.
+`matchup` is the pot, stamped on every row and checked against the
+actions; `own`/`own_node` are a player's own line in the notation lines
+are said in; thirty-five reports by name. The graph's idle text no longer
+reads as a verdict.
+
 ## Run 19 — the app rooms
 
 **Goal:** the cheapest sites first. Thirteen of FPDB's "Stars" fixtures
