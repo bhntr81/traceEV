@@ -575,7 +575,7 @@ class App(ImportMixin, ttk.Frame):
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
                       "sd": set(), "turn_card": set(), "river_card": set(),
-                      "facing": set()}
+                      "facing": set(), "combo": set()}
         # The filter's values live here rather than on the widgets, because
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
@@ -828,7 +828,7 @@ class App(ImportMixin, ttk.Frame):
     def _views(self, right):
         bar = ttk.Frame(right)
         bar.pack(fill="x", padx=12, pady=(10, 4))
-        self.by = ttk.Combobox(bar, values=list(query.DIMENSIONS),
+        self.by = ttk.Combobox(bar, values=[""] + list(query.DIMENSIONS),
                                state="readonly", width=12)
         self.by.current(0)
         self.by.bind("<<ComboboxSelected>>", lambda e: self.refresh())
@@ -853,14 +853,14 @@ class App(ImportMixin, ttk.Frame):
         self.filter_line.pack(anchor="w", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("stats", "actions", "range", "chart", "report", "results",
-                     "graph", "hands", "sessions"):
+        for name in ("stats", "actions", "overfolds", "range", "chart", "report",
+                     "results", "graph", "hands", "sessions"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "actions", "range", "report", "results", "hands",
-                     "sessions"):
+        for name in ("stats", "actions", "overfolds", "range", "report", "results",
+                     "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -895,6 +895,34 @@ class App(ImportMixin, ttk.Frame):
         tv.tag_configure("neg", foreground=BAD)
         tv.tag_configure("note", foreground=DIM)
         return tv
+
+    @staticmethod
+    def _sort_by(tv, col):
+        """
+        Click a heading to sort the table by that column, again to flip.
+
+        Numbers sort as numbers whatever is printed around them -- "+1,234.5
+        bb", "52%", "$3.20" -- and the note and group rows stay where they
+        are, at the bottom. "Biggest wins" on the hands tab is one click on
+        "net bb"; nobody needs a separate report for it.
+        """
+        def key(iid):
+            v = tv.set(iid, col)
+            t = "".join(ch for ch in str(v) if ch in "0123456789.-")
+            try:
+                return (0, float(t)) if t not in ("", "-", ".", "-.") else (1, str(v))
+            except ValueError:
+                return (1, str(v))
+        rows = [i for i in tv.get_children("") if not tv.item(i, "tags")
+                or not set(tv.item(i, "tags")) & {"note", "group"}]
+        rest = [i for i in tv.get_children("") if i not in rows]
+        flip = tv.heading(col, "text").endswith(" ▾")
+        rows.sort(key=key, reverse=not flip)
+        for i, iid in enumerate(rows + rest):
+            tv.move(iid, "", i)
+        for c in tv["columns"]:
+            text = tv.heading(c, "text").replace(" ▾", "").replace(" ▴", "")
+            tv.heading(c, text=text + ("" if c != col else (" ▴" if flip else " ▾")))
 
     # ---- filter -------------------------------------------------------
     def _toggled(self, flag):
@@ -936,6 +964,7 @@ class App(ImportMixin, ttk.Frame):
                             ("street", "--street"), ("pot", "--pot"),
                             ("board", "--board"), ("quick", "--quick"),
                             ("made", "--made"), ("kicker", "--kicker"),
+                            ("combo", "--combo"),
                             ("fd", "--fd"), ("sd", "--sd"),
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card"),
@@ -971,6 +1000,7 @@ class App(ImportMixin, ttk.Frame):
     MULTI_OF = {"--pos": "pos", "--vs": "vs", "--street": "street",
                 "--pot": "pot", "--board": "board", "--quick": "quick",
                 "--made": "made", "--kicker": "kicker", "--fd": "fd",
+                "--combo": "combo",
                 "--sd": "sd", "--turn-card": "turn_card",
                 "--river-card": "river_card", "--facing": "facing"}
     VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
@@ -984,7 +1014,7 @@ class App(ImportMixin, ttk.Frame):
               "--tag": "tag"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
-              "--actions": "actions",
+              "--actions": "actions", "--overfolds": "overfolds",
               "--graph": "graph"}
 
     def apply_argv(self, argv):
@@ -1147,11 +1177,17 @@ class App(ImportMixin, ttk.Frame):
             elif view == "sessions":
                 out["rows"] = query.sessions_of(con, where)
             elif view == "actions":
-                out["rows"] = query.actions_of(con, where)
+                # The split-by box's first entry is no split, which is how
+                # this tab should open; the report tab needs a dimension
+                # and takes position when none is chosen.
+                out["rows"] = query.actions_of(con, where, dim or None)
+            elif view == "overfolds":
+                out["rows"] = [r for r in query.overfolds_of(con, where, dim or None)
+                               if r["n"] >= 30]
             elif view == "chart":
                 out.update(query.chart_of(con, where, stat))
             elif view == "report":
-                expr, order = query.DIMENSIONS[dim]
+                expr, order = query.DIMENSIONS[dim or "position"]
                 cols = query.DEFAULT_COLUMNS
                 grid = {c: query.rates_by(con, BY_KEY[c], expr, where)
                         for c in cols}
@@ -1265,7 +1301,8 @@ class App(ImportMixin, ttk.Frame):
         tv.configure(columns=tuple(cols) + ("_pad",))
         for i, c in enumerate(cols):
             side = anchors.get(c, "e")
-            tv.heading(c, text=c, anchor=side)
+            tv.heading(c, text=c, anchor=side,
+                       command=lambda tv=tv, c=c: self._sort_by(tv, c))
             tv.column(c, width=widths[i], minwidth=widths[i],
                       anchor=side, stretch=False)
         tv.heading("_pad", text="")
@@ -1293,27 +1330,63 @@ class App(ImportMixin, ttk.Frame):
         A row per action taken in the spot: how often, what it made, and
         what the next player did -- Hand2Note's action report.
         """
-        self._cols(tv, ("action", "n", "freq", "bb/hand", "±", "then fold",
-                        "check", "call", "bet", "raise", "street over"),
-                   (90, 70, 70, 90, 60, 90, 70, 70, 70, 70, 90),
+        self._cols(tv, ("action", "n", "freq", "bb/hand", "±", "won", "wtsd",
+                        "w$sd", "then fold", "check", "call", "bet", "raise",
+                        "street over"),
+                   (170, 70, 70, 90, 60, 60, 60, 60, 90, 70, 70, 70, 70, 90),
                    {"action": "w"})
         for r in out.get("rows") or []:
             nx = r["next"]
             m = max(1, sum(nx.values()))
             pct = lambda k: f"{100 * nx[k] / m:.0f}%"
+            name = r["action"] if r["group"] is None else f"      {r['group']}"
             tv.insert("", "end",
                       tags=("pos",) if r["bb"] > 0 else ("neg",) if r["bb"] < 0 else (),
-                      values=(r["action"], f"{r['n']:,}", f"{r['freq']:.1f}%",
+                      values=(name, f"{r['n']:,}", f"{r['freq']:.1f}%",
                               f"{r['bb']:+.2f}", f"{r['se']:.2f}",
+                              f"{r['won_hand']:.0f}%", f"{r['wtsd']:.0f}%",
+                              f"{r['won_sd']:.0f}%",
                               pct("fold"), pct("check"), pct("call"),
                               pct("bet"), pct("raise"), pct("street over")))
-        tv.insert("", "end", values=("", "", "", "", "", "", "", "", "", "", ""))
+        tv.insert("", "end", values=("",) * 14)
         tv.insert("", "end", tags=("note",), values=(
             "bb/hand is the action's profit: the stack at the end of the hand "
             "less the stack before the action (a fold is 0), averaged over "
             "the hands it was taken in, with its standard error; 'then' is "
-            "the next player's action on the same street", "", "", "", "",
-            "", "", "", "", "", ""))
+            "the next player's action on the same street. The split-by box "
+            "splits each action: size for how big the bet was, hand for what "
+            "the player held.",) + ("",) * 13)
+
+    def _render_overfolds(self, tv, out):
+        """
+        Fold rates against the bar the bet size sets, worst first.
+
+        The bar is arithmetic -- a bet of B into P profits on its own past
+        a fold rate of B/(P+B) -- and REAL means the excess survived the
+        correction for how many rows were asked. It is the program's
+        answer to "where does the pool overfold", which Hand2Note leaves
+        to the eye.
+        """
+        self._cols(tv, ("street", "bet size", "split", "n", "fold", "±", "bar",
+                        "excess", "verdict"),
+                   (70, 170, 120, 70, 70, 50, 60, 70, 130),
+                   {"street": "w", "bet size": "w", "split": "w", "verdict": "w"})
+        for r in out.get("rows") or []:
+            verdict = ("REAL overfold" if r["real"] else
+                       "under the bar" if r["under"] else "cannot tell")
+            tv.insert("", "end",
+                      tags=("neg",) if r["real"] else ("pos",) if r["under"] else (),
+                      values=(r["street"], r["size"],
+                              "" if r["group"] is None else r["group"],
+                              f"{r['n']:,}", f"{r['fold']:.0f}%",
+                              f"{(r['hi'] - r['lo']) / 2:.0f}", f"{r['bar']:.0f}%",
+                              f"{r['excess']:+.0f}", verdict))
+        tv.insert("", "end", values=("",) * 9)
+        tv.insert("", "end", tags=("note",), values=(
+            "bar: the fold rate past which a bet of that size profits on its "
+            "own, B/(P+B) -- arithmetic, not a solver; heads-up decisions; "
+            "REAL survives the correction for the rows asked; split by "
+            "position or pot to find the seat",) + ("",) * 8)
 
     def _render_sessions(self, tv, out):
         """
@@ -1325,31 +1398,31 @@ class App(ImportMixin, ttk.Frame):
         site's, which the last row says, because an "evening" that is
         somebody else's evening is the kind of thing that reads as a finding.
         """
-        self._cols(tv, ("started", "site", "mins", "hands", "hit", "tables",
-                        "net bb", "ev bb", "bb/100"),
-                   (150, 90, 60, 70, 60, 60, 90, 90, 80),
+        self._cols(tv, ("started", "site", "mins", "hands", "/hr", "hit",
+                        "tables", "net bb", "ev bb", "bb/100"),
+                   (150, 90, 60, 70, 55, 60, 60, 90, 90, 80),
                    {"started": "w", "site": "w"})
         rows = out.get("rows") or []
         if not rows:
             tv.insert("", "end", tags=("note",), values=(
-                "no session holds a hand this filter selects",
-                "", "", "", "", "", "", "", ""))
+                "no session holds a hand this filter selects",) + ("",) * 9)
             return
         for r in rows:
             tag = ("pos",) if r["net_bb"] > 0 else ("neg",) if r["net_bb"] < 0 else ()
+            hr = 60.0 * r["hands"] / r["minutes"] if r["minutes"] else 0.0
             tv.insert("", "end", tags=tag, values=(
                 r["started"][:16], r["site"], f"{r['minutes']:.0f}",
-                f"{r['hands']:,}", f"{r['matched']:,}", r["tables"],
+                f"{r['hands']:,}", f"{hr:.0f}", f"{r['matched']:,}", r["tables"],
                 f"{r['net_bb']:+.1f}", f"{r['ev_bb']:+.1f}",
                 "" if r["bb100"] is None else f"{r['bb100']:+.1f}"))
         n = sum(r["hands"] for r in rows)
         net = sum(r["net_bb"] for r in rows)
-        tv.insert("", "end", values=("", "", "", "", "", "", "", "", ""))
+        tv.insert("", "end", values=("",) * 10)
         tv.insert("", "end", tags=("group",), values=(
-            f"{len(rows)} SESSIONS", "", "", f"{n:,}", "", "",
+            f"{len(rows)} SESSIONS", "", "", f"{n:,}", "", "", "",
             f"{net:+.1f}", "", ""))
         tv.insert("", "end", tags=("note",), values=(
-            "the clock is the site's, not yours", "", "", "", "", "", "", "", ""))
+            "the clock is the site's, not yours",) + ("",) * 9)
 
     def _render_range(self, tv, out):
         """
@@ -1427,6 +1500,9 @@ class App(ImportMixin, ttk.Frame):
                 ("error on that", f"±{t['error']:.0f} bb/100"),
                 ("saw a flop", f"{t['saw_flop']:,}"),
                 ("won at showdown", f"{t['wtsd']:,}")]
+        if t.get("raked"):
+            rows.append(("rake paid", f"{t['rake_bb']:,.1f} bb  (${t['rake']:,.2f} "
+                                      f"on {t['raked']:,} pots won where written)"))
         for name, val in rows:
             tag = ()
             if name in ("net", "per 100 hands"):
@@ -1438,26 +1514,27 @@ class App(ImportMixin, ttk.Frame):
             "error on a win rate is about 1170/√n", ""))
 
     def _render_hands(self, tv, out):
-        self._cols(tv, ("when", "site", "bb", "pos", "hand", "net bb", "board",
-                        "tags"),
-                   (140, 90, 60, 60, 70, 90, 170, 160),
+        self._cols(tv, ("when", "site", "bb", "pos", "hand", "my line",
+                        "net bb", "board", "tags"),
+                   (140, 90, 60, 60, 70, 150, 90, 170, 160),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
-                    "board": "w", "tags": "w"})
+                    "my line": "w", "board": "w", "tags": "w"})
         self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net, marks in out["rows"]:
+        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in out["rows"]:
             iid = tv.insert("", "end", values=(
                 (when or "")[:16], site, f"{bb:g}" if bb else "",
-                pos or "", combo or "–",
+                pos or "", combo or "–", own or "",
                 f"{net:+.1f}" if net is not None else "",
                 board or "", ", ".join(marks)),
                 tags=("pos",) if (net or 0) > 0 else
                      ("neg",) if (net or 0) < 0 else ())
             self._hand_ids[iid] = (hid, seat)
         if out["rows"]:
-            tv.insert("", "end", values=("", "", "", "", "", "", "", ""))
+            tv.insert("", "end", values=("",) * 9)
             tv.insert("", "end", tags=("note",),
                       values=("double-click a hand to replay it, and tag it "
-                              "there", "", "", "", "", "", "", ""))
+                              "there; click a heading to sort, net bb for "
+                              "the biggest wins and losses",) + ("",) * 8)
 
     def _open_hand(self, _event):
         tv = self.tree["hands"]
@@ -2275,6 +2352,31 @@ class FilterDialog(tk.Toplevel):
         narrows hard, and the note says so before an empty table does.
         """
         page = self._page(nb, "Cards")
+        self._heading(page, "the hole cards -- click combos, drag not needed")
+        # The 13x13 grid every tracker and solver draws: pairs down the
+        # diagonal, suited above it, offsuit below. A press toggles one
+        # combo; the row and column headers are not buttons. Chosen
+        # combos are the `--combo` filter, which was typed until now.
+        grid = ttk.Frame(page)
+        grid.pack(anchor="w", padx=18, pady=(0, 6))
+        self._combo_btns = {}
+        for i in range(13):
+            for j in range(13):
+                combo = query.combo_at(i, j)
+                b = tk.Button(grid, text=combo, width=4, relief="flat",
+                              font=(UI, 8), bg=PANEL, fg=DIM,
+                              activebackground=ACCENT,
+                              command=lambda c=combo: self._toggle_combo(c))
+                b.grid(row=i, column=j, padx=1, pady=1)
+                self._combo_btns[combo] = b
+        self._paint_combos()
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(0, 8))
+        ttk.Button(row, text="clear cards",
+                   command=lambda: (self.app.multi["combo"].clear(),
+                                    self._paint_combos())).pack(side="left")
+        ttk.Label(row, style="Dim.TLabel",
+                  text="   filters to hands where the player held one of these").pack(side="left")
         self._heading(page, "what the hand became")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("made", v))) for v in MADE])
@@ -2426,6 +2528,17 @@ class FilterDialog(tk.Toplevel):
                        "player's actions, so the other seats' bets and "
                        "calls are not in it."
                   ).pack(anchor="w", padx=18, pady=(8, 0))
+
+    def _toggle_combo(self, combo):
+        chosen = self.app.multi["combo"]
+        (chosen.discard if combo in chosen else chosen.add)(combo)
+        self._paint_combos()
+
+    def _paint_combos(self):
+        chosen = self.app.multi.get("combo", set())
+        for combo, b in self._combo_btns.items():
+            on = combo in chosen
+            b.configure(bg=ACCENT if on else PANEL, fg=BG if on else DIM)
 
     def _own_press(self, var, letter):
         """One press on the line builder: add an action, or take one off."""
@@ -2600,6 +2713,11 @@ class AskPanel(ttk.Frame):
         self.log.tag_configure("mono", font=(MONO, 9))
         self.run_btn = ttk.Button(self, text="run it in the window",
                                   command=self.run_last)
+        # The assistant drives the window: the query behind its answer
+        # becomes the filter and the tab, as it is answered, so "show me
+        # my button-versus-big-blind pots on the graph" is one sentence
+        # and no clicks. Off, and it only offers the button.
+        self.drive = tk.BooleanVar(value=True)
         self.entry = tk.Text(self, height=3, background=BG, foreground=INK,
                              insertbackground=INK, font=(UI, 10), wrap="word",
                              borderwidth=1)
@@ -2610,6 +2728,8 @@ class AskPanel(ttk.Frame):
         row.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Button(row, text="ask", style="Accent.TButton",
                    command=self.send).pack(side="left")
+        ttk.Checkbutton(row, text="drive the window", variable=self.drive
+                        ).pack(side="left", padx=10)
         self.busy = ttk.Label(row, text="", style="Dim.TLabel")
         self.busy.pack(side="left", padx=10)
         self._say("Ask in English: \"how often does the pool fold to a river "
@@ -2668,6 +2788,8 @@ class AskPanel(ttk.Frame):
                       "mono")
             self.last_ran = ran[-1]
             self.run_btn.pack(fill="x", padx=10, pady=(0, 4))
+            if self.drive.get():
+                self.app.apply_argv(self.last_ran)
         self.history = transcript
 
     def _failed(self, message):
@@ -2920,8 +3042,8 @@ def check(db_path=DB):
     # that matches nothing -- which is one click away at all times.
     con = sqlite3.connect(db_path)
     broke = []
-    views = ("stats", "actions", "range", "chart", "report", "results",
-             "hands", "graph", "sessions")
+    views = ("stats", "actions", "overfolds", "range", "chart", "report",
+             "results", "hands", "graph", "sessions")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:

@@ -8,6 +8,72 @@ Newest first.
 
 ---
 
+## Where the pool overfolds, the assistant drives the window, and Qwen
+
+### Added -- `--overfolds`
+
+"Overfold" needs a bar. Hand2Note leaves it to the eye; here it is
+arithmetic: a bet of B into P profits on its own past a fold rate of
+B/(P+B), so a fold rate above that, for that size, is folding too much.
+A row per street and bet size (per position or pot with `--by`),
+heads-up decisions, sorted by excess over the bar, REAL only when the
+excess survives Holm's correction for the rows asked. A tab in the
+window, and the assistant's answer to "where does the pool overfold" --
+its vocabulary and rules send the question there and forbid calling a
+rate an overfold from the number.
+
+### Changed -- the assistant drives the window
+
+The panel's "drive the window" box, on by default: the query behind an
+answer becomes the filter and the tab as it is answered. The "run it in
+the window" button remains for when it is off.
+
+### Added -- Qwen, and a local model
+
+Qwen through Alibaba's OpenAI-compatible endpoint, and any model served
+by Ollama on this machine with no key at all. A local model that is not
+running falls through to the next provider like a key with no credit.
+
+### Changed -- the range view's groups
+
+Top pair split by kicker, high card split into ace-high and lower, and
+"a pair and a draw" among the overlaps: the three groups Hand2Note's
+diagram draws that this one did not.
+
+---
+
+## The first four of Hand2Note's gaps
+
+### Added -- the actions view split by size and by hand
+
+`--actions --by size` is Hand2Note's bet-sizing block: each bet or raise
+split into small, half, two-thirds, pot and overbet, each with its own
+profit and its own reactions. `--by hand` is its Action Profit Details,
+the profit of the action by what the player held. `size` is a dimension
+for every table. Three columns beside the profit: won the hand, went to
+showdown, won there. The split-by box in the window has an empty first
+entry, no split, which is how the actions tab opens.
+
+### Added -- rake paid, hands per hour, the biggest pots
+
+Rake on `--results`, attributed to the pot's winner in proportion, where
+the site writes it and with the count of pots it was measured on. A
+hands-per-hour column on sessions. `--hands --sort won|lost`, and in the
+window a click on any column heading sorts any table by it.
+
+### Added -- the hole-card grid
+
+The 13x13 grid on the Cards tab, a click per combo, writing `--combo`.
+The hands list carries the player's own line beside the cards.
+
+### Fixed -- a hand listed twice
+
+The hands list took the board from each decision, so a hand played on
+two streets was two rows with two boards. The board comes from the hand
+now; 21,404 of hero's hands where it said 28,293.
+
+---
+
 ## What the user saw, second pass: actions, the line builder, PartyPoker
 
 ### Added -- the actions view

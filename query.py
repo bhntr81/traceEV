@@ -168,7 +168,7 @@ WEEKDAY_NAME = {v: k for k, v in WEEKDAYS.items()}
 
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
-           "--preset", "--export",
+           "--preset", "--export", "--sort",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -296,7 +296,24 @@ DIMENSIONS = {
                         .index(k) if k in ("under 1h", "1-2h", "2-3h",
                                            "3-4h", "4-5h", "5h+") else 99)),
     "tables": ("tables_now", lambda k: int(k or 0)),
-    "hand": ("made", str),
+    "hand": ("made", lambda k: (strength.ORDER.index(k)
+                                if k in strength.ORDER else 99)),
+    # The size of THIS bet or raise, as a share of the pot in front of the
+    # player, in the same buckets the line letters use -- so a stat or an
+    # action split by size answers "what happens when I bet small here".
+    # NULL for anything that was not a bet or a raise.
+    "size": ("CASE WHEN pot_frac IS NULL THEN NULL"
+             " WHEN pot_frac <= 0.40 THEN 'small (to 0.4 pot)'"
+             " WHEN pot_frac <= 0.60 THEN 'half (0.4-0.6)'"
+             " WHEN pot_frac <= 0.90 THEN 'two-thirds (0.6-0.9)'"
+             " WHEN pot_frac <= 1.20 THEN 'pot (0.9-1.2)'"
+             " ELSE 'overbet (1.2+)' END",
+             lambda k: (["small (to 0.4 pot)", "half (0.4-0.6)",
+                         "two-thirds (0.6-0.9)", "pot (0.9-1.2)",
+                         "overbet (1.2+)"].index(k)
+                        if k in ("small (to 0.4 pot)", "half (0.4-0.6)",
+                                 "two-thirds (0.6-0.9)", "pot (0.9-1.2)",
+                                 "overbet (1.2+)") else 99)),
     "flush_draw": ("fd", str),
     "straight_draw": ("sd", str),
 }
@@ -1068,13 +1085,29 @@ def range_of(con, where):
         n = counts.get(name, 0)
         if not n:
             continue
+        tier = ("strong" if name in strength.STRONG else
+                "weak" if name in strength.WEAK else "medium")
         rows.append({"made": name, "n": n,
                      "pct": 100.0 * n / seen if seen else 0.0,
-                     "weak": name in strength.WEAK,
-                     "tier": ("strong" if name in strength.STRONG else
-                              "weak" if name in strength.WEAK else "medium")})
-    weak = sum(r["n"] for r in rows if r["weak"])
-    strong = sum(r["n"] for r in rows if r["tier"] == "strong")
+                     "weak": name in strength.WEAK, "tier": tier})
+        # The two splits Hand2Note's diagram draws and this one did not:
+        # top pair by its kicker (TPGK and TPWK in its labels), and a high
+        # card by whether it is an ace -- a bluff-catcher and nothing are
+        # different holdings and were one row.
+        splits = {"top pair": (("good kicker", "kicker IN ('top', 'good')"),
+                               ("weak kicker", "kicker = 'weak'")),
+                  "high card": (("ace high", "combo LIKE 'A%'"),
+                                ("lower", "combo NOT LIKE 'A%'"))}.get(name)
+        for label, sql in splits or ():
+            k = con.execute(f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
+                            f"AND made = ? AND ({sql})", (name,)).fetchone()[0]
+            if k:
+                rows.append({"made": "  " + label, "n": k,
+                             "pct": 100.0 * k / seen if seen else 0.0,
+                             "weak": name in strength.WEAK, "tier": tier,
+                             "sub": True})
+    weak = sum(r["n"] for r in rows if r["weak"] and not r.get("sub"))
+    strong = sum(r["n"] for r in rows if r["tier"] == "strong" and not r.get("sub"))
 
     # Draws are counted separately and deliberately overlap the categories
     # above: a hand is one made hand and may also be drawing, and adding
@@ -1082,9 +1115,12 @@ def range_of(con, where):
     # summing to a hundred while quietly reclassifying every pair that
     # happens to have one.
     draws = []
+    pairs = ", ".join(q(c) for c in strength.ORDER if "pair" in c)
     for label, sql in (("a flush draw", "fd IS NOT NULL"),
                        ("a straight draw", "sd IS NOT NULL"),
                        ("both at once", "fd IS NOT NULL AND sd IS NOT NULL"),
+                       ("a pair and a draw",
+                        f"made IN ({pairs}) AND (fd IS NOT NULL OR sd IS NOT NULL)"),
                        ("weak, but drawing",
                         f"made IN ({', '.join(q(w) for w in strength.WEAK)}) "
                         f"AND (fd IS NOT NULL OR sd IS NOT NULL)")):
@@ -1261,6 +1297,7 @@ def sessions_of(con, where):
     """
     keys = ("session_id", "site", "started", "minutes", "hands", "tables",
             "net_bb", "ev_bb", "bb100", "ev100", "matched")
+    per_hour = lambda r: (60.0 * r["hands"] / r["minutes"]) if r["minutes"] else 0.0
     return [dict(zip(keys, r)) for r in con.execute(f"""
         SELECT s.session_id, s.site, s.started, s.minutes, s.hands,
                s.tables, s.net_bb, s.ev_bb, s.bb100, s.ev100,
@@ -1274,9 +1311,15 @@ ACTION_NAMES = {"F": "fold", "X": "check", "C": "call", "B": "bet",
                 "R": "raise", "A": "all-in"}
 
 
-def actions_of(con, where):
+def actions_of(con, where, by=None):
     """
     What was done in the spot, what it made, and what came next.
+
+    With `by`, a dimension: each action is split by it -- `size` is
+    Hand2Note's bet-sizing block (what happens after a small bet, a pot
+    bet, an overbet), `hand` its Action Profit Details (the profit of the
+    bet with top pair, with air), `position` the seat. The overall row
+    for the action comes first and the split beneath it.
 
     Hand2Note's report shows a row per action with its frequency, the
     profit of the action, and what the next player did -- which is the
@@ -1293,63 +1336,179 @@ def actions_of(con, where):
     # stack at the end = stack at the start + won - everything put in;
     # stack before the action is on the row; the difference, in bb.
     profit = "((se.stack + se.won - se.posted - se.invested) - d.stack_before) / d.bb"
+    # The dimension is evaluated inside the subquery, where the column
+    # names are unambiguous; the self-join for the next action brings a
+    # second copy of every one of them.
+    expr, order = DIMENSIONS[by] if by else ("NULL", lambda k: 0)
     rows = con.execute(f"""
-        SELECT d.action,
+        SELECT d.action, d.grp,
                COUNT(*) n,
                AVG({profit}) mean,
                AVG(({profit}) * ({profit})) msq,
+               AVG(CASE WHEN se.won > 0 THEN 1.0 ELSE 0.0 END) won_hand,
+               AVG(CASE WHEN sp.wtsd THEN 1.0 ELSE 0.0 END) wtsd,
+               AVG(CASE WHEN sp.wtsd AND se.won > 0 THEN 1.0 ELSE 0.0 END) won_sd,
                SUM(CASE WHEN n2.action IS NULL THEN 1 ELSE 0 END) over,
                SUM(CASE WHEN n2.action = 'F' THEN 1 ELSE 0 END) nf,
                SUM(CASE WHEN n2.action = 'X' THEN 1 ELSE 0 END) nx,
                SUM(CASE WHEN n2.action = 'C' THEN 1 ELSE 0 END) nc,
                SUM(CASE WHEN n2.action IN ('B') THEN 1 ELSE 0 END) nb,
                SUM(CASE WHEN n2.action IN ('R', 'A') THEN 1 ELSE 0 END) nr
-        FROM (SELECT * FROM decisions WHERE ({where})) d
+        FROM (SELECT *, ({expr}) AS grp FROM decisions WHERE ({where})) d
         JOIN seats se ON se.hand_id = d.hand_id AND se.seat = d.seat
+        JOIN spots sp ON sp.hand_id = d.hand_id AND sp.seat = d.seat
         LEFT JOIN decisions n2 ON n2.hand_id = d.hand_id AND n2.n = d.n + 1
                               AND n2.street = d.street
         WHERE d.fmt <> 'MTT' AND d.bb > 0 AND d.stack_before IS NOT NULL
-        GROUP BY d.action ORDER BY n DESC""").fetchall()
-    total = sum(r[1] for r in rows) or 1
-    out = []
-    for act, n, mean, msq, over, nf, nx, nc, nb, nr in rows:
+        GROUP BY d.action, d.grp""").fetchall()
+
+    def row(act, grp, n, mean, msq, won_hand, wtsd, won_sd, over, nf, nx, nc, nb, nr, total):
         var = max(0.0, (msq or 0.0) - (mean or 0.0) ** 2)
         se = (var / n) ** 0.5 if n else 0.0
-        out.append({"action": ACTION_NAMES.get(act, act), "n": n,
-                    "freq": 100.0 * n / total,
-                    "bb": mean or 0.0, "se": se, "bb100": 100 * (mean or 0.0),
-                    "next": {"fold": nf, "check": nx, "call": nc, "bet": nb,
-                             "raise": nr, "street over": over}})
+        return {"action": ACTION_NAMES.get(act, act), "group": grp, "n": n,
+                "freq": 100.0 * n / total,
+                "bb": mean or 0.0, "se": se, "bb100": 100 * (mean or 0.0),
+                "won_hand": 100 * (won_hand or 0.0), "wtsd": 100 * (wtsd or 0.0),
+                "won_sd": 100 * (won_sd or 0.0) / (wtsd or 1.0) if wtsd else 0.0,
+                "next": {"fold": nf, "check": nx, "call": nc, "bet": nb,
+                         "raise": nr, "street over": over}}
+
+    # The overall row per action is the split's rows added back together,
+    # so that the two never disagree; the split itself is sorted by the
+    # dimension's own order and its frequencies are within the action.
+    by_action = {}
+    for r in rows:
+        by_action.setdefault(r[0], []).append(r)
+    total = sum(r[2] for r in rows) or 1
+    out = []
+    for act, parts in sorted(by_action.items(), key=lambda kv: -sum(r[2] for r in kv[1])):
+        n_act = sum(r[2] for r in parts)
+        mean = sum((r[3] or 0.0) * r[2] for r in parts) / n_act
+        msq = sum((r[4] or 0.0) * r[2] for r in parts) / n_act
+        agg = lambda i: sum((r[i] or 0.0) * r[2] for r in parts) / n_act
+        sums = [sum(r[i] for r in parts) for i in range(8, 14)]
+        out.append(row(act, None, n_act, mean, msq, agg(5), agg(6), agg(7), *sums, total))
+        if by:
+            for r in sorted(parts, key=lambda r: order(r[1]) if r[1] is not None else 999):
+                if r[1] is None:
+                    continue
+                out.append(row(*r, n_act))
     return out
 
 
-def show_actions(con, where, label, parts=()):
-    rows = actions_of(con, where)
+def show_actions(con, where, label, parts=(), by=None):
+    rows = actions_of(con, where, by)
     print()
-    print(f"filter: {label}")
+    print(f"filter: {label}" + (f", by {by}" if by else ""))
     print("=" * (len(label) + 8))
     if not rows:
         print("  " + (why_empty(con, parts) if parts else "nothing matches"))
         return
-    print(f"  {'action':8} {'n':>7} {'freq':>6} {'bb/hand':>9} {'+/-':>6}   "
+    w = 22 if by else 8
+    print(f"  {'action':{w}} {'n':>7} {'freq':>6} {'bb/hand':>9} {'+/-':>6} "
+          f"{'won':>5} {'wtsd':>5} {'w$sd':>5}   "
           f"then: {'fold':>5} {'check':>6} {'call':>5} {'bet':>5} {'raise':>6} {'over':>5}")
     for r in rows:
         nx = r["next"]
         m = max(1, sum(nx.values()))
         pct = lambda k: f"{100 * nx[k] / m:5.0f}%"
-        print(f"  {r['action']:8} {r['n']:7,} {r['freq']:5.1f}% {r['bb']:+9.2f} "
-              f"{r['se']:6.2f}   "
+        name = r["action"] if r["group"] is None else f"  {str(r['group'])[:19]}"
+        print(f"  {name:{w}} {r['n']:7,} {r['freq']:5.1f}% {r['bb']:+9.2f} "
+              f"{r['se']:6.2f} {r['won_hand']:4.0f}% {r['wtsd']:4.0f}% {r['won_sd']:4.0f}%   "
               f"      {pct('fold'):>5} {pct('check'):>6} {pct('call'):>5} "
               f"{pct('bet'):>5} {pct('raise'):>6} {pct('street over'):>5}")
     print("\n  bb/hand is the action's profit -- the stack at the end of the hand less")
     print("  the stack before the action, so a fold is 0 -- averaged over the hands")
-    print("  it was taken in, with its standard error. 'then' is what the next player")
-    print("  did on the same street.")
+    print("  it was taken in, with its standard error. won: won the hand; wtsd: went")
+    print("  to showdown; w$sd: won it there. 'then' is what the next player did on")
+    print("  the same street. --by size splits each action by how big it was, --by")
+    print("  hand by what the player held.")
     if "is_hero = 1" in where:
         hands = con.execute("SELECT COUNT(DISTINCT hand_id) FROM decisions "
                             "WHERE is_hero = 1").fetchone()[0] or 1
         taken = sum(r["n"] for r in rows)
         print(f"  the spot comes up {1000 * taken / hands:.1f} times per 1000 of your hands")
+
+
+def overfolds_of(con, where, by=None):
+    """
+    Where the fold rate is above what the bet size allows.
+
+    "Overfold" needs a bar, and Hand2Note does not supply one -- the user
+    judges it from a rate. The bar here is arithmetic, not a solver: a bet
+    of B into a pot of P shows a profit on its own if it is folded to
+    more than B / (P + B) of the time, so a fold rate above that is the
+    definition of folding too much, for that size, whoever the players
+    are. Heads-up decisions only, because the arithmetic is about one
+    defender; the size is the bet as a share of the pot it was made into,
+    in the buckets the rest of the program uses. The excess is the fold
+    rate less the bar, and it is called real only when the Wilson lower
+    bound of the fold rate clears the bar -- the tool decides, the way it
+    does for comparisons.
+    """
+    dim, order = (DIMENSIONS[by] if by else ("NULL", lambda k: 0))
+    rows = con.execute(f"""
+        SELECT street, ({dim}) grp,
+               CASE WHEN to_call / (pot_before - to_call) <= 0.40 THEN 'small (to 0.4 pot)'
+                    WHEN to_call / (pot_before - to_call) <= 0.60 THEN 'half (0.4-0.6)'
+                    WHEN to_call / (pot_before - to_call) <= 0.90 THEN 'two-thirds (0.6-0.9)'
+                    WHEN to_call / (pot_before - to_call) <= 1.20 THEN 'pot (0.9-1.2)'
+                    ELSE 'overbet (1.2+)' END size,
+               COUNT(*) n,
+               SUM(action = 'F') folds,
+               AVG(to_call / pot_before) bar
+        FROM decisions
+        WHERE ({where}) AND street <> 'preflop' AND facing IN ('bet', 'raise')
+          AND n_live = 2 AND to_call > 0 AND pot_before > to_call AND fmt <> 'MTT'
+        GROUP BY 1, 2, 3""").fetchall()
+    # Fifteen rows are fifteen questions, and the worst of fifteen fold
+    # rates clears a bar by chance more often than one does: each row's
+    # one-sided p-value against its bar is charged by Holm for the size
+    # of the family, as every comparison here is.
+    from math import erfc, sqrt
+    out, pvals = [], []
+    for i, (street, grp, size, n, folds, bar) in enumerate(rows):
+        p, lo, hi = stats.wilson(folds, n)
+        spread = sqrt(max(bar * (1 - bar), 1e-9) / n)
+        pvals.append((i, 0.5 * erfc((p - bar) / spread / sqrt(2))))
+        out.append({"street": street, "group": grp, "size": size, "n": n,
+                    "fold": 100 * p, "lo": 100 * lo, "hi": 100 * hi,
+                    "bar": 100 * bar, "excess": 100 * (p - bar),
+                    "under": hi < bar})
+    adjusted = stats.holm(pvals)
+    for i, r in enumerate(out):
+        r["p"] = adjusted.get(i)
+        r["real"] = r["p"] is not None and r["p"] < 0.05 and r["excess"] > 0
+    out.sort(key=lambda r: (-r["excess"] if r["n"] >= 30 else 999))
+    return out
+
+
+def show_overfolds(con, where, label, parts=(), by=None, min_n=30):
+    rows = overfolds_of(con, where, by)
+    print()
+    print(f"filter: {label}" + (f", by {by}" if by else ""))
+    print("=" * (len(label) + 8))
+    if not rows:
+        print("  " + (why_empty(con, parts) if parts else "nothing matches"))
+        return
+    w = 18 if by else 0
+    print(f"  {'street':7} {'bet size':22} " + (f"{'':{w}} " if by else "")
+          + f"{'n':>6} {'fold':>6} {'+/-':>5} {'bar':>5} {'excess':>7}  verdict")
+    for r in rows:
+        if r["n"] < min_n:
+            continue
+        verdict = ("REAL overfold" if r["real"] else
+                   "under the bar" if r["under"] else "cannot tell")
+        band = (r["hi"] - r["lo"]) / 2
+        print(f"  {r['street']:7} {r['size']:22} "
+              + (f"{str(r['group'])[:w]:{w}} " if by else "")
+              + f"{r['n']:6,} {r['fold']:5.0f}% {band:5.0f} {r['bar']:4.0f}% "
+                f"{r['excess']:+6.0f}   {verdict}")
+    print("\n  bar: the fold rate above which a bet of that size profits on its own,")
+    print("  B/(P+B) -- arithmetic, not a solver. Heads-up decisions only. REAL when")
+    print("  the excess survives Holm's correction for the number of rows asked;")
+    print("  'cannot tell' is not 'no'.")
+    print(f"  Rows under {min_n} decisions are not shown.")
 
 
 def show_sessions(con, where, label, parts=()):
@@ -1361,11 +1520,12 @@ def show_sessions(con, where, label, parts=()):
         print("no session holds a hand this filter selects")
         return
     print(f"{'#':>4} {'site':10} {'started':17} {'mins':>5} {'hands':>6} "
-          f"{'hit':>5} {'tbl':>4} {'net bb':>8} {'ev bb':>8} {'bb/100':>7}")
+          f"{'/hr':>5} {'hit':>5} {'tbl':>4} {'net bb':>8} {'ev bb':>8} {'bb/100':>7}")
     for r in rows:
         rate = "" if r["bb100"] is None else f"{r['bb100']:+7.1f}"
+        hr = 60.0 * r["hands"] / r["minutes"] if r["minutes"] else 0.0
         print(f"{r['session_id']:4} {r['site']:10} {r['started'][:16]:17} "
-              f"{r['minutes']:5.0f} {r['hands']:6,} {r['matched']:5,} "
+              f"{r['minutes']:5.0f} {r['hands']:6,} {hr:5.0f} {r['matched']:5,} "
               f"{r['tables']:4} {r['net_bb']:+8.1f} {r['ev_bb']:+8.1f} {rate}")
     n = sum(r["hands"] for r in rows)
     net = sum(r["net_bb"] for r in rows)
@@ -1920,10 +2080,24 @@ def results_of(con, pairs):
     # sorts lines by whether their loss clears this bar, so the bar has to
     # be the line's own. Sample variance, so a small n is not flattered.
     var = ((msq or 0.0) - (mean or 0.0) ** 2) * n / (n - 1) if n > 1 else 0.0
+    # The rake, attributed the way every tracker attributes it: to whoever
+    # took the pot, in proportion to what they took. Only where the site
+    # writes it -- Ignition and PartyPoker do not -- so it comes with the
+    # count of hands it is measured on, and is not a share of all hands.
+    raked, rake, rake_bb = con.execute(
+        "SELECT COUNT(*), SUM(x.share), SUM(x.share / x.bb) FROM ("
+        "  SELECT (COALESCE(h.rake, 0) + COALESCE(h.jp_fee, 0)) * s.won "
+        "         / (SELECT SUM(w.won) FROM seats w WHERE w.hand_id = s.hand_id) share, "
+        "         h.bb bb"
+        "  FROM spots s JOIN _sel ON _sel.hand_id = s.hand_id AND _sel.seat = s.seat "
+        "  JOIN hands h ON h.hand_id = s.hand_id "
+        "  WHERE s.fmt <> 'MTT' AND h.rake IS NOT NULL AND s.won > 0 AND h.bb > 0) x"
+    ).fetchone()
     return {"hands": n, "net_bb": net_bb or 0.0, "money": money or 0.0,
             "saw_flop": saw or 0, "wtsd": wtsd or 0, "wwsf": wwsf or 0,
             "bb100": 100 * (net_bb or 0.0) / n,
-            "error": 100 * max(var, 0.0) ** 0.5 / n ** 0.5 if n > 1 else 1170 / n ** 0.5}
+            "error": 100 * max(var, 0.0) ** 0.5 / n ** 0.5 if n > 1 else 1170 / n ** 0.5,
+            "rake": rake or 0.0, "rake_bb": rake_bb or 0.0, "raked": raked or 0}
 
 
 def show_results(con, where, label, parts=()):
@@ -1961,14 +2135,27 @@ def show_results(con, where, label, parts=()):
         print(f"  saw a flop       {saw:8d}   ({100 * saw / n:.1f}%)")
         print(f"  won at showdown  {wtsd or 0:8d}")
         print(f"  won after flop   {100 * (wwsf or 0) / saw:8.1f}%")
+    if got["raked"]:
+        print(f"  rake paid        {got['rake_bb']:8.1f} bb   (${got['rake']:.2f}, "
+              f"on the {got['raked']:,} pots won where the site writes it)")
 
 
-def hands_of(con, where, limit=None):
+# How the hands list is ordered: by date, or by what the hand made --
+# "biggest wins" and "biggest losses" are the two lists every tracker
+# offers beside the chronological one.
+# A hand with no result -- a tournament's -- goes last either way, or the
+# biggest-losses list would open with a page of nothing.
+SORTS = {"date": "d.played_at DESC",
+         "won": "s.net_bb IS NULL, s.net_bb DESC",
+         "lost": "s.net_bb IS NULL, s.net_bb ASC"}
+
+
+def hands_of(con, where, limit=None, sort="date"):
     """
     The (hand, seat) rows a filter selects, most recent first, with tags.
 
     Rows are (hand_id, seat, played_at, site, bb, position, combo, board,
-    net_bb, tags). One query for the terminal and the window both, because
+    net_bb, own line, tags). One query for the terminal and the window both, because
     each had its own copy and the window's had no hand id -- so a hand
     seen in the window could not be tagged from the command line.
 
@@ -1978,12 +2165,17 @@ def hands_of(con, where, limit=None):
     """
     import notes
     notes.ensure(con)
+    # The hand's whole board, not the board as it stood at each decision:
+    # a player who acted on the flop and again on the river is one hand
+    # in this list, and was two until the board came from `hands`.
     sql = (f"SELECT DISTINCT d.hand_id, d.seat, d.played_at, d.site, d.bb, "
-           f"       d.position, d.combo, d.board, s.net_bb "
+           f"       d.position, d.combo, "
+           f"       (SELECT h.board FROM hands h WHERE h.hand_id = d.hand_id), "
+           f"       s.net_bb, d.own "
            f"FROM (SELECT * FROM decisions WHERE {where}) d "
            f"LEFT JOIN spots s "
            f"  ON s.hand_id = d.hand_id AND s.seat = d.seat "
-           f"ORDER BY d.played_at DESC")
+           f"ORDER BY {SORTS.get(sort, SORTS['date'])}")
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = con.execute(sql).fetchall()
@@ -1991,21 +2183,22 @@ def hands_of(con, where, limit=None):
     return [tuple(r) + (tagged.get(r[0], []),) for r in rows]
 
 
-def show_hands(con, where, label, limit=40, parts=()):
-    """The hands themselves, most recent first."""
-    print(f"\nfilter: {label}")
+def show_hands(con, where, label, limit=40, parts=(), sort="date"):
+    """The hands themselves, most recent first -- or by what they made."""
+    print(f"\nfilter: {label}" + (f", {sort} first" if sort != "date" else ""))
     print("=" * (len(label) + 8))
-    rows = hands_of(con, where)
+    rows = hands_of(con, where, sort=sort)
     print(f"{len(rows)} hands match; showing up to {limit}\n")
     if not rows:
         print("  " + why_empty(con, parts))
         return
     print(f"  {'when':17} {'site':10} {'bb':>5} {'pos':4} {'hand':5} "
-          f"{'net bb':>7}  {'hand id':16} board / tags")
-    print("  " + "-" * 96)
-    for hid, seat, when, site, bb, pos, combo, board, net, tags in rows[:limit]:
+          f"{'my line':14} {'net bb':>7}  {'hand id':16} board / tags")
+    print("  " + "-" * 110)
+    for hid, seat, when, site, bb, pos, combo, board, net, own, tags in rows[:limit]:
         print(f"  {when[:16]:17} {site:10} {bb or 0:5.2f} {pos or '?':4} "
-              f"{combo or '--':5} {net if net is not None else 0:7.1f}  "
+              f"{combo or '--':5} {(own or '')[:14]:14} "
+              f"{net if net is not None else 0:7.1f}  "
               f"{hid:16} {board or ''}"
               + (f"   [{', '.join(tags)}]" if tags else ""))
     print("\n  mark one:  python notes.py --tag <hand id> <tag>     "
@@ -2361,7 +2554,7 @@ def main(argv):
     cohort_spec, argv = players.parse_cohort(argv)
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart", "--sessions", "--actions"):
+              "--chart", "--sessions", "--actions", "--overfolds"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -2491,13 +2684,15 @@ def main(argv):
         else:
             print("  " + why_empty(con, _parts))
     elif mode == "--hands":
-        show_hands(con, where, label, parts=_parts)
+        show_hands(con, where, label, parts=_parts, sort=opt("--sort") or "date")
     elif mode == "--range":
         show_range(con, where, label, _parts)
     elif mode == "--sessions":
         show_sessions(con, where, label, _parts)
     elif mode == "--actions":
-        show_actions(con, where, label, _parts)
+        show_actions(con, where, label, _parts, by=opt("--by"))
+    elif mode == "--overfolds":
+        show_overfolds(con, where, label, _parts, by=opt("--by"))
     elif mode == "--chart":
         # `--show` names the columns of a report, and here it names the one
         # stat the chart is of. Without it the chart is the range itself,

@@ -147,10 +147,20 @@ table of decisions.
 ```bash
 python ask.py "how often does the pool fold to a turn bet in 3bet pots?"
 python ask.py "do regs fold rivers more against regs than when a fish is in?"
+python ask.py "where does the pool overfold on the river?"
 python ask.py --with gemini "..."        # a particular AI; gemini's API is free
+python ask.py --with ollama "..."        # a local model through Ollama; nothing leaves the machine
 python ask.py --providers                # who has a key right now
 python ask.py --install-desktop          # let the Claude Desktop app use TraceEV
 ```
+
+Providers: Gemini, Claude, ChatGPT, Grok, Qwen (Alibaba Cloud), and any
+model served locally by Ollama -- `ollama pull qwen3`, choose "ollama" in
+the panel's settings, no key. In the window the panel opens and closes
+from the **ask** button; with **drive the window** ticked, the query
+behind each answer becomes the window's filter and tab as it is
+answered, so "show me my button-versus-big-blind pots on the graph" is
+one sentence and no clicks.
 
 The assistant knows no poker numbers. It knows the program's vocabulary —
 every flag `query.py` takes, generated from `query.py` itself — and has one
@@ -258,8 +268,22 @@ blinds and calls before it. In big blinds, averaged over the hands the
 action was taken in, with its standard error -- the honest part: a spot
 taken a few dozen times has an error bar wider than the number, and the
 number is then not a finding. For your own hands the spot's frequency
-per thousand hands is printed too. In the window it is the **actions**
-tab.
+per thousand hands is printed too. Beside the profit: how often the hand
+was won, how often it went to showdown, and how often it won there. In
+the window it is the **actions** tab.
+
+```bash
+python query.py --hero --street turn --pfa --facing check --my-node "*/B/" --actions --by size
+python query.py --pool --site ignition --street flop --pfa --facing check --actions --by hand
+```
+
+`--by` splits each action: `size` is Hand2Note's bet-sizing block -- what
+happens after a small bet, a two-thirds bet, an overbet, each with its
+own reactions -- and `hand` its Action Profit Details, the profit of the
+bet with top pair and with air. The overall row comes first and the
+split beneath it; the split's frequencies are within the action. `size`
+is also a dimension for any table: `--by size --show cbet_flop` is the
+c-bet rate by how big it was.
 
 ### The matchup
 
@@ -360,6 +384,42 @@ REPORT** button at the foot of the filter dialog.
 
 `--forget` takes either a saved stat or a saved report; it refuses if you
 somehow have both under one name rather than guessing which you meant.
+
+### Where the pool overfolds
+
+```bash
+python query.py --pool --site pokerstars --overfolds
+python query.py --pool --site ignition --overfolds --by position
+python query.py --pool --site pokerstars --pot 3bet --overfolds
+```
+
+"Overfold" needs a bar, and Hand2Note does not supply one -- you judge a
+fold rate by eye. Here the bar is arithmetic, not a solver: a bet of B
+into a pot of P profits on its own once it is folded to more than
+B / (P + B) of the time, so a fold rate above that, for that size, is
+folding too much whoever the players are. The report is a row per street
+and bet size (and per position or pot type with `--by`), heads-up
+decisions only, sorted by how far the fold rate sits above the bar, and
+a row is called a **REAL overfold** only when the excess survives Holm's
+correction for the number of rows asked; "cannot tell" is a sample too
+small to say, not a no. The window's **overfolds** tab is the same.
+
+The range view splits top pair by kicker and high card by whether it is
+an ace, and counts "a pair and a draw" among the overlaps.
+
+### Rake, hands per hour, and the biggest pots
+
+`--results` prints the rake paid: attributed to whoever took the pot in
+proportion to what they took, and only where the site writes it --
+PokerStars, ACR and the app rooms do, Ignition and PartyPoker do not --
+so it comes with the count of pots it was measured on. `--sessions` has
+a hands-per-hour column. `--hands --sort won` and `--sort lost` are the
+biggest wins and losses; in the window, click any column heading to sort
+by it and again to flip, on any tab.
+
+The filter dialog's Cards tab has the 13x13 grid: click the combos you
+mean and they become `--combo`. The hands list shows your own line
+beside the cards.
 
 Two things are deliberately not saved with a report:
 

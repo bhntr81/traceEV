@@ -155,6 +155,16 @@ def vocabulary():
         "  is the strong quarter of a range presented as the range.",
         "  'the pool' = --pool (everyone but me). 'me'/'I'/'hero' = --hero.",
         "",
+        "## overfolds, and what was done in a spot",
+        "  'where does the pool overfold' / 'fold too much' is ONE query, --overfolds:",
+        "    --pool --site pokerstars --overfolds          (add --by position, --pot 3bet, etc.)",
+        "  The tool sets the bar from the bet size -- a bet of B into P profits on its",
+        "  own past a fold rate of B/(P+B) -- and says REAL only when the interval clears",
+        "  it. Quote its verdict; never call a fold rate an overfold from the number.",
+        "  'what happens when I bet here' / 'action profit' / 'what do they do next' is",
+        "  --actions on the spot's filter; --by size splits it by bet size, --by hand by",
+        "  what was held.",
+        "",
         "## comparisons",
         "  Any question of the form 'is X different when Y', 'more than', 'compared to',",
         "  'better in A than B' is ONE query with --versus, never two queries eyeballed:",
@@ -184,7 +194,7 @@ Rules that matter:
 - Always report the n beside a rate, and the interval when the tool printed one. If n is small say the number is not worth much yet.
 - Translate the question into the vocabulary below. Prefer the specific stat (--show KEY) over reading it off a table. For "how often does X do Y facing Z" use --street, --facing and the stat key. For money, use --results.
 - Pool questions need --pool and a --site. If the user did not name a site, use pokerstars (the biggest sample) and SAY you did -- EXCEPT for anything about what hands people hold (--range, --chart, --made, --fd, --sd), which must use ignition, the only site that shows every hand's cards. Say that too.
-- Use as many tool calls as the question needs, one query per spot: "where does the pool overfold" means the fold stats over --by position, --by pot_type, --by street, and then the worst cells with their n. If a query errors, read the message and fix the flags once.
+- Use as many tool calls as the question needs. "Where does the pool overfold" is --overfolds (the tool's own bar, from the bet size); "what happens when I bet here" is --actions. If a query errors, read the message and fix the flags once.
 - A comparison is ONE query with --versus and --show KEY. Report a difference as real ONLY if the tool's own verdict line says "Real:". If it says "Nothing survives", say there is no difference this data can see, and quote the "has to be about N points" line -- that is the finding. Never decide significance yourself from two rates, two intervals, or two separate queries; the tool corrects for how many questions were asked and you cannot.
 - End with one line: `ran: python query.py <the flags you used>` so the user can repeat it.
 - Be brief. A sentence or two and the numbers.
@@ -274,6 +284,23 @@ PROVIDERS = {
         "label": "Grok (xAI)",
         "env": "XAI_API_KEY", "model": "grok-4",
         "keys_at": "https://console.x.ai",
+    },
+    # Qwen speaks OpenAI's protocol at Alibaba's endpoint, and locally
+    # through Ollama, which needs no key at all -- the one way to run the
+    # assistant with nothing leaving the machine. The local entry's "key"
+    # is a placeholder so the provider loop treats it as configured.
+    "qwen": {
+        "label": "Qwen (Alibaba Cloud)",
+        "env": "DASHSCOPE_API_KEY", "model": "qwen-plus",
+        "keys_at": "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key",
+        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+    },
+    "ollama": {
+        "label": "Ollama, local (Qwen or any model; no key)",
+        "env": "OLLAMA_MODEL", "model": "qwen3",
+        "keys_at": "https://ollama.com/download -- then: ollama pull qwen3",
+        "url": "http://localhost:11434/v1/chat/completions",
+        "keyless": True,
     },
 }
 # Not an API: the Claude Code command-line tool on a Claude subscription,
@@ -479,7 +506,7 @@ class OpenAIChat:
 
 
 def client_for(name):
-    key = key_for(name)
+    key = key_for(name) or ("ollama" if PROVIDERS[name].get("keyless") else None)
     if not key:
         raise RuntimeError(f"no key for {PROVIDERS[name]['label']} -- paste one in the "
                            f"panel's settings; keys are at {PROVIDERS[name]['keys_at']}")
@@ -492,6 +519,8 @@ def client_for(name):
         return OpenAIChat(key, model)
     if name == "grok":
         return OpenAIChat(key, model, "https://api.x.ai/v1/chat/completions")
+    if PROVIDERS[name].get("url"):
+        return OpenAIChat(key, model, PROVIDERS[name]["url"])
     raise RuntimeError(f"unknown provider {name!r}")
 
 
@@ -598,7 +627,7 @@ def ran_from_text(text):
 # of these means try the next one; anything else is a bug and is raised.
 TRY_NEXT = ("400", "401", "402", "403", "429", "503", "529", "credit", "quota",
             "billing", "demand", "overloaded", "no key", "not signed in",
-            "not installed")
+            "not installed", "could not reach")
 
 
 def who_label(name):
@@ -744,6 +773,7 @@ GOLDEN = Path(__file__).parent / "golden.json"
 # The tokens that are a mode, not a filter. `query.build` ignores them,
 # and the scorer has to know which one a query was in.
 MODES = ("--stats", "--results", "--hands", "--range", "--chart", "--actions",
+         "--overfolds",
          "--sessions")
 
 

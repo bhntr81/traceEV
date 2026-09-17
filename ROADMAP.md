@@ -983,6 +983,29 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 23 — the assistant as the front door
+
+**Goal:** the user's "let's start working on the AI attachment": a chat
+that opens and closes, that controls the program and looks things up;
+and "where is the pool overfolding" -- which needs a bar Hand2Note does
+not supply.
+
+**Result: PASS**, 20 of 20. The panel drives the window; Qwen and a
+local Ollama model beside the four providers; `--overfolds` with the
+bet-size bar and Holm across its rows, as a tab and as the assistant's
+answer; the range view's kicker, ace-high and pair-plus-draw groups (gap
+five of six). Left: expression stats.
+
+## Run 22 — Hand2Note's gaps, one to four
+
+**Goal:** the order written below: the bet-sizing split with reactions,
+action profit by hand strength and the won/showdown columns, rake paid
+and hands per hour and the biggest pots, the hole-card grid.
+
+**Result: PASS**, 20 of 20. All four, and a hand that was listed once per
+street is listed once. Left in the order: strength groups (top pair by
+kicker, A-high, pair + draw), then expression stats.
+
 ## Hand2Note, page by page — what it has that this does not (16 Sep 2026)
 
 Read from the manual's Features and Custom Stats pages and their

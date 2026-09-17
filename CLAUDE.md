@@ -268,6 +268,13 @@ Facts that stay true, and that have each been got wrong at least once:
   and `--my-line`/`--my-node` read them. The common spots -- barrels,
   check-raises, probes, delayed c-bets -- are `SMART_REPORTS` entries
   written against those, not new stats.
+- **An overfold has a bar, and the bar is the bet size.** Hand2Note has
+  no such number; the user judges by eye. Here a bet of B into P profits
+  on its own past a fold rate of B/(P+B), and `--overfolds` calls a row
+  REAL only when the excess over that clears Holm across the rows asked.
+  Arithmetic, not a solver; heads-up decisions, because the arithmetic is
+  about one defender. The assistant is told to quote the verdict and
+  never to name an overfold from a rate.
 - **Money is a property of a hand, a spot is a property of a decision.** So
   `query.py --results` selects decisions and then sums whole hands. A player
   in position on a monotone flop won or lost the whole pot, not the part
