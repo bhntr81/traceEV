@@ -1309,10 +1309,11 @@ class App(ImportMixin, ttk.Frame):
                               pct("bet"), pct("raise"), pct("street over")))
         tv.insert("", "end", values=("", "", "", "", "", "", "", "", "", "", ""))
         tv.insert("", "end", tags=("note",), values=(
-            "bb/hand is the whole hand's result, averaged over the hands the "
-            "action was taken in, with its standard error; 'then' is the next "
-            "player's action on the same street", "", "", "", "", "", "", "",
-            "", "", ""))
+            "bb/hand is the action's profit: the stack at the end of the hand "
+            "less the stack before the action (a fold is 0), averaged over "
+            "the hands it was taken in, with its standard error; 'then' is "
+            "the next player's action on the same street", "", "", "", "",
+            "", "", "", "", "", ""))
 
     def _render_sessions(self, tv, out):
         """

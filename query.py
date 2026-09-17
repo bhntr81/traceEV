@@ -1279,19 +1279,25 @@ def actions_of(con, where):
     What was done in the spot, what it made, and what came next.
 
     Hand2Note's report shows a row per action with its frequency, the
-    profit of the hands it was taken in, and what the next player did --
-    which is the whole of "how does this go when I bet here". The profit is
-    the hand's net for the player, in big blinds, averaged over the hands
-    the action was taken in, with its standard error; a spot taken twenty
-    times has an error bar wider than the number, and it is printed so.
-    The next action is the next decision in the hand on the same street,
-    by whoever took it; "street over" when nobody did.
+    profit of the action, and what the next player did -- which is the
+    whole of "how does this go when I bet here". Profit is defined the way
+    Hand2Note defines Action Profit: the player's stack at the end of the
+    hand less their stack the moment before the action, so a fold is
+    always zero and a bet is judged by what happened from the bet on, not
+    by the blinds and calls that came before it. In big blinds, averaged
+    over the hands the action was taken in, with its standard error; a
+    spot taken twenty times has an error bar wider than the number, and it
+    is printed so. The next action is the next decision in the hand on the
+    same street, by whoever took it; "street over" when nobody did.
     """
+    # stack at the end = stack at the start + won - everything put in;
+    # stack before the action is on the row; the difference, in bb.
+    profit = "((se.stack + se.won - se.posted - se.invested) - d.stack_before) / d.bb"
     rows = con.execute(f"""
         SELECT d.action,
                COUNT(*) n,
-               AVG(s.net_bb) mean,
-               AVG(s.net_bb * s.net_bb) msq,
+               AVG({profit}) mean,
+               AVG(({profit}) * ({profit})) msq,
                SUM(CASE WHEN n2.action IS NULL THEN 1 ELSE 0 END) over,
                SUM(CASE WHEN n2.action = 'F' THEN 1 ELSE 0 END) nf,
                SUM(CASE WHEN n2.action = 'X' THEN 1 ELSE 0 END) nx,
@@ -1299,10 +1305,10 @@ def actions_of(con, where):
                SUM(CASE WHEN n2.action IN ('B') THEN 1 ELSE 0 END) nb,
                SUM(CASE WHEN n2.action IN ('R', 'A') THEN 1 ELSE 0 END) nr
         FROM (SELECT * FROM decisions WHERE ({where})) d
-        JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
+        JOIN seats se ON se.hand_id = d.hand_id AND se.seat = d.seat
         LEFT JOIN decisions n2 ON n2.hand_id = d.hand_id AND n2.n = d.n + 1
                               AND n2.street = d.street
-        WHERE d.fmt <> 'MTT' AND s.net_bb IS NOT NULL
+        WHERE d.fmt <> 'MTT' AND d.bb > 0 AND d.stack_before IS NOT NULL
         GROUP BY d.action ORDER BY n DESC""").fetchall()
     total = sum(r[1] for r in rows) or 1
     out = []
@@ -1335,9 +1341,15 @@ def show_actions(con, where, label, parts=()):
               f"{r['se']:6.2f}   "
               f"      {pct('fold'):>5} {pct('check'):>6} {pct('call'):>5} "
               f"{pct('bet'):>5} {pct('raise'):>6} {pct('street over'):>5}")
-    print("\n  bb/hand is the whole hand's result for the player, averaged over the")
-    print("  hands the action was taken in, with its standard error. 'then' is what")
-    print("  the next player did on the same street.")
+    print("\n  bb/hand is the action's profit -- the stack at the end of the hand less")
+    print("  the stack before the action, so a fold is 0 -- averaged over the hands")
+    print("  it was taken in, with its standard error. 'then' is what the next player")
+    print("  did on the same street.")
+    if "is_hero = 1" in where:
+        hands = con.execute("SELECT COUNT(DISTINCT hand_id) FROM decisions "
+                            "WHERE is_hero = 1").fetchone()[0] or 1
+        taken = sum(r["n"] for r in rows)
+        print(f"  the spot comes up {1000 * taken / hands:.1f} times per 1000 of your hands")
 
 
 def show_sessions(con, where, label, parts=()):
