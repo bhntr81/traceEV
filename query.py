@@ -125,6 +125,17 @@ VALUE_FLAGS = {
     "--session-len": "session_len BETWEEN {lo} AND {hi}",
     "--session-min": "session_min BETWEEN {lo} AND {hi}",
     "--tables": "tables_now BETWEEN {lo} AND {hi}",
+    # Sizes and depth as ranges, Hand2Note's Sizing & Stack Depth filters:
+    # a bet or raise as a share of the pot, in big blinds, or as a multiple
+    # of the bet it raised; the effective stack; the stack-to-pot ratio.
+    "--size": "pot_frac BETWEEN {lo} AND {hi}",
+    "--size-bb": "size_bb BETWEEN {lo} AND {hi}",
+    "--raise-x": "raise_x BETWEEN {lo} AND {hi}",
+    "--depth": "eff_bb BETWEEN {lo} AND {hi}",
+    "--spr": "spr BETWEEN {lo} AND {hi}",
+    # The flop's high card, by rank letter; the game's format.
+    "--high": "fl_hi IN ({list})",
+    "--format": "fmt IN ({list})",
     # The shape of the betting rather than one decision in it. Each takes a
     # GLOB pattern over the strings `lines.py` derives, so `--flop "XB*"` is
     # "checked to somebody, who bet, and then anything at all".
@@ -186,12 +197,15 @@ SWITCHES = {
     "--multiway": "n_live > 2",
     "--headsup": "n_live = 2",
     "--vs-pfa": "vs_pfa = 1",
-    # The other seat: at the moment of the decision when the pot is heads
-    # up, and otherwise the other seat of the pot's matchup -- so that in a
-    # BTN/BB pot the open itself, made against two blinds, still knows who
-    # answered it.
-    "--vs-hero": "(vs_hero = 1 OR (vs_hero IS NULL AND mu_vs_hero = 1))",
-    "--vs-pool": "(vs_hero = 0 OR (vs_hero IS NULL AND mu_vs_hero = 0))",
+    # Whether hero is among the opponents still in the pot at the moment.
+    # Not `vs_hero`, which is filled only when one opponent is left: read
+    # that way "the pool against the pool" was the pool's heads-up
+    # decisions, and UTG's VPIP came out at 68% on 17 Sep 2026 because
+    # every open that was answered was in the count and every open that
+    # took the blinds was not. `hero_in` is never NULL for a seat with an
+    # opponent, so a multiway open counts once, as it should.
+    "--vs-hero": "hero_in = 1",
+    "--vs-pool": "hero_in = 0",
     "--standard": "standard = 1",
     # Who is playing, which is the distortion this whole tracker averaged
     # over until now: people isolate wider and value-bet thinner against a
@@ -1547,9 +1561,28 @@ VS_NOTE = ("  --vs picks decisions made with that seat as the ONLY live opponent
            "  often you open, drop --vs; for the matchup after the flop, keep it.")
 
 
+# The same trap one flag over. Hero is at the table in every hand of a
+# history hero exported, and is still to act when the first player opens;
+# so "hero out of the pot" preflop is only the decisions made after hero
+# folded, and "pool vs pool" read UTG's VPIP as 59% on 17 Sep 2026 -- the
+# 3-bets UTG faced after hero got out, and none of the opens.
+HERO_IN_NOTE = ("  --vs-pool / --vs-hero pick decisions made with hero out of, or still in,\n"
+                "  the pot. Preflop hero is still in when anybody opens, so 'vs the pool'\n"
+                "  holds no opens at all -- only what was faced after hero folded -- and\n"
+                "  VPIP/PFR/RFI read as re-raise rates. For the pool's own numbers use\n"
+                "  --pool alone; these two are for how it plays with you in or out.")
+
+
 def vs_note(where, groups):
-    """The note above, if this filter and this table need it."""
-    return VS_NOTE if "vs_pos" in where and "preflop" in groups else ""
+    """The notes above, if this filter and this table need them."""
+    if "preflop" not in groups:
+        return ""
+    out = []
+    if "vs_pos" in where:
+        out.append(VS_NOTE)
+    if "hero_in" in where:
+        out.append(HERO_IN_NOTE)
+    return "\n\n".join(out)
 
 
 def show_stats(con, where, label, parts=()):
@@ -2307,6 +2340,8 @@ def check(db_path=DB):
         "--stake": "0.1", "--deep": "50", "--short": "200",
         "--hour": "18-23", "--weekday": "sat,sun",
         "--session-len": "60-180", "--session-min": "0-60", "--tables": "1-2",
+        "--size": "0.5-0.8", "--size-bb": "2-4", "--raise-x": "2-3",
+        "--depth": "80-120", "--spr": "1-4", "--high": "A,K", "--format": "RING",
         "--made": "top pair", "--kicker": "top", "--fd": "nut",
         "--sd": "oesd",
         "--players": "6", "--live": "2",

@@ -76,6 +76,19 @@ CREATE TABLE decisions (
   -- the other seat of it is hero.
   matchup TEXT, mu_vs_hero INT,
 
+  -- a raise as a multiple of the bet it raised: 3.0 for a 3x, the one
+  -- sizing the others cannot express, since pot_frac is over the pot and
+  -- size_bb is absolute. NULL for anything that was not a raise.
+  raise_x REAL,
+
+  -- whether hero is among the opponents still in the pot at this moment.
+  -- `vs_hero` says it only when one opponent is left, so "the pool
+  -- against the pool" read as "the pool's heads-up decisions against
+  -- somebody else" and put UTG's VPIP at 68%: every open that was called
+  -- was in, every open that was not was out. This is never NULL for a
+  -- seat that has an opponent, and 0 on hero's own rows.
+  hero_in INT,
+
   PRIMARY KEY (hand_id, n));
 """
 
@@ -150,7 +163,12 @@ CREATE INDEX IF NOT EXISTS dec_game ON decisions(bb, n_players, fmt);
 -- "vs hero" is the other seat at the moment, or failing that the other
 -- seat of the pot's matchup; written as an OR of the two so that each
 -- half seeks this index, where a COALESCE over them read the whole table.
-CREATE INDEX IF NOT EXISTS dec_other ON decisions(vs_hero, mu_vs_hero);
+CREATE INDEX IF NOT EXISTS dec_other ON decisions(hero_in, is_hero, street);
+-- The sizing ranges each seek their own column: a range on the second
+-- column of a compound index is a scan, so one index each.
+CREATE INDEX IF NOT EXISTS dec_size_bb ON decisions(size_bb) WHERE size_bb IS NOT NULL;
+CREATE INDEX IF NOT EXISTS dec_raise_x ON decisions(raise_x) WHERE raise_x IS NOT NULL;
+CREATE INDEX IF NOT EXISTS dec_spr ON decisions(spr);
 CREATE INDEX IF NOT EXISTS dec_size
     ON decisions(pot_frac, to_call, pot_before, street);
 CREATE INDEX IF NOT EXISTS dec_runout
@@ -287,6 +305,10 @@ def build(db_path=DB):
         rank_of = {s: i for i, s in enumerate(order)}
 
         put_in = {s["seat"]: (s["posted"] or 0.0) for s in seats}
+        # What each seat had put in when the street began, so that the
+        # street's own contribution -- what a raise is measured against --
+        # can be told from the hand's running total.
+        at_start = {}
         live = {s["seat"] for s in seats}
         street, street_agg, last_agg = "preflop", 0, None
         # Who has already acted on this street, and who has already been
@@ -303,6 +325,8 @@ def build(db_path=DB):
         # limp) and after it (a call or a raise): a matchup is exactly one
         # of the second and none of the first.
         hand_rows, limped, answered = [], set(), []
+        r_x = {}                # raise_x by decision number, stamped at the end
+        h_in = {}               # hero_in, likewise
 
         for a in actions:
             if a["street"] != street:
@@ -311,6 +335,7 @@ def build(db_path=DB):
                 prev_street_agg = last_agg
                 checked_through = int(street_agg == 0 and street != "preflop")
                 street, street_agg, last_agg = a["street"], 0, None
+                at_start = dict(put_in)
                 acted_this, agg_this = set(), set()
                 first_of_street = True
 
@@ -354,13 +379,20 @@ def build(db_path=DB):
             went_in = (total - contributed) if is_raise else amount
             said = a["allin"] if "allin" in a and a["allin"] is not None else 0
             allin = int(bool(said) or stack - went_in <= 0.005)
-            pot_frac = None
+            pot_frac = raise_x = None
             if agg:
                 if call > 0:
                     # A raise measured the way a solver states one: what goes
                     # in on top of the call, over the pot you would call into.
                     top = (total or (amount + call)) - call
                     pot_frac = top / (pot + call) if pot + call else None
+                    # And as a multiple of the bet faced, which is how a
+                    # raise is said at the table: the raise-to over what
+                    # the raiser would have had to put in to call.
+                    mine = contributed - at_start.get(seat, 0.0)
+                    faced = mine + call
+                    raise_to = total or (mine + amount)
+                    raise_x = round(raise_to / faced, 3) if faced > 0 else None
                 else:
                     pot_frac = amount / pot if pot else None
 
@@ -432,6 +464,9 @@ def build(db_path=DB):
                 *(texture if street != "preflop" else (None,) * 5),
                 *runout(h["board"], street)))
 
+            r_x[a["n"]] = raise_x
+            h_in[a["n"]] = int(any(by_seat[x].get("is_hero") for x in opp
+                                   if x in by_seat))
             first_of_street = False
             acted_this.add(seat)
             if agg:
@@ -479,7 +514,8 @@ def build(db_path=DB):
             if seat_of_row in pair:
                 other_is_hero = int(any(by_seat[x].get("is_hero")
                                         for x in pair if x != seat_of_row))
-            rows.append(r + (matchup, other_is_hero))
+            rows.append(r + (matchup, other_is_hero, r_x.get(r[1]),
+                             h_in.get(r[1])))
 
     n = len(con.execute("SELECT * FROM decisions LIMIT 0").description)
     con.executemany(
@@ -640,6 +676,23 @@ def check(db_path=DB):
           f"({off} disagree with their actions)")
     if off:
         fails.append("matchup")
+    # Hero is never their own opponent, and a pool row in a hand hero was
+    # dealt into but had left is not "against hero" either: the count of
+    # rows where hero_in disagrees with the seats must be zero.
+    bad_in = con.execute("""
+        SELECT COUNT(*) FROM decisions d
+        WHERE d.is_hero = 1 AND d.hero_in = 1""").fetchone()[0]
+    print(f"  hero as own opponent   {bad_in:>7}   rows")
+    if bad_in:
+        fails.append("hero_in")
+    # A raise is more than the bet it raised, or it was not a raise; a
+    # multiple under one is a bet size read wrong.
+    tiny = con.execute("SELECT COUNT(*) FROM decisions WHERE raise_x IS NOT NULL "
+                       "AND raise_x < 1.0").fetchone()[0]
+    n_rx = con.execute("SELECT COUNT(*) FROM decisions WHERE raise_x IS NOT NULL").fetchone()[0]
+    print(f"  raises with a multiple  {n_rx:>7}   ({tiny} under 1x)")
+    if tiny:
+        fails.append("raise_x")
 
     con.close()
     print()

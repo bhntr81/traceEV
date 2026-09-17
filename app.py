@@ -126,7 +126,12 @@ FLUSH_DRAWS = ("nut", "second", "weak", "backdoor")
 STRAIGHT_DRAWS = ("oesd", "double gutshot", "gutshot")
 # Who the other seat is. "The big blind against a button open" is the shape
 # most real questions have, and it needs both halves of the matchup named.
-VS_SIDE = [("--vs-hero", "vs me"), ("--vs-pool", "vs the pool")]
+# Whether hero is still in the pot at the moment of the decision. Said
+# that way rather than "vs me / vs the pool", because the second read as
+# "the pool's own numbers" and was pressed for them -- and preflop it
+# holds no opens, since hero is still to act when anybody opens.
+VS_SIDE = [("--vs-hero", "I am still in the pot"),
+           ("--vs-pool", "I am out of the pot (or not dealt in)")]
 # What kind of player, on each side of the matchup. A class is only given to
 # somebody there is enough evidence about; everybody else is "unknown" and
 # is selected by neither of these, which is the point of them.
@@ -366,7 +371,12 @@ class ImportMixin:
 
         u = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
-        u.add_command(label="Update from GitHub now", command=self.update_now)
+        if getattr(sys, "frozen", False):
+            u.add_command(label="Get the latest build (opens GitHub)",
+                          command=lambda: webbrowser.open(update.downloads_url()))
+            u.add_command(label="Check for a newer version", command=self.update_now)
+        else:
+            u.add_command(label="Update from GitHub now", command=self.update_now)
         u.add_command(label="What version is this?", command=self.show_version)
         bar.add_cascade(label="Update", menu=u)
 
@@ -586,7 +596,8 @@ class App(ImportMixin, ttk.Frame):
                       "line", "node", "my_line", "my_node",
                       "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
-                      "tables", "tag")}
+                      "tables", "tag", "size", "size_bb", "raise_x", "depth",
+                      "spr", "high", "format")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -677,7 +688,12 @@ class App(ImportMixin, ttk.Frame):
             diag.event("update", state=state, detail=message)
             return
         colour = {"updated": GOOD, "blocked": WARN, "available": ACCENT}[state]
-        self.banner.configure(text=message, foreground=colour)
+        # The banner gets the headline; the whole of it, with what to do,
+        # is a box away under the Update menu.
+        headline = message.splitlines()[0]
+        if state == "available":
+            headline += "  See the Update menu."
+        self.banner.configure(text=headline, foreground=colour)
         self.banner.pack(side="left", padx=12)
         diag.event("update", state=state, detail=message)
 
@@ -981,6 +997,10 @@ class App(ImportMixin, ttk.Frame):
                            ("pre", "--pre"), ("flop", "--flop"),
                            ("turn", "--turn"), ("river", "--river"),
                            ("hour", "--hour"), ("weekday", "--weekday"),
+                           ("size", "--size"), ("size_bb", "--size-bb"),
+                           ("raise_x", "--raise-x"), ("depth", "--depth"),
+                           ("spr", "--spr"), ("high", "--high"),
+                           ("format", "--format"),
                            ("session_len", "--session-len"),
                            ("session_min", "--session-min"),
                            ("tables", "--tables"), ("tag", "--tag")):
@@ -1012,7 +1032,9 @@ class App(ImportMixin, ttk.Frame):
               "--turn": "turn", "--river": "river", "--hour": "hour",
               "--weekday": "weekday", "--session-len": "session_len",
               "--session-min": "session_min", "--tables": "tables",
-              "--tag": "tag"}
+              "--tag": "tag", "--size": "size", "--size-bb": "size_bb",
+              "--raise-x": "raise_x", "--depth": "depth", "--spr": "spr",
+              "--high": "high", "--format": "format"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
               "--actions": "actions", "--overfolds": "overfolds",
@@ -2288,7 +2310,7 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "against  (they opened or answered, and nobody else stayed)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("vs", v))) for v in POSITIONS])
-        self._heading(page, "and that opponent is")
+        self._heading(page, "and, at the moment of the decision")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in VS_SIDE])
         self._heading(page, "what kind of player")
@@ -2582,9 +2604,33 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "stack depth, in big blinds")
         row = ttk.Frame(page)
         row.pack(fill="x", padx=18)
-        for name, text in (("deep", "at least"), ("short", "less than")):
+        for name, text in (("deep", "at least"), ("short", "less than"),
+                           ("depth", "or a range, e.g. 20-50"),
+                           ("spr", "SPR range, e.g. 1-4")):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=8).pack(
+                side="left", padx=(6, 18))
+
+        # Hand2Note's Sizing filters: a bet or raise as a share of the pot,
+        # in big blinds, or as a multiple of the bet it raised. Ranges, so
+        # "0.6-0.8" is two-thirds to four-fifths of the pot.
+        self._heading(page, "the size of this bet or raise")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("size", "share of pot, e.g. 0.5-0.8"),
+                           ("size_bb", "big blinds, e.g. 2-4"),
+                           ("raise_x", "times the bet raised, e.g. 2-3")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=8).pack(
+                side="left", padx=(6, 18))
+
+        self._heading(page, "the game")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("format", "format: RING, ZONE, BLITZ, MTT"),
+                           ("high", "flop high card, e.g. A,K")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=10).pack(
                 side="left", padx=(6, 18))
 
         self._heading(page, "dates   (yyyy-mm-dd)")

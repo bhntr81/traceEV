@@ -73,6 +73,11 @@ def head():
     return out
 
 
+def downloads_url():
+    """Where a packaged build's newer version is fetched from by hand."""
+    return f"https://github.com/{remote_repo()}/releases"
+
+
 def remote_repo():
     """owner/name from the origin URL, or the fallback for a packaged build."""
     url, _why = _git("remote", "get-url", "origin")
@@ -123,9 +128,18 @@ def update():
         sha, subject = latest_remote_commit()
         if not sha:
             return "skipped", subject
-        return "available", (f"{sha} is on github: {subject}. "
-                             f"A packaged build cannot replace itself -- "
-                             f"download the new one.")
+        # The packaged program is one file that is running; Windows will
+        # not let a running file overwrite itself, and the program cannot
+        # tell whether the newest commit has been built into a download
+        # yet. So it says what is new, where the downloads are, and what
+        # to do with one -- the message used to stop at "cannot replace
+        # itself", which read as an error about nothing.
+        return "available", (f"There is a newer version on GitHub ({sha}: "
+                             f"{subject}).\n\nThis is the packaged program, "
+                             f"which cannot update itself. Update > Get the "
+                             f"latest build opens the downloads page; save the "
+                             f"new TraceEV.exe next to hands.db and start it. "
+                             f"Nothing about your hands changes.")
 
     if not is_checkout():
         return "skipped", "not a git checkout, so there is nothing to update"

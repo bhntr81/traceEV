@@ -268,6 +268,12 @@ Facts that stay true, and that have each been got wrong at least once:
   and `--my-line`/`--my-node` read them. The common spots -- barrels,
   check-raises, probes, delayed c-bets -- are `SMART_REPORTS` entries
   written against those, not new stats.
+- **Hero is at the table in every hand, and still to act when anybody
+  opens.** So "hero out of the pot" (`hero_in = 0`, `--vs-pool`) holds no
+  preflop opens at all, and read as "the pool's numbers" it put UTG's
+  VPIP at 68% on 17 Sep 2026. The pool's own numbers are `--pool` and a
+  site, nothing more; the in/out pair is a postflop question, and the
+  table says so under a preflop number.
 - **An overfold has a bar, and the bar is the bet size.** Hand2Note has
   no such number; the user judges by eye. Here a bet of B into P profits
   on its own past a fold rate of B/(P+B), and `--overfolds` calls a row

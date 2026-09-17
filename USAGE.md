@@ -391,6 +391,36 @@ REPORT** button at the foot of the filter dialog.
 `--forget` takes either a saved stat or a saved report; it refuses if you
 somehow have both under one name rather than guessing which you meant.
 
+### Sizes, depth and the game
+
+```bash
+python query.py --pool --site pokerstars --street flop --facing bet --size 0.6-0.9 --show fold_to_cbet
+python query.py --hero --street preflop --facing open --raise-x 2.5-3.5 --show threebet
+python query.py --hero --depth 20-50 --results          # effective stack, in big blinds
+python query.py --hero --street flop --spr 1-4 --show cbet_flop
+python query.py --pool --site ignition --street flop --high A,K --show cbet_flop
+python query.py --hero --format ZONE --results
+```
+
+`--size` is the bet or raise as a share of the pot in front of the
+player, `--size-bb` the same in big blinds, `--raise-x` a raise as a
+multiple of the bet it raised (3.0 is a 3x); `--depth` and `--spr` are
+ranges on the effective stack and the stack-to-pot ratio; `--high` is
+the flop's high card by rank letter; `--format` is RING, ZONE, BLITZ or
+MTT. All in the filter dialog's General tab.
+
+### Hero in the pot, or out of it
+
+`--vs-hero` and `--vs-pool` select decisions made with hero still in the
+pot, or out of it (folded, or not dealt in). Hero is at the table in
+every hand of a history hero exported and still to act when anybody
+opens, so preflop "hero out of the pot" holds no opens at all -- only
+what was faced after hero folded -- and VPIP, PFR and RFI under it read
+as re-raise rates; the table says so beneath the numbers. For the pool's
+own numbers use `--pool` and a site, nothing more. The pair is for how
+the pool plays with you in the pot against how it plays once you are
+out, which is a postflop question.
+
 ### Where the pool overfolds
 
 ```bash

@@ -8,6 +8,48 @@ Newest first.
 
 ---
 
+## Hand2Note 4's filter list, and the number that was true and wrong
+
+### Fixed -- "pool vs pool" put UTG's VPIP at 68%
+
+`--vs-pool` selected the pool's heads-up decisions against somebody who
+was not hero, because `vs_hero` is known only when one opponent is left:
+every open that was answered counted and every open that took the blinds
+did not. `hero_in` is a column now -- whether hero is among the
+opponents still in the pot at the moment -- and the two switches read
+it. Hero is still to act when anybody opens, so "hero out of the pot"
+holds no opens, which the stats table now says under a preflop number;
+the dialog's chips say "I am still in the pot / I am out of the pot"
+rather than "vs me / vs the pool", which was pressed for the pool's own
+numbers and is not them. The pool's own numbers were right all along:
+`--pool --site pokerstars` alone.
+
+### Added -- the sizing, depth and game filters
+
+Against Hand2Note 4's filter list: `--size` (share of pot), `--size-bb`,
+`--raise-x` (a raise as a multiple of the bet it raised; a new column,
+checked never to be under 1x), `--depth` and `--spr` as ranges, `--high`
+for the flop's high card, `--format` for the game. What the list has
+that this does not: straddles and antes as filters, the flush draw by
+backdoor-ness beyond the two tiers here, and Spin & Go as a format.
+
+### Fixed -- the packaged build's update message
+
+"A packaged build cannot replace itself -- download the new one" read as
+an error about nothing. It now says what is new, that the packaged
+program cannot update itself, and what to do; the Update menu opens the
+downloads page. And the build workflow still packaged `poker_analysis`
+by name, so every tagged build had failed at the upload and the
+downloads page was empty; it packages TraceEV and publishes a release
+per tag.
+
+### Fixed -- stray tournament labels
+
+An Ignition tournament table's "UTG+4" and "UTG+5" reached the reports as
+positions of their own. An early label the map does not know is UTG.
+
+---
+
 ## Where the pool overfolds, the assistant drives the window, and Qwen
 
 ### Added -- `--overfolds`

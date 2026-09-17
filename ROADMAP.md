@@ -983,6 +983,19 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 24 — the filter list, and what the window was showing
+
+**Goal:** the user's Hand2Note 4 filter list checked item by item; and
+"UTG has 67% VPIP, BTN 11% PFR, stats seem off".
+
+**Result: PASS**, 20 of 20. Six sizing, depth and game filters added;
+`raise_x` and `hero_in` on `decisions`. The stats were true and the
+filter was wrong: "vs the pool" was heads-up decisions, and the user was
+running a packaged build from 15 Sep with none of the week's work in it.
+The chips are renamed, the note is printed, the update message says what
+to do, the workflow builds the right program and publishes a release.
+Expression stats next, in Hand2Note's own language.
+
 ## Run 23 — the assistant as the front door
 
 **Goal:** the user's "let's start working on the AI attachment": a chat

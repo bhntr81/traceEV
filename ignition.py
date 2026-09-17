@@ -168,7 +168,12 @@ def parse_hand(text, source=""):
     naming = positions_for(len(seats))
     by_label = {}
     for s in seats:
-        s["position"] = naming.get(s["label"], s["label"])
+        # A tournament table's labels can run past what the seats dealt
+        # in explain -- "UTG+5" at a seven-handed table with two empty
+        # chairs -- and a label the map does not know is an early seat,
+        # which the program's six names call UTG.
+        s["position"] = naming.get(s["label"],
+                                   "UTG" if s["label"].startswith("UTG") else s["label"])
         by_label[s["label"]] = s
 
     board, actions, street, order = [], [], "preflop", 0
