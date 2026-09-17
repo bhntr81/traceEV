@@ -983,6 +983,18 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 25 — the expression language
+
+**Goal:** "get the manual and study the H2N expression language and let's
+use it since it's public."
+
+**Result: PASS**, 20 of 20. The ten functions, the operators and `if`,
+per-player-hand counting, a sandboxed parser; six built-ins from the
+manual's examples; `--define-expr`; `--show` and `--by` columns; the
+assistant knows them. The last of the six gaps from the manual reading.
+Not in the window's SAVE AS STAT dialog yet -- a formula box there is
+the next small thing.
+
 ## Run 24 — the filter list, and what the window was showing
 
 **Goal:** the user's Hand2Note 4 filter list checked item by item; and

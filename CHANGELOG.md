@@ -8,6 +8,26 @@ Newest first.
 
 ---
 
+## Expression stats, in Hand2Note's own language
+
+### Added -- `stats.Expression`, `--define-expr`, six built-ins
+
+The manual publishes ten functions -- Value, Cases, Opps, VsHeroCases,
+VsHeroOpps, WonHandCases, WentToSDCases, WonHandAtSDCases, AmountWon,
+ActionProfit -- over any plain stat, with arithmetic, `if`, AND, OR and
+NOT; the syntax link beyond that is a generic evaluator article, so the
+ten are the whole public language. They are the whole of what this
+accepts: a formula is parsed by Python's own parser and every node that
+is not a number, one of the ten, `if` or an operator is refused, because
+a formula is data from a file. Counting is per player-hand, as theirs
+is. A stat key or a quoted filter is the argument, so "Flop Any Action"
+is `Cases("--street flop")`. Named in `--show` on the stats table and
+the by-view; saved into `stats.json` beside plain stats; listed in the
+assistant's vocabulary. The check writes WWSF as a formula and holds it
+to the engine's WWSF: 51.8 against 51.8.
+
+---
+
 ## Hand2Note 4's filter list, and the number that was true and wrong
 
 ### Fixed -- "pool vs pool" put UTG's VPIP at 68%

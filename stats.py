@@ -353,6 +353,255 @@ def _refuse(d):
     return None
 
 
+
+
+# ----------------------------------------------------------- expressions
+#
+# Hand2Note's expression stats, in its own language, so that a formula
+# from its manual or from a commercial pack drops in unchanged. Ten
+# functions over any plain stat, arithmetic, comparisons, `if`, AND, OR,
+# NOT -- that is the whole of what its documentation publishes, and it
+# is enough for everything its manual shows: WTSD after a c-bet, WWSF,
+# aggression factor, a stat's profit per case, the 4-bet range.
+#
+# A plain stat here "hits" a player-hand when any of that player's
+# decisions in the hand satisfies the stat's chance and action, and the
+# player-hand is an opportunity when any decision satisfies the chance.
+# That is Hand2Note's per-hand counting, and it is why `Cases` of a stat
+# is not the row count the stats table shows for a per-decision stat.
+#
+#   Value(s)             100 * Cases / Opps
+#   Cases(s)             player-hands in which the action was taken
+#   Opps(s)              player-hands in which it could have been
+#   VsHeroCases(s)       cases with hero still in the pot at the moment
+#   VsHeroOpps(s)        opportunities with hero still in the pot
+#   WonHandCases(s)      cases in which the player won the hand
+#   WentToSDCases(s)     cases that reached showdown
+#   WonHandAtSDCases(s)  cases that reached showdown and won it
+#   AmountWon(s)         big blinds won over the cases, cash only
+#   ActionProfit(s)      the action's profit over the cases, cash only:
+#                        stack at the end less stack before the action
+#
+# The argument is a stat key, or a filter in quotes -- Cases("--street
+# flop") is how Hand2Note's "Flop Any Action" is said here.
+
+import ast
+
+FUNCTIONS = ("Value", "Cases", "Opps", "VsHeroCases", "VsHeroOpps",
+             "WonHandCases", "WentToSDCases", "WonHandAtSDCases",
+             "AmountWon", "ActionProfit")
+
+
+class Expression:
+    """A named formula over plain stats, evaluated under any filter."""
+
+    def __init__(self, key, label, formula, group="expression", note="",
+                 custom=False):
+        self.key, self.label, self.formula = key, label, formula
+        self.group, self.note, self.custom = group, note, custom
+        self.source = "e"
+        self.tree = compile_formula(formula)
+
+
+
+
+def compile_formula(formula):
+    """
+    The formula as a tree, having refused everything that is not the
+    language. Python's parser reads the arithmetic; the walk below allows
+    only numbers, the ten functions, `if`, and the operators -- a formula
+    is data from a file and must not be able to call anything else.
+    """
+    text = formula.strip()
+    for word, py in ((" AND ", " and "), (" OR ", " or "), ("NOT ", "not ")):
+        text = text.replace(word, py)
+    text = text.replace("if(", "IF(").replace("If(", "IF(")
+    tree = ast.parse(text, mode="eval")
+    for node in ast.walk(tree):
+        ok = isinstance(node, (ast.Expression, ast.BinOp, ast.UnaryOp,
+                               ast.Compare, ast.BoolOp, ast.Load,
+                               ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod,
+                               ast.Pow, ast.USub, ast.UAdd, ast.Not, ast.And,
+                               ast.Or, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+                               ast.Eq, ast.NotEq))
+        if isinstance(node, ast.Constant):
+            ok = isinstance(node.value, (int, float, str))
+        elif isinstance(node, ast.Name):
+            ok = True                        # a stat key inside a call
+        elif isinstance(node, ast.Call):
+            ok = (isinstance(node.func, ast.Name)
+                  and (node.func.id in FUNCTIONS or node.func.id == "IF")
+                  and not node.keywords)
+        if not ok:
+            raise ValueError(f"not in the expression language: "
+                             f"{type(node).__name__} in {formula!r}")
+    return tree
+
+
+def formula_terms(tree):
+    """The (function, argument) pairs a formula asks for."""
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and node.func.id in FUNCTIONS:
+            arg = node.args[0]
+            key = arg.id if isinstance(arg, ast.Name) else str(arg.value)
+            out.add(key)
+    return out
+
+
+def stat_terms(con, ref, where="1=1"):
+    """
+    The ten aggregates for one stat, or one quoted filter, under a filter.
+
+    One query per stat, which is one query per distinct argument of a
+    formula: the per-hand grouping is done once and every function reads
+    it. Money is cash only, as everywhere.
+    """
+    if ref in BY_KEY:
+        st = BY_KEY[ref]
+        if st.source != "d":
+            raise ValueError(f"{ref} is a per-hand stat and has no decisions to count")
+        chance, action = st.chance, st.action
+    else:
+        import shlex
+        import query
+        # Split as a shell would but keep the quotes a `--where` value
+        # needs, then take one layer of quoting off each word: the
+        # formula's own quotes are around the whole filter.
+        words = [w[1:-1] if len(w) > 1 and w[0] == w[-1] and w[0] in "\"'" else w
+                 for w in shlex.split(ref, posix=False)]
+        chance = query.build(words)[0]
+        action = "1=1"
+    profit = "((se.stack + se.won - se.posted - se.invested) - f.stack_before) / f.bb"
+    row = con.execute(f"""
+        WITH x AS (
+          SELECT hand_id, seat,
+                 MAX(CASE WHEN ({action}) THEN 1 ELSE 0 END) hit,
+                 MAX(CASE WHEN ({action}) AND hero_in = 1 THEN 1 ELSE 0 END) hit_vh,
+                 MAX(CASE WHEN hero_in = 1 THEN 1 ELSE 0 END) opp_vh,
+                 MIN(CASE WHEN ({action}) THEN n END) first_n
+          FROM decisions WHERE ({where}) AND ({chance})
+          GROUP BY hand_id, seat)
+        SELECT COUNT(*), SUM(x.hit), SUM(x.opp_vh), SUM(x.hit_vh),
+               SUM(CASE WHEN x.hit AND se.won > 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN x.hit AND sp.wtsd THEN 1 ELSE 0 END),
+               SUM(CASE WHEN x.hit AND sp.wtsd AND se.won > 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN x.hit AND sp.fmt <> 'MTT' THEN sp.net_bb END),
+               SUM(CASE WHEN x.hit AND sp.fmt <> 'MTT' AND f.bb > 0
+                        THEN {profit} END)
+        FROM x
+        JOIN seats se ON se.hand_id = x.hand_id AND se.seat = x.seat
+        JOIN spots sp ON sp.hand_id = x.hand_id AND sp.seat = x.seat
+        LEFT JOIN decisions f ON f.hand_id = x.hand_id AND f.n = x.first_n
+        """).fetchone()
+    opps, cases, opp_vh, hit_vh, won, sd, wonsd, amount, ap = [v or 0 for v in row]
+    return {"Opps": opps, "Cases": cases, "VsHeroOpps": opp_vh,
+            "VsHeroCases": hit_vh, "WonHandCases": won, "WentToSDCases": sd,
+            "WonHandAtSDCases": wonsd, "AmountWon": amount, "ActionProfit": ap,
+            "Value": 100.0 * cases / opps if opps else None}
+
+
+def evaluate(con, expr, where="1=1"):
+    """
+    The formula's value under a filter, and the smallest sample it stood
+    on. None where a division met zero or a term had no opportunities --
+    a number from nothing is the thing a formula must never print.
+    """
+    terms = {ref: stat_terms(con, ref, where) for ref in formula_terms(expr.tree)}
+    n = min((t["Opps"] for t in terms.values()), default=0)
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Call):
+            if node.func.id == "IF":
+                c = ev(node.args[0])
+                return None if c is None else ev(node.args[1] if c else node.args[2])
+            arg = node.args[0]
+            ref = arg.id if isinstance(arg, ast.Name) else str(arg.value)
+            return terms[ref][node.func.id]
+        if isinstance(node, ast.UnaryOp):
+            v = ev(node.operand)
+            if v is None:
+                return None
+            return -v if isinstance(node.op, ast.USub) else \
+                (not v) if isinstance(node.op, ast.Not) else v
+        if isinstance(node, ast.BoolOp):
+            vals = [ev(v) for v in node.values]
+            if any(v is None for v in vals):
+                return None
+            return all(vals) if isinstance(node.op, ast.And) else any(vals)
+        if isinstance(node, ast.Compare):
+            a = ev(node.left)
+            for op, right in zip(node.ops, node.comparators):
+                b = ev(right)
+                if a is None or b is None:
+                    return None
+                ok = {ast.Lt: a < b, ast.LtE: a <= b, ast.Gt: a > b,
+                      ast.GtE: a >= b, ast.Eq: a == b, ast.NotEq: a != b}[type(op)]
+                if not ok:
+                    return False
+                a = b
+            return True
+        if isinstance(node, ast.BinOp):
+            a, b = ev(node.left), ev(node.right)
+            if a is None or b is None:
+                return None
+            if isinstance(node.op, ast.Div):
+                return a / b if b else None
+            if isinstance(node.op, ast.Mod):
+                return a % b if b else None
+            return {ast.Add: a + b, ast.Sub: a - b, ast.Mult: a * b,
+                    ast.Pow: a ** b}[type(node.op)]
+        raise ValueError(f"cannot evaluate {type(node).__name__}")
+
+    return ev(expr.tree), n
+
+
+def define_expression(key, formula, label="", note="", path=None, db=None):
+    """Save a formula, having first compiled it and evaluated it once."""
+    if key in BY_KEY or key in {e.key for e in EXPRESSIONS if not e.custom}:
+        raise ValueError(f"{key!r} is a built-in; pick another name")
+    expr = Expression(key, label or key.replace("_", " "), formula, custom=True)
+    for ref in formula_terms(expr.tree):
+        if ref not in BY_KEY and not ref.startswith("-"):
+            raise ValueError(f"{ref!r} is not a stat key -- see `stats.py --list`")
+    con = sqlite3.connect(db or DB)
+    value, n = evaluate(con, expr)
+    con.close()
+    saved = [d for d in definitions(path) if d.get("key") != key]
+    saved.append({"key": key, "label": expr.label, "formula": formula, "note": note})
+    (Path(path) if path else CUSTOM).write_text(
+        json.dumps(saved, indent=1), encoding="utf-8")
+    load_custom(path, db)
+    return value, n
+
+
+# The built-ins, in the manual's own examples where it has them. After the
+# functions above because each is compiled as it is made.
+EXPRESSIONS = [
+    Expression("wtsd_after_cbet", "WTSD after cbet",
+               "WentToSDCases(cbet_flop) / Cases(cbet_flop) * 100",
+               note="of the hands c-bet on the flop, how many reached showdown"),
+    Expression("won_after_cbet", "won hand after cbet",
+               "WonHandCases(cbet_flop) / Cases(cbet_flop) * 100"),
+    Expression("cbet_profit", "cbet profit, bb per cbet",
+               "ActionProfit(cbet_flop) / Cases(cbet_flop)",
+               note="Hand2Note's Action Profit of the flop c-bet, per case"),
+    Expression("threebet_profit", "3bet profit, bb per 3bet",
+               "ActionProfit(threebet) / Cases(threebet)"),
+    Expression("af_flop", "aggression factor, flop",
+               "Cases(flop_agg) / Cases(\"--street flop --where \\\"action='C'\\\"\")",
+               note="bets and raises over calls, Hand2Note's AF"),
+    Expression("fourbet_range", "4bet range",
+               "Value(rfi) * Value(fourbet) / 100",
+               note="the manual's example: open rate times 4-bet rate"),
+]
+EXPR_BY_KEY = {e.key: e for e in EXPRESSIONS}
+
+
 def load_custom(path=None, db=None):
     """
     Replace the saved stats in the registry with whatever the file now holds.
@@ -375,6 +624,9 @@ def load_custom(path=None, db=None):
     for s in [s for s in STATS if s.custom]:
         STATS.remove(s)
         BY_KEY.pop(s.key, None)
+    for e in [e for e in EXPRESSIONS if e.custom]:
+        EXPRESSIONS.remove(e)
+        EXPR_BY_KEY.pop(e.key, None)
     try:
         saved = definitions()
     except (OSError, ValueError) as e:
@@ -382,6 +634,19 @@ def load_custom(path=None, db=None):
         return []
     loaded = []
     for d in saved:
+        if "formula" in d:
+            # A saved expression: compiled here, so a formula that no
+            # longer parses is listed as broken rather than left out.
+            try:
+                e = Expression(d["key"], d.get("label") or d["key"], d["formula"],
+                               note=d.get("note", ""), custom=True)
+            except (ValueError, SyntaxError) as err:
+                BROKEN.append((str(d.get("key")) or "(unnamed)", str(err)))
+                continue
+            EXPRESSIONS.append(e)
+            EXPR_BY_KEY[e.key] = e
+            loaded.append(e)
+            continue
         why = _refuse(d) or _sql_error(d.get("chance"), d.get("action"), db)
         if why:
             BROKEN.append((str(d.get("key")) or "(unnamed)", why))
@@ -897,6 +1162,33 @@ def check(db_path=DB):
         print("saved definitions the database will not accept:")
         for key, why in BROKEN:
             print(f"    {key}: {why}")
+
+    # The expression language says the same thing the engine says when
+    # asked the same question: WWSF written as Hand2Note's manual writes
+    # it, over hero, against the built-in stat. Two answers to one
+    # question that drift apart is the failure every check here is for.
+    e = Expression("_wwsf", "WWSF, as a formula",
+                   'WonHandCases("--street flop") / Cases("--street flop") * 100')
+    got, n_e = evaluate(con, e, "is_hero = 1")
+    n, k, p, _lo, _hi = rate(con, BY_KEY["wwsf"], "is_hero = 1")
+    same = got is not None and n and abs(got - 100 * p) < 1.5
+    print()
+    print(f"WWSF as a formula {got if got is None else round(got, 1)} vs the "
+          f"engine's {round(100 * p, 1) if n else '--'}   {'agree' if same else 'DISAGREE'}")
+    if not same:
+        fails.append("the expression language disagrees with the engine")
+    for e in EXPRESSIONS:
+        try:
+            evaluate(con, e, "is_hero = 1")
+        except Exception as err:               # a formula that errors is a finding
+            print(f"    {e.key}: {type(err).__name__}: {err}")
+            fails.append(f"expression {e.key}")
+    try:
+        compile_formula("__import__('os')")
+        fails.append("the formula language accepts a call it should not")
+    except (ValueError, SyntaxError):
+        pass
+    print(f"{len(EXPRESSIONS)} expression stats evaluate; foreign calls are refused")
 
     con.close()
 

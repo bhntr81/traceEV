@@ -143,6 +143,9 @@ def vocabulary():
     ]
     for st in stats.STATS:
         lines.append(f"  {st.key:18} {st.label}: {st.chance}  ->  {st.action}")
+    lines += ["", "## expression stats (keys for --show, a formula over the stats above)"]
+    for e in stats.EXPRESSIONS:
+        lines.append(f"  {e.key:18} {e.label} = {e.formula}")
     lines += [
         "",
         "## sites: " + ", ".join(__import__("sites").KEYS),

@@ -298,7 +298,11 @@ measure of progress is that the number stays at zero while the number of
 answerable questions goes up.
 
 If a stat cannot be expressed as two filters over `decisions`, the missing
-thing is a **column on `decisions`**, not a script.
+thing is a **column on `decisions`**, not a script. A stat that is
+arithmetic over other stats -- a ratio, a profit per case, a range from
+two rates -- is an `Expression` in `stats.py`, in Hand2Note's own ten
+functions, so that its manual's formulas drop in unchanged; the parser
+refuses everything else, because a formula is data from a file.
 
 A stat for one person's game rather than for the project goes in
 `stats.json` instead, via `query.py --define` or the window's SAVE AS STAT

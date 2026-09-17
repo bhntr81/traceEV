@@ -53,6 +53,7 @@ import lines
 import players
 import sites
 import stats
+import stats as stats_module
 import strength
 from stats import (BY_KEY, STATS, detectable, difference, fmt, holm,
                    rate, rates as stat_rates, rates_by, wilson)
@@ -183,7 +184,8 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
-           "--define", "--forget", "--label", "--do", "--per", "--save")
+           "--define", "--forget", "--label", "--do", "--per", "--save",
+           "--define-expr", "--formula")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -1585,7 +1587,7 @@ def vs_note(where, groups):
     return "\n\n".join(out)
 
 
-def show_stats(con, where, label, parts=()):
+def show_stats(con, where, label, parts=(), only=()):
     """Every stat that has anything to say under this filter."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
@@ -1605,6 +1607,16 @@ def show_stats(con, where, label, parts=()):
     if not rows:
         print("  no stat has a chance to occur inside this filter.")
         print("  (asking for a preflop stat inside --street flop does this)")
+    if only:
+        # Expression stats, only when named: each is a query per term and
+        # the default table would take ten seconds to open.
+        named = [stats.EXPR_BY_KEY[k] for k in only if k in stats.EXPR_BY_KEY]
+        if named:
+            print("  [expression]")
+        for e in named:
+            value, n = stats.evaluate(con, e, where)
+            shown = "--" if value is None else f"{value:.2f}"
+            print(f"  {e.label:22} {shown:>8}  {'':>7}  n={n:<6d}  = {e.formula}")
     note = vs_note(where, {r["group"] for r in rows})
     if note:
         print("\n" + note)
@@ -1969,8 +1981,28 @@ def show_report(con, where, label, dim, columns, min_n=30):
     print(f"by {dim}")
     print("=" * (len(label) + 8))
 
-    stats = [BY_KEY[c] for c in columns]
+    plain = [c for c in columns if c in BY_KEY]
+    exprs = [c for c in columns if c in stats_module.EXPR_BY_KEY]
+    if not plain:
+        raise SystemExit("--by needs at least one plain stat in --show, for the row's n")
+    stats = [BY_KEY[c] for c in plain]
     grid = {s.key: rates_by(con, s, expr, where) for s in stats}
+    # An expression column is a formula evaluated once per row: the group
+    # is added to the filter and the terms run again. Slower than the
+    # plain columns' single pass, and asked for by name, so it is paid.
+    if exprs:
+        groups = [r[0] for r in con.execute(
+            f"SELECT DISTINCT ({expr}) FROM decisions WHERE {where}")]
+        for c in exprs:
+            e = stats_module.EXPR_BY_KEY[c]
+            grid[c] = {}
+            for g in groups:
+                if g is None:
+                    continue
+                v, n = stats_module.evaluate(
+                    con, e, f"({where}) AND ({expr}) = {q(g) if isinstance(g, str) else g}")
+                grid[c][g] = (n, v)
+    columns = plain + exprs
     # The row's n is the first column's denominator, not VPIP's. VPIP counts
     # preflop decisions, and a filter that begins at the turn has none:
     # `--street turn --facing bet --by texture` printed a fold rate on every
@@ -1984,16 +2016,21 @@ def show_report(con, where, label, dim, columns, min_n=30):
         return
 
     width = max(12, min(22, max(len(str(k)) for k in keys) + 1))
+    label_of = lambda c: (BY_KEY[c].label if c in BY_KEY
+                          else stats_module.EXPR_BY_KEY[c].label)
     head = f"  {dim[:width - 1]:<{width}}" + "".join(
-        f"{BY_KEY[c].label[:9]:>11}" for c in columns)
+        f"{label_of(c)[:9]:>11}" for c in columns)
     print(head)
     print("  " + "-" * (len(head) - 2))
     for k in keys:
         cells = []
         for c in columns:
             n, kk = grid[c].get(k, (0, 0))
-            if not n:
+            if not n or kk is None:
                 cells.append(f"{'--':>11}")
+            elif c in exprs:
+                mark = "?" if n < min_n else " "
+                cells.append(f"{kk:10.2f}{mark}")
             else:
                 mark = "?" if n < min_n else " "
                 cells.append(f"{100 * kk / n:9.1f}%{mark}")
@@ -2649,6 +2686,22 @@ def main(argv):
         print(f"  open it with --preset {name!r}, or from the report box in "
               f"the window")
         return 0
+    if "--define-expr" in argv:
+        # An expression stat in Hand2Note's language, saved beside the plain
+        # ones and evaluated once first, for the reason `--define` is.
+        key = opt("--define-expr")
+        formula = opt("--formula")
+        if not formula:
+            raise SystemExit("--define-expr KEY needs --formula \"...\"")
+        try:
+            value, n = stats.define_expression(key, formula, opt("--label") or "")
+        except (ValueError, SyntaxError) as e:
+            raise SystemExit(f"refused: {e}")
+        print(f"saved {key!r} = {formula}")
+        print(f"  over the whole database: {'--' if value is None else round(value, 2)}"
+              f"  (smallest sample in it: {n:,})")
+        print(f"  it is a column now: --show {key}, with --by too")
+        return 0
     if "--define" in argv:
         key = opt("--define")
         n, k = define_stat(argv, key, opt("--label"), opt("--do", "aggressive"),
@@ -2679,7 +2732,7 @@ def main(argv):
                          f"one of: {', '.join(DIMENSIONS)}")
     columns = (opt("--show") or ",".join(DEFAULT_COLUMNS)).split(",")
     for c in columns:
-        if c not in BY_KEY:
+        if c not in BY_KEY and c not in stats.EXPR_BY_KEY:
             raise SystemExit(f"unknown stat {c!r} -- see `stats.py --list`")
     min_n = int(opt("--min", "30"))
 
@@ -2742,7 +2795,8 @@ def main(argv):
     elif dim:
         show_report(con, where, label, dim, columns, min_n)
     else:
-        show_stats(con, where, label, _parts)
+        show_stats(con, where, label, _parts,
+                   only=columns if opt("--show") else ())
     con.close()
     return 0
 

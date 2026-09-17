@@ -364,6 +364,45 @@ really is 0.1% of the range.
 
 ---
 
+### Expression stats, in Hand2Note's language
+
+```bash
+python query.py --hero --show cbet_flop,wtsd_after_cbet,cbet_profit
+python query.py --hero --by position --show cbet_flop,cbet_profit
+python query.py --define-expr my_wwsf --formula "WonHandCases(\"--street flop\") / Cases(\"--street flop\") * 100"
+python stats.py --list                     # the built-in expressions are listed too
+```
+
+An expression stat is a formula over plain stats, written the way
+Hand2Note's manual writes them, so a formula from that manual or from a
+commercial pack drops in unchanged. Ten functions, each taking a stat
+key or a filter in quotes:
+
+| | |
+|---|---|
+| `Value(s)` | 100 × Cases / Opps |
+| `Cases(s)` | player-hands in which the action was taken |
+| `Opps(s)` | player-hands in which it could have been |
+| `VsHeroCases(s)`, `VsHeroOpps(s)` | the same, with hero still in the pot |
+| `WonHandCases(s)` | cases in which the player won the hand |
+| `WentToSDCases(s)` | cases that reached showdown |
+| `WonHandAtSDCases(s)` | cases that reached showdown and won it |
+| `AmountWon(s)` | big blinds won over the cases, cash only |
+| `ActionProfit(s)` | the action's profit over the cases: stack at the end less stack before |
+
+With `+ - * /`, comparisons, `if(cond, a, b)`, `AND`, `OR`, `NOT`.
+`Cases("--street flop")` is what the manual calls "Flop Any Action".
+Counting is per player-hand, as theirs is, so `Cases(cbet_flop)` is not
+the row count the stats table shows. Six come built in -- WTSD after a
+c-bet, won hand after a c-bet, the c-bet's and the 3-bet's profit per
+case, flop aggression factor, the 4-bet range from the manual's own
+example -- and `--define-expr` saves yours into `stats.json` beside the
+plain ones. A formula is evaluated only when named in `--show`, one
+query per term, and with `--by` once per row. `stats.py --check` proves
+the language agrees with the engine: WWSF written as a formula against
+the built-in stat, to the point. Nothing but those ten functions can be
+called from a formula; a formula is data from a file.
+
 ### Saving the filter as a report
 
 The reports in the box are the spots people ask about by name -- open
