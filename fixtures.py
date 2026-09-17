@@ -72,6 +72,24 @@ GONE = {
 KNOWN = {
     "NLHE-USD-5-10-201511.concatenated.partial.txt":
         "two hands under one header, cut mid-summary and glued; refused",
+    "NLDHE-USD-0.01-0.02-201205.double.holdem.txt":
+        "Double Hold'em is not hold'em; refused as Omaha is",
+    "NLHE-0.02-0.04-USD-201207.players.joining.leaving.txt":
+        "a player posts with no seat line; no seat, no position; refused",
+    "NLHE-USD-0.01-0.02-201105.Unseated.player.is.only.big.blind.txt":
+        "a player posts with no seat line; refused",
+    "NLHE-USD-0.02-0.04-20100811.unseatedPlayerActions.txt":
+        "a player acts with no seat line; refused",
+    "NLHE-6max-USD-0.10-0.25-201212.unseated.big.blind.txt":
+        "a player posts with no seat line; refused",
+    "NLHE-6max-USD-0.10-0.25-201309.player.joins.and.posts.a.bb.txt":
+        "a player posts with no seat line; refused",
+    "NLHE-6max-USD-0.10-0.25-201309.player.joins.as.bb.txt":
+        "a player posts with no seat line; refused",
+    "NLHE-6max-USD-5-10-201408.joins.and.posts.bb.txt":
+        "a player posts with no seat line; refused",
+    "NLHE-6max-USD-0.05-0.10-201209.silent.post.both.txt":
+        "a returning player's post is not written at all; the money cannot add",
 }
 
 

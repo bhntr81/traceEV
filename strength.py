@@ -78,6 +78,15 @@ ORDER = ("straight flush", "quads", "boat", "flush", "straight", "set",
 # much of a betting range is hands that cannot call.
 WEAK = ("high card", "board pair", "weak pair", "under pair")
 
+# And where "strong" starts: top pair or better, which is the line the
+# user drew on 16 Sep 2026 on seeing a turn range called 58% "strong" that
+# was a quarter middle pair. Everything else that is not weak is MEDIUM --
+# middle pair, the hands that call once and do not like it. The three
+# together are the whole of ORDER.
+STRONG = ("straight flush", "quads", "boat", "flush", "straight", "set",
+          "trips", "two pair", "overpair", "top pair")
+MEDIUM = tuple(c for c in ORDER if c not in STRONG and c not in WEAK)
+
 
 def parse(text):
     return [card(c) for c in (text or "").split()]

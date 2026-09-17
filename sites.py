@@ -41,6 +41,7 @@ from pathlib import Path
 
 import acr
 import ignition
+import partypoker
 import pokerstars
 
 DB = Path(__file__).parent / "hands.db"
@@ -100,6 +101,12 @@ SITES = (
                  r"%LOCALAPPDATA%\PokerStars.EU\HandHistory",
                  r"%LOCALAPPDATA%\PokerStars.UK\HandHistory"),
          about="PokerStars -- the same text whichever licence the client is"),
+    Site("partypoker", partypoker, names=True, reveals=False, rake=False,
+         places=(r"%LOCALAPPDATA%\PartyGaming\PartyPoker\HandHistory",
+                 r"%PROGRAMFILES(X86)%\PartyGaming\PartyPoker\HandHistory",
+                 r"%USERPROFILE%\Documents\PartyPoker\HandHistory"),
+         about="PartyPoker -- the Entain network; the rake is not written, "
+               "so the pot is what went in"),
     # The app rooms. Neither writes a history of its own; the text a
     # converter produces is PokerStars' with the app's name on the first
     # line, so each is the PokerStars parser told which name to answer to.

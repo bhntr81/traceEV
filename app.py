@@ -457,6 +457,7 @@ class ImportMixin:
                             win.say("")
                             win.say(str(payload))
                             self.con = sqlite3.connect(DB, check_same_thread=False)
+                            self.cache.clear()
                             self.load_options()
                             self.refresh()
                         win.done()
@@ -552,6 +553,15 @@ class ImportMixin:
                    if got["unknown"] else ""))
 
 
+# The interpreter hands the GIL to another thread every 5ms by default,
+# which is fine for two threads sharing work and not fine for one thread
+# drawing a window while another prices all-in pots in pure Python: the
+# window got its turn too rarely to keep up with the mouse and Windows
+# called it "not responding". A shorter turn costs the query a little and
+# keeps the window drawing.
+sys.setswitchinterval(0.001)
+
+
 class App(ImportMixin, ttk.Frame):
     def __init__(self, master, check_updates=False):
         super().__init__(master)
@@ -580,6 +590,16 @@ class App(ImportMixin, ttk.Frame):
         self.cohort_spec = None
 
         self.results = queue.Queue()
+        # Requests go through one queue to one worker, and a request that
+        # is still waiting when the next arrives is never run. Each tab
+        # click used to start its own thread, and five quick clicks were
+        # five heavy queries fighting one interpreter -- the window went
+        # "not responding" while they took turns at the GIL. Answers to a
+        # view already computed for this filter come from the cache and
+        # never leave the interface thread at all.
+        self.requests = queue.Queue()
+        self.cache = {}
+        threading.Thread(target=self._worker, daemon=True).start()
         self.pending = 0
         self.news = None
         self._build()
@@ -833,13 +853,13 @@ class App(ImportMixin, ttk.Frame):
         self.filter_line.pack(anchor="w", padx=14, pady=(0, 8))
 
         self.tabs = {}
-        for name in ("stats", "range", "chart", "report", "results", "graph",
-                     "hands", "sessions"):
+        for name in ("stats", "actions", "range", "chart", "report", "results",
+                     "graph", "hands", "sessions"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "range", "report", "results", "hands",
+        for name in ("stats", "actions", "range", "report", "results", "hands",
                      "sessions"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
@@ -964,6 +984,7 @@ class App(ImportMixin, ttk.Frame):
               "--tag": "tag"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
+              "--actions": "actions",
               "--graph": "graph"}
 
     def apply_argv(self, argv):
@@ -1038,6 +1059,14 @@ class App(ImportMixin, ttk.Frame):
         try:
             argv = self.argv()
             cohort_spec, query_argv = players.parse_cohort(argv)
+            # Results and the graph are somebody's money. With nobody
+            # chosen they summed every seat at every table -- 112,936
+            # "hands" and the rake's worth of loss -- which is a number
+            # about nothing. They are yours until the pool is pressed.
+            if view in ("results", "graph") and not any(
+                    a in query_argv for a in ("--hero", "--pool", "--player",
+                                              "--vs-player", "--reg", "--fish")):
+                query_argv = ["--hero"] + query_argv
             where, label, parts = query.build(query_argv)
         except SystemExit as e:
             self.filter_line.configure(text=str(e))
@@ -1052,11 +1081,34 @@ class App(ImportMixin, ttk.Frame):
             self.clear_btn.pack_forget()
         self.pending += 1
         token = self.pending
+        key = (view, where, self.by.get(), self.chart_stat(), repr(cohort_spec))
+        if key in self.cache:
+            self.status.configure(text="")
+            self._render(self.cache[key])
+            return
         self.status.configure(text="working…")
-        threading.Thread(target=self._work, daemon=True,
-                         args=(token, view, where, label, parts,
-                               self.by.get(), cohort_spec, self.chart_stat())
-                         ).start()
+        self.requests.put((token, key, view, where, label, parts,
+                           self.by.get(), cohort_spec, self.chart_stat()))
+
+    def _worker(self):
+        """The one thread every query runs on; see `_work`."""
+        while True:
+            item = self.requests.get()
+            # Anything queued behind it supersedes it: only the newest
+            # request is worth the seconds it may take.
+            while True:
+                try:
+                    item = self.requests.get_nowait()
+                except queue.Empty:
+                    break
+            token, key, *args = item
+            if token != self.pending:
+                continue
+            out = self._work(token, *args)
+            if out is not None and not out.get("error"):
+                self.cache[key] = out
+                if len(self.cache) > 64:
+                    self.cache.pop(next(iter(self.cache)))
 
     def chart_stat(self):
         """Which stat the chart is of, or None for the range itself."""
@@ -1094,6 +1146,8 @@ class App(ImportMixin, ttk.Frame):
                 out.update(query.range_of(con, where))
             elif view == "sessions":
                 out["rows"] = query.sessions_of(con, where)
+            elif view == "actions":
+                out["rows"] = query.actions_of(con, where)
             elif view == "chart":
                 out.update(query.chart_of(con, where, stat))
             elif view == "report":
@@ -1126,6 +1180,7 @@ class App(ImportMixin, ttk.Frame):
         finally:
             con.close()
         self.results.put((token, out))
+        return out
 
     @staticmethod
     def _any(out):
@@ -1233,6 +1288,32 @@ class App(ImportMixin, ttk.Frame):
                               else f"±{r['band']:.0f}",
                               f"{r['n']:,}"))
 
+    def _render_actions(self, tv, out):
+        """
+        A row per action taken in the spot: how often, what it made, and
+        what the next player did -- Hand2Note's action report.
+        """
+        self._cols(tv, ("action", "n", "freq", "bb/hand", "±", "then fold",
+                        "check", "call", "bet", "raise", "street over"),
+                   (90, 70, 70, 90, 60, 90, 70, 70, 70, 70, 90),
+                   {"action": "w"})
+        for r in out.get("rows") or []:
+            nx = r["next"]
+            m = max(1, sum(nx.values()))
+            pct = lambda k: f"{100 * nx[k] / m:.0f}%"
+            tv.insert("", "end",
+                      tags=("pos",) if r["bb"] > 0 else ("neg",) if r["bb"] < 0 else (),
+                      values=(r["action"], f"{r['n']:,}", f"{r['freq']:.1f}%",
+                              f"{r['bb']:+.2f}", f"{r['se']:.2f}",
+                              pct("fold"), pct("check"), pct("call"),
+                              pct("bet"), pct("raise"), pct("street over")))
+        tv.insert("", "end", values=("", "", "", "", "", "", "", "", "", "", ""))
+        tv.insert("", "end", tags=("note",), values=(
+            "bb/hand is the whole hand's result, averaged over the hands the "
+            "action was taken in, with its standard error; 'then' is the next "
+            "player's action on the same street", "", "", "", "", "", "", "",
+            "", "", ""))
+
     def _render_sessions(self, tv, out):
         """
         The sittings the filter's hands belong to, newest first.
@@ -1287,15 +1368,18 @@ class App(ImportMixin, ttk.Frame):
                 "no hand under this filter was ever shown", "", "", "", ""))
             return
         for r in out["rows"]:
-            tv.insert("", "end", tags=("neg",) if r["weak"] else (),
+            tv.insert("", "end", tags=("neg",) if r["weak"] else
+                      ("pos",) if r["tier"] == "strong" else (),
                       values=(r["made"], f"{r['pct']:.1f}%", f"{r['n']:,}",
-                              "weak" if r["weak"] else "",
+                              r["tier"] if r["tier"] != "medium" else "",
                               "█" * int(round(r["pct"] / 2))))
         tv.insert("", "end", values=("", "", "", "", ""))
+        tv.insert("", "end", tags=("pos",), values=(
+            "STRONG", f"{out['strong']:.1f}%", "", "top pair or better", ""))
+        tv.insert("", "end", values=(
+            "MEDIUM", f"{out['medium']:.1f}%", "", "middle pair", ""))
         tv.insert("", "end", tags=("neg",), values=(
             "WEAK", f"{out['weak']:.1f}%", "", "cannot call", ""))
-        tv.insert("", "end", tags=("pos",), values=(
-            "STRONG", f"{out['strong']:.1f}%", "", "", ""))
         if out["draws"]:
             tv.insert("", "end", values=("", "", "", "", ""))
             tv.insert("", "end", tags=("group",),
@@ -2229,7 +2313,44 @@ class FilterDialog(tk.Toplevel):
         shapes a hand can have is the number of strings these letters spell.
         """
         page = self._page(nb, "Lines")
-        self._heading(page, "how the betting went")
+
+        # Built by clicking, the way a solver's line picker works: a row of
+        # buttons per street, each press writing one action onto that
+        # street's pattern. The letters were the only way in and were "hard
+        # to learn", which is the user's phrase and a fair one; they are
+        # still there, underneath, for anybody who wants to type them.
+        self._heading(page, "my line, one street at a time -- click what you did")
+        ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
+                  text="Each press adds an action to that street of YOUR "
+                       "line. A street left empty means anything; \"any\" "
+                       "is a street you do not care about. Bet flop, bet "
+                       "turn, bet river is a triple barrel; check then call "
+                       "on the flop is a check-call."
+                  ).pack(anchor="w", padx=18, pady=(0, 4))
+        self._own_vars = {}
+        for st, label in (("pre", "preflop"), ("flop", "flop"),
+                          ("turn", "turn"), ("river", "river")):
+            row = ttk.Frame(page)
+            row.pack(fill="x", padx=18, pady=2)
+            ttk.Label(row, text=label, style="Dim.TLabel", width=9).pack(side="left")
+            var = tk.StringVar()
+            self._own_vars[st] = var
+            for text, letter in (("fold", "F"), ("check", "X"), ("call", "C"),
+                                 ("bet", "B"), ("raise", "R"), ("any", "*")):
+                ttk.Button(row, text=text, width=7,
+                           command=lambda v=var, l=letter: self._own_press(v, l)
+                           ).pack(side="left", padx=2)
+            ttk.Button(row, text="⌫", width=3,
+                       command=lambda v=var: self._own_press(v, None)
+                       ).pack(side="left", padx=(8, 2))
+            ttk.Label(row, textvariable=var, width=10).pack(side="left", padx=10)
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(2, 8))
+        ttk.Label(row, text="reads as", style="Dim.TLabel", width=9).pack(side="left")
+        ttk.Label(row, textvariable=self.app.vals["my_line"]).pack(side="left")
+        self._own_sync()
+
+        self._heading(page, "how the betting went, everybody's actions in order")
         ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
                   text="F fold   X check   C call   B bet   R raise   "
                        "A all-in        *  anything at all   ?  any one "
@@ -2304,6 +2425,29 @@ class FilterDialog(tk.Toplevel):
                        "player's actions, so the other seats' bets and "
                        "calls are not in it."
                   ).pack(anchor="w", padx=18, pady=(8, 0))
+
+    def _own_press(self, var, letter):
+        """One press on the line builder: add an action, or take one off."""
+        cur = var.get()
+        var.set(cur[:-1] if letter is None else cur + letter)
+        self._own_sync()
+
+    def _own_sync(self):
+        """
+        The four street boxes, as the one pattern `--my-line` takes.
+
+        Streets are joined with "/", an empty street is "*" (anything), and
+        trailing empty streets are dropped so that "bet the flop" does not
+        demand that a turn was dealt.
+        """
+        segs = [self._own_vars[s].get() or "*" for s in ("pre", "flop", "turn", "river")]
+        while segs and segs[-1] == "*":
+            segs.pop()
+        # The trailing "/" is "and then whatever, or nothing": bet the flop
+        # is "*/B/", which matches a flop bet that took the pot as well as
+        # one that was called and played on.
+        self.app.vals["my_line"].set("/".join(segs) + "/" if any(
+            self._own_vars[s].get() for s in self._own_vars) else "")
 
     def _general_tab(self, nb):
         page = self._page(nb, "General")
@@ -2775,8 +2919,8 @@ def check(db_path=DB):
     # that matches nothing -- which is one click away at all times.
     con = sqlite3.connect(db_path)
     broke = []
-    views = ("stats", "range", "chart", "report", "results", "hands",
-             "graph", "sessions")
+    views = ("stats", "actions", "range", "chart", "report", "results",
+             "hands", "graph", "sessions")
     filters = ([], ["--ip", "--street", "preflop"])
     for view in views:
         for argv in filters:

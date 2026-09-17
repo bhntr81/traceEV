@@ -743,7 +743,7 @@ GOLDEN = Path(__file__).parent / "golden.json"
 
 # The tokens that are a mode, not a filter. `query.build` ignores them,
 # and the scorer has to know which one a query was in.
-MODES = ("--stats", "--results", "--hands", "--range", "--chart",
+MODES = ("--stats", "--results", "--hands", "--range", "--chart", "--actions",
          "--sessions")
 
 

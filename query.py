@@ -725,6 +725,16 @@ def build(argv):
                 # every flop that started that way.
                 pattern = lines.normalise(v)
                 plain, sized = LINE_FLAGS[a]
+                if a == "--my-line" and pattern.endswith("/"):
+                    # "and then whatever, or nothing": a player's own line
+                    # never ends in "/", so the mark is free to mean that a
+                    # flop bet which took the pot and one which was called
+                    # and played on are both "bet the flop". The window's
+                    # line builder writes every pattern this way.
+                    base = pattern[:-1]
+                    parts.append(f"({plain} GLOB {q(base)} OR {plain} GLOB {q(base + '/*')})")
+                    described.append(f"my-line {pattern}")
+                    continue
                 with_sizes = any(c in lines.BUCKETS for c in pattern)
                 parts.append(f"{sized if with_sizes else plain} "
                              f"GLOB {q(pattern)}")
@@ -1060,8 +1070,11 @@ def range_of(con, where):
             continue
         rows.append({"made": name, "n": n,
                      "pct": 100.0 * n / seen if seen else 0.0,
-                     "weak": name in strength.WEAK})
+                     "weak": name in strength.WEAK,
+                     "tier": ("strong" if name in strength.STRONG else
+                              "weak" if name in strength.WEAK else "medium")})
     weak = sum(r["n"] for r in rows if r["weak"])
+    strong = sum(r["n"] for r in rows if r["tier"] == "strong")
 
     # Draws are counted separately and deliberately overlap the categories
     # above: a hand is one made hand and may also be drawing, and adding
@@ -1083,7 +1096,8 @@ def range_of(con, where):
 
     return {"rows": rows, "draws": draws, "n": seen, "total": total,
             "weak": 100.0 * weak / seen if seen else 0.0,
-            "strong": 100.0 * (seen - weak) / seen if seen else 0.0}
+            "strong": 100.0 * strong / seen if seen else 0.0,
+            "medium": 100.0 * (seen - weak - strong) / seen if seen else 0.0}
 
 
 def show_range(con, where, label, parts=()):
@@ -1104,9 +1118,10 @@ def show_range(con, where, label, parts=()):
     for r in out["rows"]:
         bar = "#" * int(round(r["pct"] / 2))
         print(f"  {r['made']:14} {r['pct']:5.1f}%  {r['n']:6,}  "
-              f"{'weak' if r['weak'] else '    '}  {bar}")
-    print(f"\n  {'WEAK':14} {out['weak']:5.1f}%   -- hands that cannot call")
-    print(f"  {'STRONG':14} {out['strong']:5.1f}%")
+              f"{r['tier'] if r['tier'] != 'medium' else '    ':6} {bar}")
+    print(f"\n  {'STRONG':14} {out['strong']:5.1f}%   -- top pair or better")
+    print(f"  {'MEDIUM':14} {out['medium']:5.1f}%   -- middle pair: calls once")
+    print(f"  {'WEAK':14} {out['weak']:5.1f}%   -- hands that cannot call")
     if out["draws"]:
         print("\n  and, overlapping the above:")
         for d in out["draws"]:
@@ -1253,6 +1268,76 @@ def sessions_of(con, where):
         FROM sessions s JOIN decisions d ON d.session_id = s.session_id
         WHERE ({where})
         GROUP BY s.session_id ORDER BY s.started DESC""")]
+
+
+ACTION_NAMES = {"F": "fold", "X": "check", "C": "call", "B": "bet",
+                "R": "raise", "A": "all-in"}
+
+
+def actions_of(con, where):
+    """
+    What was done in the spot, what it made, and what came next.
+
+    Hand2Note's report shows a row per action with its frequency, the
+    profit of the hands it was taken in, and what the next player did --
+    which is the whole of "how does this go when I bet here". The profit is
+    the hand's net for the player, in big blinds, averaged over the hands
+    the action was taken in, with its standard error; a spot taken twenty
+    times has an error bar wider than the number, and it is printed so.
+    The next action is the next decision in the hand on the same street,
+    by whoever took it; "street over" when nobody did.
+    """
+    rows = con.execute(f"""
+        SELECT d.action,
+               COUNT(*) n,
+               AVG(s.net_bb) mean,
+               AVG(s.net_bb * s.net_bb) msq,
+               SUM(CASE WHEN n2.action IS NULL THEN 1 ELSE 0 END) over,
+               SUM(CASE WHEN n2.action = 'F' THEN 1 ELSE 0 END) nf,
+               SUM(CASE WHEN n2.action = 'X' THEN 1 ELSE 0 END) nx,
+               SUM(CASE WHEN n2.action = 'C' THEN 1 ELSE 0 END) nc,
+               SUM(CASE WHEN n2.action IN ('B') THEN 1 ELSE 0 END) nb,
+               SUM(CASE WHEN n2.action IN ('R', 'A') THEN 1 ELSE 0 END) nr
+        FROM (SELECT * FROM decisions WHERE ({where})) d
+        JOIN spots s ON s.hand_id = d.hand_id AND s.seat = d.seat
+        LEFT JOIN decisions n2 ON n2.hand_id = d.hand_id AND n2.n = d.n + 1
+                              AND n2.street = d.street
+        WHERE d.fmt <> 'MTT' AND s.net_bb IS NOT NULL
+        GROUP BY d.action ORDER BY n DESC""").fetchall()
+    total = sum(r[1] for r in rows) or 1
+    out = []
+    for act, n, mean, msq, over, nf, nx, nc, nb, nr in rows:
+        var = max(0.0, (msq or 0.0) - (mean or 0.0) ** 2)
+        se = (var / n) ** 0.5 if n else 0.0
+        out.append({"action": ACTION_NAMES.get(act, act), "n": n,
+                    "freq": 100.0 * n / total,
+                    "bb": mean or 0.0, "se": se, "bb100": 100 * (mean or 0.0),
+                    "next": {"fold": nf, "check": nx, "call": nc, "bet": nb,
+                             "raise": nr, "street over": over}})
+    return out
+
+
+def show_actions(con, where, label, parts=()):
+    rows = actions_of(con, where)
+    print()
+    print(f"filter: {label}")
+    print("=" * (len(label) + 8))
+    if not rows:
+        print("  " + (why_empty(con, parts) if parts else "nothing matches"))
+        return
+    print(f"  {'action':8} {'n':>7} {'freq':>6} {'bb/hand':>9} {'+/-':>6}   "
+          f"then: {'fold':>5} {'check':>6} {'call':>5} {'bet':>5} {'raise':>6} {'over':>5}")
+    for r in rows:
+        nx = r["next"]
+        m = max(1, sum(nx.values()))
+        pct = lambda k: f"{100 * nx[k] / m:5.0f}%"
+        print(f"  {r['action']:8} {r['n']:7,} {r['freq']:5.1f}% {r['bb']:+9.2f} "
+              f"{r['se']:6.2f}   "
+              f"      {pct('fold'):>5} {pct('check'):>6} {pct('call'):>5} "
+              f"{pct('bet'):>5} {pct('raise'):>6} {pct('street over'):>5}")
+    print("\n  bb/hand is the whole hand's result for the player, averaged over the")
+    print("  hands the action was taken in, with its standard error. 'then' is what")
+    print("  the next player did on the same street.")
 
 
 def show_sessions(con, where, label, parts=()):
@@ -2264,7 +2349,7 @@ def main(argv):
     cohort_spec, argv = players.parse_cohort(argv)
     mode = "--stats"
     for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart", "--sessions"):
+              "--chart", "--sessions", "--actions"):
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]
@@ -2399,6 +2484,8 @@ def main(argv):
         show_range(con, where, label, _parts)
     elif mode == "--sessions":
         show_sessions(con, where, label, _parts)
+    elif mode == "--actions":
+        show_actions(con, where, label, _parts)
     elif mode == "--chart":
         # `--show` names the columns of a report, and here it names the one
         # stat the chart is of. Without it the chart is the range itself,
