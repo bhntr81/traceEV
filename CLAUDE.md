@@ -1,7 +1,8 @@
 # TraceEV
 
-A poker tracker over PokerStars, ACR and Ignition hand histories, built
-from scratch. The folder is still `Desktop/poker_analysis`; the program,
+A poker tracker over PokerStars, ACR, Ignition and PartyPoker hand
+histories, built from scratch, and over the app rooms through a
+converter's export. The folder is still `Desktop/poker_analysis`; the program,
 the window, the log and the build are TraceEV.
 
 **Scope, and it is narrow on purpose: the tracking and filtering half of a
@@ -162,8 +163,20 @@ Facts that stay true, and that have each been got wrong at least once:
   quarter of a range presented as the range is worse than no range at all.
 - **Where "weak" stops is opinion, and lives in one list.** `strength.WEAK`
   draws the line under middle pair, on the grounds that a middle pair calls
-  a river bet and a bottom pair does not. Disagreeing with it should be a
+  a river bet and a bottom pair does not; `strength.STRONG` starts at top
+  pair, the user's line, drawn on seeing a turn range called 58% "strong"
+  that was a quarter middle pair. Disagreeing with either should be a
   line changed, not an argument.
+- **One query thread, and a window that keeps drawing.** Every tab click
+  once started its own thread; five clicks were five queries fighting one
+  interpreter and Windows called the window "not responding". Requests go
+  through one queue, only the newest runs, answers are cached per view
+  and filter, and the interpreter's switch interval is a millisecond so
+  the interface thread gets its turn while a query prices all-ins.
+- **Action profit is the stack from the action on, not the hand's net.**
+  Hand2Note's definition, and the right one: a fold is zero, and a turn
+  bet is judged by what the bet did, not charged with the blinds and the
+  flop call before it. The first actions view used the hand's net.
 - **Nothing draws on the river.** `flush_draw` always knew; `straight_draw`
   did not, and a river range came back a third "straight draw" — drawing to
   a card that was never coming.

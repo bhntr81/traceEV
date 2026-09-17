@@ -215,6 +215,13 @@ they did next. `--line` is the whole hand and includes it.
 
 ### Your own line, the way it is said
 
+In the window the Lines tab has a row of buttons per street -- fold,
+check, call, bet, raise, any -- and each press adds that action to your
+line; the pattern it writes is shown beneath. A pattern written that way
+ends in `/`, which means "and then whatever, or the hand ended": bet the
+flop is `*/B/` and matches a bet that took the pot as well as one that
+was called. Typed patterns work as before.
+
 The strings above interleave every seat's actions, which is right for
 "what happened at the table" and wrong for "what did *I* do". `--my-line`
 is one player's actions and nobody else's, per street, in the notation a
@@ -235,6 +242,24 @@ makes it the one to measure a spot with: `--my-node "*/X"` on the flop is
 "checked, and now facing a bet" -- the check-raise spot. A street you took
 no action on is not in your line at all, so a preflop fold is a
 one-segment line and never matches a flop pattern.
+
+### What was done there, and what it made
+
+```bash
+python query.py --hero --street turn --pfa --facing check --my-node "*/B/" --actions
+```
+
+A row per action taken in the spot -- how often, what it made, and what
+the next player did on the same street. "What it made" is Hand2Note's
+Action Profit: the stack at the end of the hand less the stack the
+moment before the action, so a fold is always zero and a turn bet is
+judged by what happened from the bet on rather than charged with the
+blinds and calls before it. In big blinds, averaged over the hands the
+action was taken in, with its standard error -- the honest part: a spot
+taken a few dozen times has an error bar wider than the number, and the
+number is then not a finding. For your own hands the spot's frequency
+per thousand hands is printed too. In the window it is the **actions**
+tab.
 
 ### The matchup
 

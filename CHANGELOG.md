@@ -8,6 +8,68 @@ Newest first.
 
 ---
 
+## What the user saw, second pass: actions, the line builder, PartyPoker
+
+### Added -- the actions view
+
+`--actions`, and an **actions** tab: a row per action taken in the spot
+with its frequency, its profit with a standard error, and what the next
+player did. Hand2Note's action report, asked for as "action profit and
+next action". Profit is Hand2Note's Action Profit -- the stack at the end
+of the hand less the stack before the action, so a fold is zero -- read
+from the manual after the first version used the whole hand's net; for
+hero the spot's frequency per 1,000 hands is printed too. The manual's
+Features and Custom Stats pages, read against this program, are a table
+in the roadmap with the order to do the gaps in.
+
+### Added -- the line builder
+
+A row of buttons per street on the Lines tab, each press adding an
+action to your own line. The letters were the only way in and the user
+called them hard to learn; they still work underneath. A builder pattern
+ends in `/`, "and then whatever", and `--my-line` reads that mark.
+
+### Added -- PartyPoker
+
+`partypoker.py`, the fifth format: "***** Hand History for Game N *****",
+a raise written as the amount added, winnings that include the uncalled
+bet, no rake written and no pot -- so the pot is what went in and the
+Ignition identity applies. Decimal commas from European installs, glued
+lines, the 2013 client's summary with the rake in it, the fastforward
+client's "Forward Folds". Seventeen of FPDB's hold'em fixtures load and
+prove; nine are refused with a reason -- a player posting with no seat
+line has no seat to walk the ring from -- and listed in
+`fixtures.KNOWN`.
+
+### Changed -- strong means top pair or better
+
+The range view called everything that was not weak "STRONG", and a turn
+range that was a quarter middle pair read 58% strong. Three tiers now:
+STRONG is top pair or better, MEDIUM is middle pair, WEAK is what cannot
+call. `strength.STRONG` beside `strength.WEAK`.
+
+### Added -- the barrels as stats
+
+`double_barrel`, `triple_barrel`, `delayed_river`, `fold_to_double_barrel`,
+`fold_to_triple_barrel`, exact on the raiser's own line rather than on
+whoever was last aggressive. Quick filters for each come free.
+
+### Fixed -- the window froze between tabs
+
+Every tab click started a thread, and quick clicks were five heavy
+queries fighting one interpreter. One worker now, only the newest request
+run, answers cached per filter and view, and the interpreter switches
+threads every millisecond so the window keeps drawing while a query
+prices all-in pots.
+
+### Changed -- results and the graph are yours by default
+
+With nobody chosen they summed every seat at every table: 112,936
+"hands" and a loss the size of the rake. They now add `--hero` until the
+pool is pressed.
+
+---
+
 ## The matchup, a player's own line, and the common spots by name
 
 ### Fixed -- "PFR vs BB" read 9%

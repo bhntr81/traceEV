@@ -983,6 +983,108 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Hand2Note, page by page — what it has that this does not (16 Sep 2026)
+
+Read from the manual's Features and Custom Stats pages and their
+screenshots, saved under `Desktop/h2n_manual`. HUD items are out of scope
+by decision and are listed only so the list is complete. "Have" means
+the same question can be asked here, not that the screen looks alike.
+
+### Reports and Sessions
+
+| Hand2Note | here |
+|---|---|
+| Results by game type (stake, table size, fast-fold), with Net Won, EV, bb/100, EV bb/100, **rake paid** | have the split (`--by stake`, `--by site`); **rake paid is not a column anywhere** — a report of what the house took, by stake and month, is a query away |
+| Report list: Positions, Positions Full Ring, Rooms, Number of Tables, Number of Fishes, Stack sizes | have position, site, tables, `n_fish`, `--by stack` |
+| Date range picker; Hero picker with aliases | have `--since/--until`, aliases |
+| Filter dialog, General tab: room, blind size, players on hand start, table size, initial stack, session length, time of day, fish count, max fish VPIP, **distance to fish**, straddle, game type | have all but **distance to fish** as a number (we have left/right, not how many seats) and straddle |
+| Filter dialog, Action tab: "preflop action facing" (unopened, 1 limp, 2+ limps, 1 raise, 2 raises, raise+call, raise+2 calls, blind posters, all folded to BB) and per-street **click buttons** Raise / Raise-Fold / Raise-Call / Call / Call-Fold / Call-Call / Call-Raise, with "selected action is the last action on street" | have the facing ladder and, since today, the click builder; the two-action combos (Raise then Fold on the same street) are one press each here; **"all folded to BB" and "limpers count" are not facings** |
+| Filter dialog, Hole Cards tab: a 13x13 grid to pick hands | have `--combo` typed; **no grid to click** |
+| Positions report shows Net Won, EV, bb/100, EV bb/100, Rake per position | have net and EV per position; rake missing |
+| "Show hands" from any result line, opening the compact hand list | have the hands tab for any filter |
+| Sessions: start, length, hands, net, EV net, hands/hour, tables; graph of the session with four lines | have sessions, graph (four lines); **hands per hour is not printed** |
+| Hero's stats "in the opponent's eyes" (vs-hero values) | have `--vs-hero` |
+
+### Quick Hand View
+
+| Hand2Note | here |
+|---|---|
+| The whole hand on one line: hole cards, per-street actions as coloured letters with sizes in bb, board cards, pot size, underlined hero actions; replay button | the hands tab shows cards, line, board, result; **not the one-line coloured format with sizes and pot**; replayer exists |
+| Sort by biggest wins / losses | **missing** — one `ORDER BY` |
+
+### Extended popup on a stat (the big one)
+
+| Hand2Note | here |
+|---|---|
+| Next actions F/C/R and B/X after the stat's action | have, since today (`--actions`, next player's action) |
+| Stat value, vs-Hero value, Won Hand %, Went to SD %, Won at SD % after the action | have wtsd/wsd as stats; **"won hand after this action" and "went to showdown after this action" as columns of the actions view are missing** — two joins |
+| **Bet-sizing distribution** of the action (overbet, 0.8–1 pot, 0.6–0.8, 0.4–0.6) each with its own next-actions | have size buckets on lines (`--flop XBm`) and `--quick overbet/small_bet`; **a by-size split of one action with the reactions to each size is missing** |
+| Action Profit total and for weak hands, ± dispersion; Spot Frequency (cases and opportunities per 1000 hands) | have profit ± SE and, for hero, per 1000; **profit split by hand strength is missing** |
+| **Action Profit Details**: profit per hand-strength group (pair+draw, LP, MP, TPWK, TPGK, overpair, set, 2pair+, KQ/KJ/QJ, trash, AK/AQ/AJ, A-high, gutshot, draw, low PP) and per bet size | **missing** — `--by hand` exists for rates; the actions view needs a `--by made` |
+| Postflop diagram: the showdown range after the action, in those groups, with counts | have `--range` (our groups: set, trips, two pair, overpair, top pair, middle pair, weak pair, under pair, board pair, high card + draws); **no top-pair kicker split (TPGK/TPWK), no A-high/K-high split, no "pair + draw" group** |
+| Preflop range map with two colours (base action and alternative, e.g. raise vs call) and Raise Total / Call Total | have `--chart` for one stat; **the two-action overlay is missing** |
+| List of showdown hands under the diagram, sorted by strength | have hands tab; sort by strength missing |
+| Customisable groups (hand strength), boards, bet sizes — with "Is weak" per group | have `strength.WEAK/STRONG` lists and `BOARDS`; not user-editable in the window |
+
+### Range Research (pool by stat filter)
+
+| Hand2Note | here |
+|---|---|
+| Select a group of players by stat conditions (VPIP ≤ 17, PFR ≤ 14, hands ≥ 1000, reg/fish, colour label, expression string) and see the merged popup | have `players.parse_cohort` / the Players dialog (class, stat intervals) and `--reg/--fish` — the same idea, smaller vocabulary; **no expression string** |
+| Hero's hands excluded automatically | have `--pool` |
+
+### Decision Analysis
+
+| Hand2Note | here |
+|---|---|
+| Action Profit (stack at end − stack before action; fold = 0) | have, since today, by that definition |
+| Spot Frequency per 1000 hands (cases and opportunities) | have cases for hero; **opportunities (the chance count) not printed** |
+| Next Villain's Actions | have |
+
+### Notes, marks, sharing
+
+| Hand2Note | here |
+|---|---|
+| Notes per player, **note templates**, inserting a hand into a note, **notes on a stat**, badges (rule-based icons) | have player notes and hand marks; templates, hand-in-note, stat notes, badges missing (badges are HUD) |
+| Marked hands with **labels** (named, coloured) and per-hand notes | have marks (`--tag`), which are labels; per-hand notes exist in `notes.py` |
+| Share a hand as a link or image, hiding names and showdown | **missing** — `--export` writes text; an anonymised one-hand export is close |
+| Showdowns indicator (count of new showdowns per opponent since sitting down) | HUD; out of scope |
+
+### Statistics engine
+
+| Hand2Note | here |
+|---|---|
+| Plain stat editor: simulate a sequence of actions (Player raises, Villain calls…), with per-action parameters: first/last action on street, first non-fold, stack size, eff stack, eff stack / pot, bet size, bet size / pot, bet size / previous bet, all-in, position postflop, reg or fish, is hero, hero still in hand, same-player id, stat intervals of the actor, initial pot, players on street | have most as filters (`--facing`, `--pfa`, `--ip`, `--deep`, `--node`, sizes in lines, `--reg`, `--vs-hero`); **missing: bet size relative to the previous bet; initial pot on street; "hero still in hand"; stat intervals of the actor as a filter (needs the cohort as a row property)** |
+| Preflop tab: range, BB size, ante, players dealt, hero on blinds, fish on blinds, zoom, out-of-queue posts, position | have most; **fish on blinds, ante, out-of-queue posts missing** |
+| Expression stats: Value, Cases, Opps, VsHeroCases, WonHandCases, WentToSDCases, WonHandAtSDCases, AmountWon, ActionProfit over any plain stat, with arithmetic | **missing as a language**; `--define` makes plain stats only. AF, WWSF, WTSD-after-cbet exist as built-ins |
+| Reg-vs-fish exclusion when computing a reg's stats | have `--regs-only`, `--vs-reg`; not a global switch |
+| Game types (NL cash 3–10max etc.) as named configurations | have `fmt` + `--site` + stake |
+| Rebuild stats after editing | have `importer --rebuild` |
+
+### The order to do them, by value for the money
+
+1. **Bet-sizing distribution of an action with the reactions to each size**, in the actions view — the single most-used thing in H2N's popup and one GROUP BY on `size_bb`/`pot_frac` buckets.
+2. **Action profit by hand strength** (`--actions --by made`) and the two extra columns (won hand %, went to showdown % after the action).
+3. **Rake paid** as a column and a dimension; **hands per hour** on sessions; **sort hands by result**.
+4. The **hole-cards grid** in the filter dialog, and the **quick one-line hand view** with sizes and pot.
+5. Strength groups: **top pair by kicker**, **A-high / K-high**, **pair + draw**.
+6. **Expression stats** — a small formula language over stat cases/opportunities. Big; last.
+
+## Run 21 — what the user saw, second pass; PartyPoker
+
+**Goal:** the next things said at the window -- action profit and next
+action; a line picker instead of letters; "strong" should be top pair
+or better; quick filters for the barrels; the window freezing between
+tabs; the graph's default -- and PartyPoker, which the user put back on
+the list.
+
+**Result: PASS**, 20 of 20. The actions view, the line builder, three
+strength tiers, five barrel stats, one worker thread with a cache, hero
+by default on results and the graph. `partypoker.py` against 31
+fixtures: 17 hands prove, 9 refused with reasons. The Hand2Note manual's
+Features and Custom Stats pages, 27 pages and 120 images, saved under
+`Desktop/h2n_manual` for the comparison the user asked for.
+
 ## Run 20 — what the user saw
 
 **Goal:** three things said while looking at the window: "PFR vs BB says
