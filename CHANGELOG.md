@@ -22,6 +22,13 @@ window, and the assistant's answer to "where does the pool overfold" --
 its vocabulary and rules send the question there and forbid calling a
 rate an overfold from the number.
 
+### Added -- the panel's AI settings
+
+`ask.py` had said "paste a key in the panel's settings" since the panel
+existed, and the panel had none. It has them: the provider, the key, the
+model, a button that opens the provider's key page, and a test that
+sends one question through before the key is trusted.
+
 ### Changed -- the assistant drives the window
 
 The panel's "drive the window" box, on by default: the query behind an

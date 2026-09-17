@@ -38,6 +38,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
@@ -2704,6 +2705,45 @@ class AskPanel(ttk.Frame):
         head.pack(fill="x", padx=10, pady=(10, 4))
         ttk.Label(head, text="ask the database", style="Title.TLabel").pack(side="left")
         ttk.Button(head, text="×", width=3, command=self.toggle).pack(side="right")
+        ttk.Button(head, text="AI settings", command=self._toggle_settings
+                   ).pack(side="right", padx=(0, 6))
+
+        # Where the key goes. There is no "sign in with Google" for any of
+        # these: every provider hands out a developer key from a page in
+        # the browser, so the flow is the page opened for you, the key
+        # pasted here, and one test question sent through it before it is
+        # trusted. `ask.py` had told people to paste a key "in the panel's
+        # settings" for a week before the panel had any.
+        self.settings = ttk.Frame(self)
+        self.settings_shown = False
+        row = ttk.Frame(self.settings)
+        row.pack(fill="x", padx=10, pady=(4, 2))
+        ttk.Label(row, text="AI", width=8, style="Dim.TLabel").pack(side="left")
+        self.provider = ttk.Combobox(row, state="readonly", width=34,
+                                     values=[ask.PROVIDERS[n]["label"] for n in ask.PROVIDERS]
+                                     + [ask.CLI_LABEL])
+        self.provider.pack(side="left")
+        self.provider.bind("<<ComboboxSelected>>", lambda e: self._show_provider())
+        row = ttk.Frame(self.settings)
+        row.pack(fill="x", padx=10, pady=2)
+        ttk.Label(row, text="key", width=8, style="Dim.TLabel").pack(side="left")
+        self.key = ttk.Entry(row, width=36, show="•")
+        self.key.pack(side="left")
+        row = ttk.Frame(self.settings)
+        row.pack(fill="x", padx=10, pady=2)
+        ttk.Label(row, text="model", width=8, style="Dim.TLabel").pack(side="left")
+        self.model = ttk.Entry(row, width=36)
+        self.model.pack(side="left")
+        row = ttk.Frame(self.settings)
+        row.pack(fill="x", padx=10, pady=(2, 6))
+        ttk.Button(row, text="get a key", command=self._open_keys).pack(side="left")
+        ttk.Button(row, text="save", command=self._save_settings).pack(side="left", padx=4)
+        ttk.Button(row, text="test", command=self._test_settings).pack(side="left")
+        self.key_status = ttk.Label(self.settings, text="", style="Dim.TLabel",
+                                    wraplength=380, justify="left")
+        self.key_status.pack(fill="x", padx=10, pady=(0, 6))
+        self._load_settings()
+
         self.log = tk.Text(self, background=PANEL, foreground=INK, borderwidth=0,
                            font=(UI, 10), wrap="word", padx=10, pady=8,
                            insertbackground=INK, state="disabled")
@@ -2736,6 +2776,87 @@ class AskPanel(ttk.Frame):
                   "bet in 3bet pots, SB vs BTN, B-B-B?\" -- every number in "
                   "the answer comes from a query the program ran, shown "
                   "underneath.", "dim")
+
+    # ---- settings -----------------------------------------------------
+    def _provider_key(self):
+        label = self.provider.get()
+        for name, p in ask.PROVIDERS.items():
+            if p["label"] == label:
+                return name
+        return ask.CLI
+
+    def _load_settings(self):
+        got = ask.settings()
+        chosen = got["provider"]
+        label = ask.CLI_LABEL if chosen == ask.CLI else ask.PROVIDERS.get(
+            chosen, ask.PROVIDERS["gemini"])["label"]
+        self.provider.set(label)
+        self._show_provider()
+
+    def _show_provider(self):
+        name = self._provider_key()
+        self.key.delete(0, "end")
+        self.model.delete(0, "end")
+        if name == ask.CLI:
+            self.key.configure(state="disabled")
+            self.model.configure(state="disabled")
+            self.key_status.configure(
+                text="Claude Code on a Claude subscription: no key, only the "
+                     "command-line tool installed and signed in.")
+            return
+        self.key.configure(state="normal")
+        self.model.configure(state="normal")
+        p = ask.PROVIDERS[name]
+        if ask.key_for(name):
+            self.key.insert(0, ask.key_for(name))
+        self.model.insert(0, ask.model_for(name))
+        have = ask.available()
+        self.key_status.configure(
+            text=(("no key yet -- " if not p.get("keyless") and name not in have else "")
+                  + (f"keys are free at {p['keys_at']}" if name == "gemini" else
+                     f"keys at {p['keys_at']}")
+                  + (" · nothing leaves this machine" if p.get("keyless") else "")
+                  + (f"\nwith a key now: {', '.join(have)}" if have else "")))
+
+    def _toggle_settings(self):
+        if self.settings_shown:
+            self.settings.pack_forget()
+        else:
+            self.settings.pack(fill="x", before=self.log)
+        self.settings_shown = not self.settings_shown
+
+    def _open_keys(self):
+        name = self._provider_key()
+        if name != ask.CLI:
+            webbrowser.open(ask.PROVIDERS[name]["keys_at"].split(" ")[0])
+
+    def _save_settings(self):
+        name = self._provider_key()
+        if name == ask.CLI:
+            ask.save_settings(provider=ask.CLI)
+        else:
+            ask.save_settings(provider=name, key=self.key.get(),
+                              model=self.model.get())
+        self.key_status.configure(text=f"saved; {ask.who_label(name)} is first "
+                                       f"in line. Press test to try it.")
+
+    def _test_settings(self):
+        """One cheap question through the chosen provider, so a bad key is
+        a message here and not a failure on the first real question."""
+        self._save_settings()
+        name = self._provider_key()
+        self.key_status.configure(text="testing…")
+
+        def work():
+            try:
+                answer, _ran, _t, who = ask.ask("How many hands does hero have? "
+                                                "One number.", provider=name)
+                self.after(0, lambda: self.key_status.configure(
+                    text=f"{ask.who_label(who)} answered: {answer[:160]}"))
+            except Exception as e:
+                self.after(0, lambda: self.key_status.configure(
+                    text=f"failed: {str(e)[:300]}"))
+        threading.Thread(target=work, daemon=True).start()
 
     def toggle(self):
         if self.shown:

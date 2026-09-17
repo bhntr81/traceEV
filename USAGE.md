@@ -156,7 +156,13 @@ python ask.py --install-desktop          # let the Claude Desktop app use TraceE
 
 Providers: Gemini, Claude, ChatGPT, Grok, Qwen (Alibaba Cloud), and any
 model served locally by Ollama -- `ollama pull qwen3`, choose "ollama" in
-the panel's settings, no key. In the window the panel opens and closes
+the panel's settings, no key. **AI settings** in the panel is where a key
+goes: pick the provider, **get a key** opens its key page in the browser
+(a Google account for Gemini, whose tier is free), paste it, **test**
+sends one question through it and reports what came back. There is no
+"sign in with Google" for any of these -- every provider hands out a
+developer key from a page -- and the key is stored in `ai.json` beside
+the program, which is yours and never committed. In the window the panel opens and closes
 from the **ask** button; with **drive the window** ticked, the query
 behind each answer becomes the window's filter and tab as it is
 answered, so "show me my button-versus-big-blind pots on the graph" is
