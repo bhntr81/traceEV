@@ -1048,9 +1048,33 @@ the new labels describe something real.
 **Result: PASS**, all 22 checks, 39 hands in `strength.KNOWN` including the
 negatives and the wheel.
 
-**Left undone:** 26 of the 34 leads are unexamined, and the two finders that
-never ran were money and the newest code. Re-running that audit is cheap now
-that the script's default is known to be wrong.
+**Four more, examined after the first pass.** `--until DATE` compared a date
+against a 19-character timestamp as text and so dropped the entire day it
+named -- 19,866 decisions on the busiest -- with `--since X --until X`
+returning nothing at all. `--hour` used BETWEEN, which is empty for any range
+crossing midnight, so `--hour 22-02` selected nothing while looking ordinary
+and `why_empty` then explained it by asserting the database holds no hands at
+those hours. `--my-line` and `--my-node` map to a plain column and a "sized"
+one that is the same column, so a bet-size letter queried the unsized column
+and could never match; it is refused by name now. And `fold_to_4bet` was
+missing the `was_agg=1` guard its sibling carries with a note explaining it --
+the 192 cold seats fold 88.0% and took the figure from 55.1% to 61.1%.
+
+**And one refuted, which is worth as much.** `--pot` preflop is the pot's
+running state rather than its final type, so the 3-bettor's own seat is not
+in a 3-bet pot. That was filed as a wrong number; it is a decision this
+project already made and wrote down, for limped pots, in those words. The
+refuter lens that would have caught it -- read the PAF list and the run log
+before calling something a defect -- never ran.
+
+**Tally: 12 of 34 leads examined, 8 real and fixed, 1 refuted, 1 downgraded**
+(`checkraise_flop`'s proxy for "has checked" is 89% accurate and moves the
+rate 0.3 points, not the wrong number it was filed as).
+
+**Left undone:** 22 leads unexamined, and the two finders that never ran were
+money and the newest code. Re-running is cheap now that the script's fault is
+known -- it counted "no refuter returned" as "not refuted", which is how
+thirty-four unchecked findings came back labelled confirmed.
 
 ## Run 31 — the audit table, and the split it said was done (24 Sep 2026)
 

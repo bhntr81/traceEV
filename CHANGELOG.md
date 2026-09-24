@@ -8,6 +8,45 @@ Newest first.
 
 ---
 
+## Four filters and a stat that were quietly wrong — 24 Sep 2026
+
+### Fixed -- `--until DATE` dropped the entire day it named
+
+`played_at` is `'YYYY-MM-DD HH:MM:SS'` and the comparison was a string one,
+so `played_at <= '2026-08-25'` was false for every timestamp on that date.
+`--until` excluded the whole day -- 19,866 decisions on the busiest one --
+and `--since X --until X` returned nothing at all. Every date-bounded report
+was short by its last day. A bare date now means to the end of that day, and
+it is still a range scan, so still indexed.
+
+### Fixed -- `--hour` was empty across midnight
+
+`BETWEEN 22 AND 2` selects nothing, so `--hour 22-02` returned no rows while
+looking like any other filter -- and `why_empty` then explained it by
+asserting the database holds no hands at those hours, which was untrue. A
+range that wraps is two ranges. `--hour 22-02` now selects 21,802 decisions.
+
+### Fixed -- `--my-line` with a bet-size letter matched nothing, silently
+
+Every line flag maps to a plain column and a sized one, and a pattern
+containing a size letter switches to the sized column. `--my-line` and
+`--my-node` mapped to the same column twice: one seat's own line is stored
+without sizes and there is no sized twin. A size letter therefore queried the
+unsized column and could never match. It is refused now, by name, with the
+flags that do carry sizes.
+
+### Fixed -- `fold_to_4bet` counted cold seats as the 3-bettor
+
+Its sibling `fold_to_3bet` carries `was_agg=1` with a note saying why -- "as
+the original raiser, not as a cold seat" -- and the engine's own check table
+records `spots` making this very mistake. `fold_to_4bet` was missing it. The
+192 cold seats fold 88.0% against the 3-bettor's 55.1%, which took the shipped
+figure to **61.1% on n=1,058**. It is **55.1% on n=866** now.
+
+All four came from the same audit, none of them verified when it arrived, and
+each reproduced by hand before being touched. `query.check` asserts the first
+three by what they must select, since all three were syntactically perfect.
+
 ## The hands the board makes are not the player's — 24 Sep 2026
 
 ### Fixed -- two pair, trips, a straight, a flush, a boat and quads were credited to players holding none of them

@@ -118,8 +118,13 @@ STATS = [
          group="preflop", note="as the original raiser, not as a cold seat"),
     Stat("fourbet", "4bet", "street='preflop' AND facing='3bet' AND was_agg=1",
          "agg=1", group="preflop"),
-    Stat("fold_to_4bet", "fold to 4bet", "street='preflop' AND facing='4bet'",
-         "action='F'", group="preflop"),
+    Stat("fold_to_4bet", "fold to 4bet",
+         "street='preflop' AND facing='4bet' AND was_agg=1", "action='F'",
+         group="preflop", note="as the 3-bettor, not as a cold seat -- the "
+                               "same guard fold_to_3bet carries, and missing "
+                               "here until 24 Sep 2026: the 192 cold seats "
+                               "fold 88% and took the figure from 55.1% to "
+                               "61.1%"),
     Stat("steal", "steal",
          f"street='preflop' AND facing='unopened' AND {UNLIMPED} "
          "AND position IN ('CO','BTN','SB')", "agg=1", group="preflop"),

@@ -647,6 +647,18 @@ Three things to know:
 * **Money is over cash hands.** Tournament chips are not big blinds, so
   MTT hands are counted in a sitting's hand count and left out of its bb.
 
+`--hour` wraps: `--hour 22-02` is ten at night until two in the morning, and
+is read as two ranges rather than one. Until 24 Sep 2026 it was a plain
+BETWEEN and any range crossing midnight silently selected nothing.
+
+`--until DATE` means to the **end** of that day. It used to compare the date
+against a full timestamp as text, so `--until 2026-08-25` excluded every one
+of that day's hands and `--since X --until X` returned nothing at all.
+
+`--my-line` and `--my-node` refuse a pattern containing a bet-size letter
+rather than accepting it and matching nothing: one seat's own line is stored
+without sizes. Use `--line` or `--node` when you want sizes.
+
 Ranges are `a-b`, inclusive: `--hour 18-23`, `--session-len 120-300`,
 `--session-min 0-60` (the first hour of any sitting), `--tables 1-2`.
 Weekdays are names: `--weekday sat,sun`.

@@ -769,6 +769,17 @@ def build(argv):
                     described.append(f"my-line {pattern}")
                     continue
                 with_sizes = any(c in lines.BUCKETS for c in pattern)
+                if with_sizes and sized == plain:
+                    # `own` and `own_node` have no sized twin -- one seat's
+                    # actions are stored without their sizes -- so the switch
+                    # below would quietly read the unsized column and a
+                    # pattern with a size letter in it matched nothing at all,
+                    # every time, while looking like an ordinary filter.
+                    raise SystemExit(
+                        f"{a} has no sized form: one seat's own line is stored "
+                        f"without sizes, so a pattern containing "
+                        f"{'/'.join(lines.BUCKETS)} can never match. Use --line "
+                        f"or --node for sizes, or drop the size letters.")
                 parts.append(f"{sized if with_sizes else plain} "
                              f"GLOB {q(pattern)}")
                 described.append(f"{a.lstrip('-')} {pattern}"
@@ -803,6 +814,36 @@ def build(argv):
                 described.append("board " + v)
                 continue
             tpl = VALUE_FLAGS[a]
+            if a == "--until":
+                # `played_at` is 'YYYY-MM-DD HH:MM:SS' and this is a STRING
+                # comparison, so `played_at <= '2026-08-25'` is false for every
+                # timestamp on that date: `--until` dropped the entire day it
+                # named -- 19,866 decisions on the busiest one -- and
+                # `--since X --until X` returned nothing at all. A bare date
+                # means to the end of that day; a value with a time in it is
+                # taken at its word. Still a range scan, so still indexed.
+                bare = len(v.strip()) == 10
+                parts.append(f"played_at < date({q(v)}, '+1 day')" if bare
+                             else f"played_at <= {q(v)}")
+                described.append(f"until {v}")
+                continue
+            if a == "--hour" and "-" in v:
+                lo, _, hi = v.partition("-")
+                try:
+                    lo, hi = int(lo), int(hi or lo)
+                except ValueError:
+                    raise SystemExit(f"{a} wants a range like 18-23, "
+                                     f"not {v!r}") from None
+                # An evening that runs past midnight is two ranges and not
+                # one. BETWEEN 22 AND 2 is empty, so `--hour 22-02` selected
+                # nothing while looking like any other filter -- and
+                # `why_empty` then explained it by asserting the database
+                # holds no hands at those hours, which was untrue.
+                h = "CAST(strftime('%H', played_at) AS INT)"
+                parts.append(f"({h} BETWEEN {lo} AND {hi})" if lo <= hi
+                             else f"({h} >= {lo} OR {h} <= {hi})")
+                described.append(f"hour {v}")
+                continue
             if a == "--matchup":
                 parts.append(matchup_sql(v))
                 described.append(f"matchup {v}")
@@ -2616,6 +2657,38 @@ def check(db_path=DB):
           f"{len(cases) - len(misjoined)}/{len(cases)}")
     for m in misjoined:
         fails.append(f"{m}: build's parts do not rejoin into its WHERE")
+
+    # Three filters that returned a wrong answer while looking ordinary.
+    # `--until` compared a date against a 19-character timestamp as a string
+    # and so dropped the whole day it named; `--hour` used BETWEEN, which is
+    # empty for any range crossing midnight; and `--my-line` switched to a
+    # "sized" column that is the unsized one, so a size letter matched
+    # nothing. The first two are checked by what they must SELECT, because
+    # both were syntactically fine and silently wrong.
+    edge = []
+    day = con.execute("SELECT substr(played_at,1,10) FROM decisions "
+                      "WHERE played_at IS NOT NULL GROUP BY 1 "
+                      "ORDER BY COUNT(*) DESC LIMIT 1").fetchone()[0]
+    on_day = con.execute("SELECT COUNT(*) FROM decisions "
+                         "WHERE substr(played_at,1,10) = ?", (day,)).fetchone()[0]
+    both = build(["--since", day, "--until", day])[0]
+    got = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {both}").fetchone()[0]
+    if got != on_day:
+        edge.append(f"--since {day} --until {day} selects {got} of that day's {on_day}")
+    across = build(["--hour", "22-02"])[0]
+    if not con.execute(f"SELECT COUNT(*) FROM decisions WHERE {across}").fetchone()[0]:
+        edge.append("--hour 22-02 selects nothing, so it is empty across midnight")
+    for flag in ("--my-line", "--my-node"):
+        try:
+            build([flag, "*/Bm*"])
+            edge.append(f"{flag} accepted a size letter it cannot match")
+        except SystemExit:
+            pass
+    print(f"the filters that were silently wrong  "
+          f"{'4 of 4' if not edge else 'FAIL'}")
+    for e in edge:
+        print(f"    {e}")
+    fails += edge
 
     for name, argv in cases:
         where, _, _p = build(argv)
