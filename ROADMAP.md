@@ -1290,7 +1290,11 @@ not supply.
 **Result: PASS**, 20 of 20. The panel drives the window; Qwen and a
 local Ollama model beside the four providers; `--overfolds` with the
 bet-size bar and Holm across its rows, as a tab and as the assistant's
-answer; the range view's kicker, ace-high and pair-plus-draw groups (gap
+answer; the range view's kicker and ace-high groups -- **not** pair-plus-draw,
+which this entry claimed and which was never built; corrected 24 Sep 2026 on
+reading `query.py`'s own comment, "the two splits Hand2Note's diagram draws
+and this one did not". The question can still be asked by combining a made
+hand with a draw filter; there is no group row for it (gap
 five of six). Left: expression stats.
 
 ## Run 22 — Hand2Note's gaps, one to four
@@ -1309,6 +1313,35 @@ Read from the manual's Features and Custom Stats pages and their
 screenshots, saved under `Desktop/h2n_manual`. HUD items are out of scope
 by decision and are listed only so the list is complete. "Have" means
 the same question can be asked here, not that the screen looks alike.
+
+**Audited against the code on 24 Sep 2026, and most of it is out of date.**
+The table below is left as it was written, because it is dated and it was true
+then -- but it is what later runs navigate by, and read today it would send
+somebody to build ten things that already exist. What has closed since, and
+where:
+
+| the table says missing | actually |
+|---|---|
+| rake paid as a column | in the results view and per stake, Run 22 |
+| hands per hour on sessions | printed, Run 22 |
+| sort hands by biggest win/loss | `--sort`, Run 22 |
+| the hole-card grid to click | in the filter dialog, Run 22 |
+| won hand / went to showdown after an action | columns of the actions view, Run 22 |
+| a by-size split of one action with its reactions | `--by size`, Run 22 |
+| action profit by hand strength | `--by hand`, Run 22 -- the table asked for it as `--by made`, which is not a dimension; that is the only reason it still reads as missing |
+| top pair by kicker, ace high vs lower | split rows in the range view, Run 23 |
+| bet size relative to the previous bet | `raise_x` on `decisions`, Run 24 |
+| expression stats as a language | `stats.Expression`, Runs 25 and 26 |
+| the two-colour preflop range map | `--chart --alternative`, Run 27 |
+
+Still missing, and each verified absent from the code on 24 Sep rather than
+assumed from this table: **pair + draw as a group** (askable as a made-hand
+filter plus a draw filter, but not a row), distance to fish as a number
+rather than a side, straddle, "all folded to BB" as a facing, the initial pot
+on a street, fish on the blinds, antes, out-of-queue posts, note templates, a
+hand inserted into a note, notes on a stat, an anonymised one-hand share,
+sorting showdown hands by strength, and a stat-expression string in the
+cohort picker.
 
 ### Reports and Sessions
 
