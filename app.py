@@ -70,6 +70,15 @@ query.DB = DB
 stats.DB = DB
 stats.load_custom(HERE / "stats.json")
 query.SAVED = HERE / "filters.json"
+# The assistant's provider, key and model are the user's in the same way,
+# and `ask`'s own comment says they live beside the program -- but its path
+# was the last one still measured from the code. Frozen, that is the
+# directory PyInstaller deletes on the way out, so a key typed into the
+# settings box was written somewhere that did not exist by the next launch
+# and the panel asked for it again every time. Only `claude` ever survived
+# it, and only by the Desktop file it kept from before there was a
+# settings file at all.
+ask.SETTINGS = HERE / "ai.json"
 
 # One palette, so a colour is changed in one place. The line colours are the
 # same four the graph has always used.
@@ -83,6 +92,11 @@ LINE = {"total": "#22a35a", "showdown": "#2f7fd6",
 # agree -- which they do exactly when nothing could be adjusted -- the green
 # line was invisible and looked missing. It was underneath.
 DRAW_ORDER = ("allin_ev", "nonshowdown", "showdown", "total")
+
+def _pct(v):
+    """A percentage, or a dash where there is no number to print at all."""
+    return "-" if v is None else f"{v:.1f}%"
+
 
 def blend(a, b, t):
     """
@@ -842,6 +856,18 @@ class App(ImportMixin, ttk.Frame):
         self.preset.set(keep if keep in known else "")
 
 
+    def reload_stat_choices(self):
+        """Refresh snapshots of the registry after saving or forgetting a stat."""
+        selected = self.expression.get()
+        keys = list(stats.EXPR_BY_KEY)
+        self.expression.configure(values=[""] + keys)
+        self.expression.set(selected if selected in keys else "")
+        chart = self.of.get()
+        labels = [st.label for st in STATS if st.source == "d"]
+        self.of.configure(values=["the range itself"] + labels)
+        self.of.set(chart if chart in labels else "the range itself")
+        self.cache.clear()
+
     def _views(self, right):
         bar = ttk.Frame(right)
         bar.pack(fill="x", padx=12, pady=(10, 4))
@@ -860,6 +886,21 @@ class App(ImportMixin, ttk.Frame):
         self.of.current(0)
         self.of.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         self.of_label = ttk.Label(bar, text="chart of", style="Dim.TLabel")
+        self.alternative = ttk.Combobox(bar, state="readonly", width=10,
+                                       values=[""] + list(query.CHART_ALTERNATIVES))
+        self.alternative.set("")
+        self.alternative.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.alternative_label = ttk.Label(bar, text="alternative action",
+                                           style="Dim.TLabel")
+
+        # Formulas can each cost several queries. Choose one explicitly,
+        # as --show does, rather than slowing every ordinary stats refresh.
+        self.expression = ttk.Combobox(bar, state="readonly", width=28,
+                                      values=[""] + list(stats.EXPR_BY_KEY))
+        self.expression.set("")
+        self.expression.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.expression_label = ttk.Label(bar, text="expression",
+                                          style="Dim.TLabel")
 
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
@@ -894,6 +935,8 @@ class App(ImportMixin, ttk.Frame):
                                       highlightthickness=0)
         self.chart_canvas.pack(fill="both", expand=True)
         self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
+        self.chart_canvas.bind("<Motion>", self._chart_hover)
+        self.chart_canvas.bind("<Leave>", lambda e: self.chart_canvas.delete("hint"))
         self.chart = None
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
@@ -1053,6 +1096,9 @@ class App(ImportMixin, ttk.Frame):
         """
         self.clear_filters()
         tab, argv = "stats", list(argv)
+        shown, alternative = None, ""
+        self.alternative.set("")
+        self.of.set("the range itself")
         i = 0
         while i < len(argv):
             a = argv[i]
@@ -1086,10 +1132,21 @@ class App(ImportMixin, ttk.Frame):
                     if tab == "stats":
                         tab = "report"
                 i += 2
+            elif a == "--show" and i + 1 < len(argv):
+                shown = argv[i + 1].split(",")[0]
+                i += 2
+            elif a == "--alternative" and i + 1 < len(argv):
+                alternative = argv[i + 1]
+                i += 2
             elif a in query.OPTIONS and i + 1 < len(argv):
-                i += 2                    # --show, --min: no box for these
+                i += 2
             else:
                 i += 1
+        if tab == "chart":
+            if shown in BY_KEY and BY_KEY[shown].source == "d":
+                self.of.set(BY_KEY[shown].label)
+            if alternative in query.CHART_ALTERNATIVES:
+                self.alternative.set(alternative)
         for name, frame in self.tabs.items():
             if name == tab:
                 self.nb.select(frame)
@@ -1106,9 +1163,19 @@ class App(ImportMixin, ttk.Frame):
         if view == "chart":
             self.of_label.pack(side="left", padx=(0, 6))
             self.of.pack(side="left")
+            self.alternative_label.pack(side="left", padx=(14, 6))
+            self.alternative.pack(side="left")
         else:
             self.of_label.pack_forget()
             self.of.pack_forget()
+            self.alternative_label.pack_forget()
+            self.alternative.pack_forget()
+        if view == "stats":
+            self.expression_label.pack(side="left", padx=(0, 6))
+            self.expression.pack(side="left")
+        else:
+            self.expression_label.pack_forget()
+            self.expression.pack_forget()
         try:
             argv = self.argv()
             cohort_spec, query_argv = players.parse_cohort(argv)
@@ -1134,26 +1201,36 @@ class App(ImportMixin, ttk.Frame):
             self.clear_btn.pack_forget()
         self.pending += 1
         token = self.pending
-        key = (view, where, self.by.get(), self.chart_stat(), repr(cohort_spec))
+        stat = self.expression.get() if view == "stats" else self.chart_stat()
+        alternative = (self.alternative.get() or None) if view == "chart" else None
+        key = (view, where, self.by.get(), stat, alternative, repr(cohort_spec))
         if key in self.cache:
             self.status.configure(text="")
             self._render(self.cache[key])
             return
         self.status.configure(text="working…")
         self.requests.put((token, key, view, where, label, parts,
-                           self.by.get(), cohort_spec, self.chart_stat()))
+                           self.by.get(), cohort_spec, stat, alternative,
+                           query_argv))
 
     def _worker(self):
         """The one thread every query runs on; see `_work`."""
         while True:
             item = self.requests.get()
-            # Anything queued behind it supersedes it: only the newest
-            # request is worth the seconds it may take.
+            if callable(item):
+                item()
+                continue
+            # View requests supersede views, never a save. Formula saves
+            # share this worker so the window keeps drawing during validation.
             while True:
                 try:
-                    item = self.requests.get_nowait()
+                    newer = self.requests.get_nowait()
                 except queue.Empty:
                     break
+                if callable(newer):
+                    newer()
+                else:
+                    item = newer
             token, key, *args = item
             if token != self.pending:
                 continue
@@ -1172,7 +1249,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None):
+              stat=None, alternative=None, filter_argv=()):
         """
         Every query runs here, never on the interface thread.
 
@@ -1194,7 +1271,18 @@ class App(ImportMixin, ttk.Frame):
                          "c.player = decisions.player)")
             out = {"view": view}
             if view == "stats":
-                out["n"], out["rows"] = query.stats_of(con, where)
+                # With one player named, every row of this table is a small
+                # sample at once and several of them read 0% or 100% off one
+                # or two chances. `pool_beside` returns nothing for any other
+                # filter, and then the table is exactly what it always was.
+                pool_where, pool_params = query.pool_beside(con, list(filter_argv))
+                out["n"], out["rows"] = query.stats_of(con, where, pool_where,
+                                                       pool_params)
+                if stat in stats.EXPR_BY_KEY:
+                    expression = stats.EXPR_BY_KEY[stat]
+                    value, n = stats.evaluate(con, expression, where)
+                    out["expression"] = (expression.label, value, n)
+                    out["formula"] = expression.formula
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "sessions":
@@ -1208,7 +1296,7 @@ class App(ImportMixin, ttk.Frame):
                 out["rows"] = [r for r in query.overfolds_of(con, where, dim or None)
                                if r["n"] >= 30]
             elif view == "chart":
-                out.update(query.chart_of(con, where, stat))
+                out.update(query.chart_of(con, where, stat, alternative=alternative))
             elif view == "report":
                 expr, order = query.DIMENSIONS[dim or "position"]
                 cols = query.DEFAULT_COLUMNS
@@ -1228,6 +1316,8 @@ class App(ImportMixin, ttk.Frame):
                 out["series"] = self._series(con, where)
             if not self._any(out):
                 out["why"] = query.why_empty(con, parts)
+        except ValueError as e:
+            out = {"view": view, "error": str(e)}
         except sqlite3.Error as e:
             diag.event("query failed", view=view, where=where, error=str(e))
             out = {"view": view, "error": f"SQL: {e}"}
@@ -1245,7 +1335,7 @@ class App(ImportMixin, ttk.Frame):
     def _any(out):
         return bool(out.get("n") or out.get("rows") or out.get("totals")
                     or out.get("keys") or out.get("series")
-                    or out.get("cells"))
+                    or out.get("cells") or out.get("total"))
 
     def _series(self, con, where):
         pairs = query.matching_seats(con, where)
@@ -1292,7 +1382,8 @@ class App(ImportMixin, ttk.Frame):
             self._draw_graph(out.get("why") or out.get("error"))
             return
         if view == "chart":
-            self.chart = out if out.get("cells") else None
+            self.chart = out if (out.get("cells") or
+                                 (out.get("mode") == "comparison" and out.get("total"))) else None
             self._draw_chart(out.get("why") or out.get("error"))
             return
         tv = self.tree[view]
@@ -1332,21 +1423,48 @@ class App(ImportMixin, ttk.Frame):
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
     def _render_stats(self, tv, out):
-        self._cols(tv, ("stat", "value", "±", "n"), (230, 90, 70, 100),
+        # The last two columns exist only when one player is named, because
+        # only then is there a pool that is the same spot with other people
+        # in it. Added rather than substituted: the interval belongs to the
+        # raw rate, and a reader who wants to know what was actually seen
+        # should not have to work it back out of a shrunk figure.
+        pooled = bool(out["rows"]) and "pool" in out["rows"][0]
+        names = ("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
+        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ()),
                    {"stat": "w"})
+        blank = ("", "") if pooled else ()
         group = None
         for r in out["rows"]:
             if r["group"] != group:
                 group = r["group"]
-                tv.insert("", "end", values=(group.upper(), "", "", ""),
+                tv.insert("", "end", values=(group.upper(), "", "", "") + blank,
                           tags=("group",))
+            extra = ()
+            if pooled:
+                # A stat the pool never had the chance to take gets no
+                # comparison. "0.0%" there would invent a population.
+                extra = (_pct(r.get("pool")), _pct(r.get("shrunk")))
             tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
                               # A band under a point still has a size, and
                               # "±0" reads as a number that failed to print.
                               f"±{r['band']:.1f}" if r["band"] < 1
                               else f"±{r['band']:.0f}",
-                              f"{r['n']:,}"))
+                              f"{r['n']:,}") + extra)
+
+        if "expression" in out:
+            label, value, n = out["expression"]
+            tv.insert("", "end", tags=("group",),
+                      values=("EXPRESSION", "", "", "") + blank)
+            # An expression can be a count, ratio or profit. A percent sign
+            # or a Wilson band would silently turn it into a different claim
+            # -- and so would shrinking it towards a pool rate, so the pool
+            # columns stay empty here even when the rest of the table has them.
+            tv.insert("", "end", tags=("thin",) if n < 30 else (),
+                      values=(label, "--" if value is None else f"{value:.2f}",
+                              "", f"{n:,}") + blank)
+            tv.insert("", "end", tags=("note",),
+                      values=(out["formula"], "", "", "") + blank)
 
     def _render_actions(self, tv, out):
         """
@@ -1592,10 +1710,12 @@ class App(ImportMixin, ttk.Frame):
                                           "cards, so there is no range to draw")
             return
 
-        rate = g["mode"] == "rate"
-        top, foot = 16, 52
+        comparison = g["mode"] == "comparison"
+        rate = g["mode"] in ("rate", "comparison")
+        top, foot = 16, 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
+        self._chart_geometry = (left, top, size)
         peak = max(1e-9, g["peak"] / max(1, g["seen"]))
         # Below this the two lines of text collide, so the value is
         # dropped and the label kept. It was set by measuring the window:
@@ -1609,7 +1729,7 @@ class App(ImportMixin, ttk.Frame):
                 combo = query.combo_at(i, j)
                 n, k = g["cells"].get(combo, (0, None))
                 if rate:
-                    value = None if n < g["min_n"] else k / n
+                    value = None if not n or n < g["min_n"] else k / n
                     weight = value or 0.0
                 else:
                     value = (n / g["seen"]) if n and g["seen"] else None
@@ -1617,8 +1737,27 @@ class App(ImportMixin, ttk.Frame):
                 x, y = left + j * size, top + i * size
                 c.create_rectangle(
                     x, y, x + size, y + size, width=1, outline=BG,
-                    fill=PANEL if value is None else blend(PANEL, ACCENT,
+                    fill=PANEL if comparison or value is None else blend(PANEL, ACCENT,
                                                            weight))
+                if comparison:
+                    other_k = g["alternative_cells"].get(combo, (0, 0))[1]
+                    if value is not None:
+                        bar_y, bar_w = y + size * .72, size - 4
+                        base_end = x + 2 + bar_w * k / n
+                        other_end = base_end + bar_w * other_k / n
+                        if k:
+                            c.create_rectangle(x + 2, bar_y, base_end, y + size - 3,
+                                               width=0, fill=GOOD)
+                        if other_k:
+                            c.create_rectangle(base_end, bar_y, other_end, y + size - 3,
+                                               width=0, fill=ACCENT)
+                    c.create_text(x + size / 2, y + size * .23,
+                                  text=combo, fill=INK if value is not None else DIM,
+                                  font=(UI, 7 if small else 9))
+                    if not small and value is not None:
+                        c.create_text(x + size / 2, y + size * .51, fill=INK,
+                                      font=(UI, 7), text=f"{100*k/n:.0f}/{100*other_k/n:.0f}")
+                    continue
                 # Ink that stays legible over both ends of the shading. Dark
                 # text on the deepest cells and light on the rest; one
                 # colour for all of them made either the strongest squares
@@ -1636,6 +1775,15 @@ class App(ImportMixin, ttk.Frame):
 
         seen, total = g["seen"], g["total"]
         share = 100.0 * seen / total if total else 0.0
+        if comparison:
+            caption = (f"Green: {g['stat']}; blue: {g['alternative']}. "
+                       f"Base / alternative %. Hover for counts. Blank: n < {g['min_n']}.\n"
+                       + query.comparison_caption(g) + "\n"
+                       + f"{seen:,} of {total:,} player-hands showed cards ({share:.1f}%). "
+                       "The grid represents only seen cards; unseen cards may bias it.")
+            c.create_text(14, top + size * 13 + 10, anchor="nw", fill=DIM,
+                          font=(UI, 9), width=w - 28, justify="left", text=caption)
+            return
         c.create_text(left, top + size * 13 + 12, anchor="nw", fill=DIM,
                       font=(UI, 9),
                       text=(f"{g['stat']} per combo, shaded 0-100%."
@@ -1650,6 +1798,42 @@ class App(ImportMixin, ttk.Frame):
                            + ("" if share > 90 else
                               " -- this is the range that was SEEN, which on "
                               "ACR is the hands that got to showdown"))
+
+    def _chart_hover(self, event):
+        """A colour's sample is one pointer move away, without another query."""
+        c, g = self.chart_canvas, self.chart
+        c.delete("hint")
+        if not g or not hasattr(self, "_chart_geometry"):
+            return
+        left, top, size = self._chart_geometry
+        if size <= 0:
+            return
+        i, j = int((event.y - top) // size), int((event.x - left) // size)
+        if not (0 <= i < 13 and 0 <= j < 13):
+            return
+        combo = query.combo_at(i, j)
+        n, k = g["cells"].get(combo, (0, None))
+        text = f"{combo}: n={n:,}"
+        if g["mode"] == "composition":
+            text += " player-hands"
+        elif n:
+            text += f"\n{g['stat']}: {k:,}/{n:,} ({100*k/n:.1f}%)"
+            if g["mode"] == "comparison":
+                other = g["alternative_cells"].get(combo, (0, 0))[1]
+                text += f"\n{g['alternative']}: {other:,}/{n:,} ({100*other/n:.1f}%)"
+            if n < g["min_n"]:
+                text += "\nThin sample; colours hidden."
+        else:
+            text += " matching opportunities"
+        x = max(4, min(event.x + 14, c.winfo_width() - 300))
+        y = max(4, min(event.y + 14, c.winfo_height() - 100))
+        item = c.create_text(x + 6, y + 6, anchor="nw", text=text, fill=INK,
+                             font=(UI, 9), width=280, tags=("hint",))
+        bounds = c.bbox(item)
+        background = c.create_rectangle(bounds[0] - 6, bounds[1] - 6,
+                                        bounds[2] + 6, bounds[3] + 6,
+                                        fill=BG, outline=EDGE, tags=("hint",))
+        c.tag_lower(background, item)
 
     # ---- the graph, drawn rather than served ---------------------------
     def _draw_graph(self, message=None):
@@ -1949,7 +2133,7 @@ class ReportDialog(tk.Toplevel):
 
 class StatDialog(tk.Toplevel):
     """
-    The filter on the screen, saved as a stat with a name of its own.
+    Save the screen's filter as a plain stat, or a formula over plain stats.
 
     Hand2Note builds a custom stat by clicking the actions street by street
     and then naming what comes out. This window is the naming and none of
@@ -1968,7 +2152,7 @@ class StatDialog(tk.Toplevel):
         self.app = app
         self.title("Save as stat")
         self.configure(background=BG)
-        self.geometry("640x520")
+        self.geometry("720x620")
         self.transient(app.master)
         self.grab_set()
 
@@ -1987,15 +2171,23 @@ class StatDialog(tk.Toplevel):
         self.label = tk.StringVar()
         self.do = tk.StringVar(value="aggressive")
         self.per = tk.StringVar(value="decision")
+        self.busy = False
+        self.save_results = queue.Queue()
+        self.kind = tk.StringVar(value="plain")
+        self.formula = tk.StringVar(value="ActionProfit(cbet_flop) / Cases(cbet_flop)")
 
         ttk.Label(self, text="SAVE AS STAT", style="Title.TLabel").pack(
             anchor="w", padx=24, pady=(22, 4))
-        ttk.Label(self, text="The filter becomes the chance to do something. "
-                             "What you pick below is the doing of it.",
-                  style="Dim.TLabel").pack(anchor="w", padx=24, pady=(0, 12))
-        ttk.Label(self, text="filter: " + described, style="Dim.TLabel",
-                  wraplength=580, justify="left").pack(
-                      anchor="w", padx=24, pady=(0, 16))
+        self.description = ttk.Label(self, style="Dim.TLabel",
+                                     wraplength=660, justify="left")
+        self.description.pack(anchor="w", padx=24, pady=(0, 12))
+        self.filter_description = "filter: " + described
+
+        modes = ttk.Frame(self)
+        modes.pack(fill="x", padx=24, pady=(0, 12))
+        for label, value in (("Plain stat", "plain"), ("Expression", "expression")):
+            ttk.Radiobutton(modes, text=label, value=value, variable=self.kind,
+                            command=self._mode).pack(side="left", padx=(0, 18))
 
         body = ttk.Frame(self)
         body.pack(fill="x", padx=24)
@@ -2010,7 +2202,8 @@ class StatDialog(tk.Toplevel):
             ttk.Label(row, text=note, style="Dim.TLabel").pack(
                 side="left", padx=10)
 
-        row = ttk.Frame(body)
+        self.plain_fields = ttk.Frame(body)
+        row = ttk.Frame(self.plain_fields)
         row.pack(fill="x", pady=4)
         ttk.Label(row, text="Counts", width=11).pack(side="left")
         self.do_box = ttk.Combobox(row, textvariable=self.do,
@@ -2022,7 +2215,7 @@ class StatDialog(tk.Toplevel):
         self.do_box.bind("<<ComboboxSelected>>", lambda _e: self._explain())
         self._explain()
 
-        row = ttk.Frame(body)
+        row = ttk.Frame(self.plain_fields)
         row.pack(fill="x", pady=4)
         ttk.Label(row, text="Once per", width=11).pack(side="left")
         ttk.Combobox(row, textvariable=self.per, values=("decision", "hand"),
@@ -2030,8 +2223,19 @@ class StatDialog(tk.Toplevel):
         ttk.Label(row, text="a player VPIPs once however often they act",
                   style="Dim.TLabel").pack(side="left", padx=10)
 
+        self.expression_fields = ttk.Frame(body)
+        ttk.Label(self.expression_fields, text="Formula").pack(anchor="w")
+        self.formula_entry = ttk.Entry(self.expression_fields,
+                                       textvariable=self.formula)
+        self.formula_entry.pack(fill="x", pady=(4, 8))
+        ttk.Label(self.expression_fields, style="Dim.TLabel", wraplength=660,
+                  justify="left", text="Functions: " + ", ".join(stats.FUNCTIONS)
+                  + '. Use a plain stat key, such as cbet_flop, or a quoted '
+                  + 'filter, such as Cases("--street flop").').pack(anchor="w")
+        self._mode()
+
         self.result = ttk.Label(self, text="", style="Dim.TLabel",
-                                wraplength=580, justify="left")
+                                wraplength=660, justify="left")
         self.result.pack(anchor="w", padx=24, pady=(18, 0))
 
         row = ttk.Frame(self)
@@ -2046,18 +2250,68 @@ class StatDialog(tk.Toplevel):
         foot = ttk.Frame(self)
         foot.pack(fill="x", padx=24, pady=20, side="bottom")
         ttk.Button(foot, text="CLOSE", command=self.close).pack(side="right")
-        ttk.Button(foot, text="SAVE", style="Accent.TButton",
-                   command=self.save).pack(side="right", padx=(0, 8))
+        self.save_button = ttk.Button(foot, text="SAVE", style="Accent.TButton",
+                                      command=self.save)
+        self.save_button.pack(side="right", padx=(0, 8))
+        self.protocol("WM_DELETE_WINDOW", self.close)
         self.bind("<Escape>", lambda _e: self.close())
         self.bind("<Return>", lambda _e: self.save())
 
     def _explain(self):
         self.do_note.configure(text=stats.ACTIONS[self.do.get()][1])
 
+    def _mode(self):
+        expression = self.kind.get() == "expression"
+        self.plain_fields.pack_forget()
+        self.expression_fields.pack_forget()
+        if expression:
+            self.expression_fields.pack(fill="x", pady=4)
+            self.description.configure(text=(
+                "A formula over plain stats. The screen filter is not saved "
+                "into it; the Stats tab evaluates it under the filter you choose."))
+        else:
+            self.plain_fields.pack(fill="x")
+            self.description.configure(text=(
+                "The filter becomes the chance; Counts is the action. "
+                + self.filter_description))
+
     def _saved_keys(self):
-        return [st.key for st in STATS if st.custom]
+        return [st.key for st in [*STATS, *stats.EXPRESSIONS] if st.custom]
+
+    def _changed(self):
+        self.saved.configure(values=self._saved_keys())
+        self.app.cache.clear()
+        self.app.reload_stat_choices()
+        self.app.refresh()
 
     def save(self):
+        if self.busy:
+            return
+        if self.kind.get() == "expression":
+            try:
+                key = self.key.get().strip()
+                if not stats.KEY_OK.fullmatch(key):
+                    raise ValueError("Use a name starting with a lowercase letter, "
+                                     "then lowercase letters, digits or underscores.")
+                formula, label = self.formula.get().strip(), self.label.get().strip()
+                stats.compile_formula(formula)
+            except (ValueError, SyntaxError, SystemExit, OSError,
+                    sqlite3.Error, ArithmeticError) as error:
+                messagebox.showerror("Not a stat yet", str(error), parent=self)
+                return
+            self.busy = True
+            self.save_button.state(["disabled"])
+            self.result.configure(text="Checking and saving the formula...")
+
+            def save_expression():
+                try:
+                    self.save_results.put((stats.define_expression(key, formula, label), None))
+                except (Exception, SystemExit) as error:
+                    self.save_results.put((None, str(error)))
+
+            self.app.requests.put(save_expression)
+            self.after(80, self._saved_expression)
+            return
         try:
             n, k = query.define_stat(self.argv, self.key.get().strip(),
                                      self.label.get().strip() or None,
@@ -2077,10 +2331,31 @@ class StatDialog(tk.Toplevel):
                   "Saved -- but NOTHING MATCHES. Nobody in this database has "
                   "ever been in that spot, so the stat will be blank "
                   "wherever it is shown."))
-        self.saved.configure(values=self._saved_keys())
-        self.app.refresh()
+        self._changed()
+
+    def _saved_expression(self):
+        try:
+            answer, error = self.save_results.get_nowait()
+        except queue.Empty:
+            self.after(80, self._saved_expression)
+            return
+        self.busy = False
+        self.save_button.state(["!disabled"])
+        if error is not None:
+            self.result.configure(text="Not saved. Correct the formula and try again.")
+            messagebox.showerror("Not a stat yet", error, parent=self)
+            return
+        value, n = answer
+        shown = "undefined (no value)" if value is None else f"{value:.2f}"
+        self.result.configure(text=(
+            f"Saved. Value: {shown}; smallest opportunity sample n={n:,} "
+            "over all player-hands. Choose it in the Stats tab's expression "
+            "box to evaluate it under your current filter."))
+        self._changed()
 
     def forget(self):
+        if self.busy:
+            return
         key = self.saved.get()
         if not key:
             return
@@ -2092,9 +2367,11 @@ class StatDialog(tk.Toplevel):
         self.saved.set("")
         self.saved.configure(values=self._saved_keys())
         self.result.configure(text=f"Forgot {key}.")
-        self.app.refresh()
+        self._changed()
 
     def close(self):
+        if self.busy:
+            return
         self.grab_release()
         self.destroy()
 
@@ -3337,6 +3614,22 @@ def check(db_path=DB):
     if not known_reports <= offered_reports:
         fails.append("the report box is missing "
                      f"{sorted(known_reports - offered_reports)}")
+
+    # Everything that is the user's sits beside the executable, never beside
+    # the code -- frozen, the code is a directory PyInstaller deletes on the
+    # way out, so a path still measured from `__file__` names a file that is
+    # gone by the next launch. `stats.json` and `filters.json` were each
+    # moved here after the fact and `ai.json` was missed by both, which cost
+    # the assistant its provider and key every time the packaged program
+    # closed. This is the check that says so rather than the next person
+    # finding it the way the first two were found.
+    mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
+            "filters.json": query.SAVED, "ai.json": ask.SETTINGS}
+    astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)
+    print(f"the user's files sit beside it {len(mine) - len(astray)}/{len(mine)}")
+    if astray:
+        fails.append(f"{astray} would be written beside the code, which a "
+                     f"packaged build deletes on the way out")
 
     theme = ttk.Style(root).theme_use()
     print(f"theme in use                   {theme}")

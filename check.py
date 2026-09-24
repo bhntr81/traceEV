@@ -40,6 +40,8 @@ CHECKS = [
     ("diag", "a failure in any of the three places reaches the log"),
     ("update", "the updater reports honestly and can only fast-forward"),
     ("app", "the window, its filter dialog, and the dark theme"),
+    ("test_range_compare", "two-action ranges: shared opportunities, visibility and all-ins"),
+    ("test_stat_dialog", "expression stats: desktop saves, validation and filtered results"),
     ("gui", "the page and the command line build the same filter"),
     ("population", "pool findings survive being split in half"),
     ("notes", "marked hands and player notes: round trips, and nothing rebuilds them away"),

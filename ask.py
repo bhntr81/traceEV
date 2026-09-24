@@ -95,6 +95,8 @@ def vocabulary():
              "  --hands     the hands themselves",
              "  --range     what hands the players held there (with the seen-fraction)",
              "  --chart     the 13x13 chart of that",
+             "  --alternative ACTION  with --chart --show KEY, add call/raise/fold/check/bet",
+             "              on the base stat's same opportunities; decision-based plain stats only.",
              "  --sessions  which sittings",
              "  --versus \"<flags>\"  A against B: both rates, the interval on the DIFFERENCE,",
              "              a p-value corrected for how many stats were compared, and -- when",

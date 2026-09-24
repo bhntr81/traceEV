@@ -285,6 +285,27 @@ Facts that stay true, and that have each been got wrong at least once:
   `query.py --results` selects decisions and then sums whole hands. A player
   in position on a monotone flop won or lost the whole pot, not the part
   after the flop.
+- **The interpreter that builds is the one that has Tk, and on this machine
+  that is not the default one.** PyInstaller packages the runtime it is run
+  on, so `python build.py` under an interpreter without tkinter produces a
+  windowed program with no Tk: a window that never appears, from a build with
+  no console to say why. The 3.11 install here has no tkinter -- it also
+  fails four of `check.py`'s twenty-two for the same reason, and all four are
+  exactly the modules that import Tk, which is how to tell that apart from a
+  regression. Build with the 3.14 install, which has Tk 9.0 and PyInstaller.
+  The workflow builds on 3.11 with Tk 8.6 via `setup-python`, so the shipped
+  Windows binary and a local one are a Tk major version apart and nothing has
+  measured the difference.
+- **A rate shown to a reader needs the pool behind it, not just an interval.**
+  A wide interval does not stop a point estimate being believed: the player
+  profile printed "fold to 3-bet 0.0%" off one observation for months, beside
+  an interval running to 79%, and read as a fold-never. `stats.shrunk` pulls
+  it towards the pool and `stats.SHRINK` is 10 because ten was measured to
+  match per-stat tuning within 0.04%. The pool it borrows from is the
+  player's own games **minus the player** -- their rows in it would make the
+  prior contain its own evidence, worst for exactly the small samples it
+  exists for -- and pinned to their stakes, because `fmt='RING'` matches two
+  sites and a 2NL seat shrunk towards 5NL moves confidently the wrong way.
 
 ## Adding a stat
 

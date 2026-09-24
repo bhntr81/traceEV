@@ -835,6 +835,17 @@ than any feature would. Nothing in code unblocks it.
    features. If prior-and-update cannot beat the pool rate at predicting
    a seat's next decision there, it will not across sites either.
 
+   **Answered NO on 23 Sep 2026, Run 29, and closed.** Measured on Ignition
+   ring at bb=0.1 with the prior strength chosen out-of-fold and the
+   interval resampling seats: one of eight stats beat the pool rate once
+   Holm charged the family, and that one was VPIP. `threebet`'s interval is
+   narrow enough to call a true null. The test asked of this goal was
+   written to be failable and it failed, so the goal is not built. What the
+   same measurement did establish is that shrinking a displayed rate toward
+   its pool rate beats printing the raw one by 12-33% Brier below ten
+   observations, on every stat tried -- a smaller claim about a much more
+   common screen, and it needs no new column.
+
 ## What a site is
 
 Two facts decide how a site's hands are handled, and they are per-site,
@@ -982,6 +993,229 @@ now does; `--export` reads each hand back out of its file and the
 importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
+
+## Run 30 — what Run 29 actually found, built (23 Sep 2026)
+
+**Goal:** the one thing the goal-5 measurement supported -- a displayed rate
+shown with the pool behind it instead of alone -- on the view the roadmap
+named when it said goal 5 "answers what does this player do with fewer hands
+than a raw rate needs".
+
+**Result: PASS**, all 22 checks. `stats.SHRINK` and `stats.shrunk`, the
+profile rebuilt on the engine, and assertions in two modules.
+
+**What it found on the way, which was the better half of the run.**
+`players.py NAME` was printing percentages **with no denominators at all**.
+It read the `players` table, which carries one rate per stat and a single
+`hands` count, so a 3-bet on twelve chances and a 3-bet on twelve hundred
+printed the same. "No percentage without its n" is the first reporting rule
+here and the player view had never obeyed it. Reading the profile out of the
+engine fixes that and supplies the (n, k) the shrink needs, so the two were
+one change.
+
+**The case the feature exists for**, from the database as it stands:
+
+```
+37663629:1:8   ignition   12 hands   FISH
+                            n     rate    95% interval    pool  w/ pool
+  VPIP                     12    83.3%      55.2-95.3%   31.9%    59.9%
+  3-bet                     6     0.0%       0.0-39.0%    6.6%     4.1%
+  fold to 3-bet             1     0.0%       0.0-79.3%   52.0%    47.3%
+```
+
+Four rows on that seat printed 0.0% before, one of them on a single
+observation. Against it, the 811-hand reg `IgROCK` moves by at most a tenth
+of a point on any row -- which is the property that makes it safe to show at
+all, and it is asserted rather than hoped: the shrunk value must lie between
+the seat's and the pool's, at `SHRINK` chances exactly halfway, and with a
+thousand observations back to the seat's own.
+
+**The pool is the player's own games minus the player.** Both halves of that
+are checked, because both fail silently. Leaving the player in makes the
+prior contain the evidence it is meant to be independent of -- worst exactly
+for the small-sample seats the feature is for, whose pools are smallest. Not
+pinning it to their stakes shrinks a 2NL seat towards a 5NL pool, which is
+the `fmt='RING'` lesson in a new place.
+
+**And then the same two columns on the stats table, in both front ends.**
+The window turned out to have no per-player profile at all -- its "Players"
+button is a cohort selector -- so the surface was not `profile` but the stats
+table under a filter that names one player, which is where thirty rates
+become thirty small samples at once. `query.pool_beside` decides whether
+there is a pool to show: the caller's own filter with the player dropped and
+the rest untouched, so `--player NAME --street flop` meets the pool's flop
+numbers and not its overall ones, with `players.pool_for` still the only
+thing that decides who counts.
+
+**It refuses more often than it answers, and that is the design.** No player,
+two players, or one player who sat on two sites all get no columns at all --
+absent, not blank -- because there is then no single population that is "the
+same spot with other people in it", and a guessed one would print in the same
+typeface as a real one. Expression stats get none either: a formula can be a
+count, a ratio or a profit and shrinking one would change its claim. The two
+front ends agree to the decimal on the seat above, which is the check that
+matters when the same number is computed in two places.
+
+**Left undone.** Nothing was replaced anywhere; both columns are additions,
+because the interval belongs to the raw count. The report and actions views
+still show raw rates only -- the same argument applies to them, but "the pool
+for this cell" is a different question once a row is a position or a stake
+rather than a player, and it should be answered before it is coded.
+
+## Run 29 — goal 5, measured and answered NO (23 Sep 2026)
+
+**Goal, set beforehand:** the counted pool rate used as a prior and updated
+with one seat's own decisions should predict that seat's next decision
+better than the seat's raw rate -- on Ignition ring at one stake, where
+both halves exist. The roadmap's own gate: "If prior-and-update cannot beat
+the pool rate at predicting a seat's next decision there, it will not
+across sites either."
+
+**Result: the gate fails.** Answered before anything was built, in a
+throwaway harness outside the repository, using `stats.rates_by_player` so
+that the numbers are the engine's and a shipped version would reproduce
+them. Nothing in the repository changed.
+
+**Method.** Ignition ring, bb=0.1, hero out: 17,211 decisions, cut per seat
+by `NTILE(2)` in time order into 8,699 seen and 8,512 predicted. An Ignition
+identity is `table:seat:segment` and every one of them lives inside a single
+day -- the longest are three hours at one table -- so there is no date to
+split on and the split has to be inside a seat's own life. Scored by Brier
+on the predicted half. Three predictors: the pool rate with the seat
+ignored, the seat's raw rate, and the Beta posterior mean. **The prior
+strength is chosen on one half of the seats and scored on the other, both
+ways round**, because the first pass chose it on the very decisions it was
+then scored on and flattered itself by doing so. The interval resamples
+**seats, not decisions** -- decisions within one seat are not independent
+and resampling them would have given an interval several times too narrow,
+which is this project's oldest reporting failure in a new costume.
+
+**The numbers, eight stats, Holm across the family:**
+
+| stat | pool only | raw | prior | gain | holm p |
+|---|---|---|---|---|---|
+| vpip | 0.2183 | 0.2097 | 0.2034 | +0.0149 | <0.0001 **REAL** |
+| pfr | 0.1410 | 0.1467 | 0.1400 | +0.0010 | 0.329 |
+| rfi | 0.1830 | 0.1954 | 0.1813 | +0.0017 | 1.000 |
+| threebet | 0.0687 | 0.0781 | 0.0686 | +0.0001 | 1.000 |
+| bb_defend | 0.2457 | 0.3238 | 0.2465 | -0.0007 | 1.000 |
+| fold_to_steal | 0.2335 | 0.2843 | 0.2340 | -0.0005 | 1.000 |
+| cbet_flop | 0.2392 | 0.3543 | 0.2387 | +0.0005 | 1.000 |
+| fold_to_cbet | 0.2461 | 0.3539 | 0.2442 | +0.0019 | 1.000 |
+
+**One of eight.** PFR reached p=0.047 uncorrected and 0.329 once charged for
+the eight questions asked, which is exactly the failure `stats.holm` is in
+this project to prevent. And the intervals say two different things, which
+is worth more than the verdict: `threebet`'s gain interval is
+[-0.0001,+0.0002], narrow enough to call a **true null** -- a seat's 3bet
+history tells you nothing the pool rate does not. The four thin stats'
+intervals are several times wider than any plausible effect on 193 to 663
+predicted decisions, so those are **not measured rather than measured
+absent**, and the fix is hands, not code.
+
+**What it found instead, and this one is not marginal.** Against the raw
+rate -- which is what the program prints today -- shrinking toward the pool
+is better by 12.3% to 33.0% Brier for seats seen fewer than ten times, on
+**all eight stats, losing on none**: cbet flop +33.0%, fold to cbet +31.0%,
+BB defend +24.6%, 3bet +17.8%, rfi +14.1%, vpip +13.3%, pfr +12.3%. At
+small n the shrunk estimate sits within 0.001 of the pool rate nearly
+everywhere, so the gain is not the seat's history being informative. It is
+**a four-observation rate not being worth printing**, which is the same
+finding as "no percentage without its n" arriving from the other direction.
+
+**Consequence for the goal list.** Goal 5 as written -- a prior that beats
+the pool -- is answered NO at this corpus and should not be built. The
+standing rule that the programmer may refuse a goal the data cannot support
+is what this is. The thing the measurement does support is narrower and
+touches every number the program shows, so it is a decision for the user
+rather than a consequence: shrink a displayed rate toward its pool rate
+instead of printing the raw one.
+
+## Run 28 — the packaged program, and the file that never survived it (23 Sep 2026)
+
+**Goal, set beforehand:** the executable the desktop shortcut launches
+should be the program this repository describes. It had not been since
+17 Sep, and Runs 26 and 27 each recorded that they could not rebuild it.
+
+**Result: PASS.** `build.py --check`: the built program runs its own check
+and passes, standard library only, every module reachable, database beside
+it. Verified from inside the .exe, not from the build exiting zero.
+
+**What the rebuild found first.** `check.py` failed four of twenty-two
+here -- `diag`, `app`, `test_range_compare`, `test_stat_dialog` -- all of
+them and only them the ones that import Tk, every failure the same
+`ModuleNotFoundError: No module named 'tkinter'`. Not a regression: the
+other eighteen pass on this machine's 3.11 and all four pass on 3.14.7.
+It mattered for more than the checks. PyInstaller packages the runtime it
+is run on, so building with the Tk-less 3.11 would have produced a GUI
+executable with no Tk -- a window that never appears, from a windowed
+build with no console to say why. The build is 3.14.7 with Tk 9.0.
+
+**And one defect, of a kind this project has now had three times.**
+`ask.SETTINGS` was the last of the user's four files still measured from
+`__file__`. Frozen that is the directory PyInstaller deletes on the way
+out, so the assistant's provider and key were written into it and were
+gone by the next launch; only `claude` survived, by the Desktop file it
+kept from before there was a settings file. `stats.json` and
+`filters.json` had each been moved beside the executable after being found
+the same way. `app.check` now holds all four to it and reports 4/4 from
+inside the packaged program.
+
+**Left undone, and worth knowing.** The new assertion is frozen-only -- run
+from source the code and the executable are one directory and it cannot
+discriminate -- and the workflow runs `build.py --check` *before* it
+builds, so CI never reaches the part that would catch the fourth
+occurrence. Making CI check the program it just built needs a display on
+the Linux runner. Separately, this local build is 3.14 / Tk 9.0 against
+the workflow's 3.11 / Tk 8.6, which is a difference nothing has measured.
+
+## Run 27 — the two-action range chart (19 Sep 2026)
+
+**Goal:** close the remaining preflop-diagram gap from the saved H2N manual:
+base and alternative actions in one chart, with their frequencies in the
+same situation.
+
+**Implemented:** `--alternative call/raise/fold/check/bet` with
+`--chart --show KEY`; a matching selector and two-colour chart in the window;
+per-combo hover counts; all-opportunity totals beside known-card coverage.
+The alternative uses the base stat's chance and the engine's existing action
+definitions, including all-in calls. Only decision-based plain stats can be
+compared; observed overlap is refused. Assistant-to-window handoff keeps the
+base stat and alternative. No database schema or derivation changes.
+
+**Result: PASS**, all 22 checks in `python check.py`, including ten new
+range-chart regressions and the previous nine expression-editor regressions.
+The desktop's 20 view/filter cases, all 136 filter checks, all 51 assistant
+questions and the parser fixtures passed. A real-data comparison was also
+run for Ignition's pool. Empty combos stay blank even with `--min 0`.
+The existing packaged executable has not been rebuilt.
+
+## Run 26 — expression stats in the desktop window (19 Sep 2026)
+
+**Goal:** resume Run 25's explicit next step: a formula box in SAVE AS STAT,
+with a usable route to the saved expression's result in the desktop app.
+
+**Implemented:** Plain / Expression modes; formula validation and saving on
+the existing query worker; saved formulas in the forget list; an expression
+selector on the stats tab, evaluated under the current filters. Values have
+no assumed percentage or interval. Saving and forgetting refresh the choices
+and invalidate cached reports. Ordinary views still evaluate no formulas
+unless one is selected.
+
+**Result: PASS**, all 21 checks in python check.py, including the nine
+desktop regression tests. The desktop's 20 view/filter cases and 136 filter
+checks passed. Parser fixtures read all 78 files and loaded 993 hands, with
+known unsupported histories explicitly refused. The new tests use a temporary
+sample database and saved-stat file.
+
+**Environment:** the source is still in `Desktop/poker_analysis`. The Codex
+task initially pointed at an empty `Documents/ChatGPT/poker_analysis` folder;
+`PROJECT_LOCATION.md` there points back here. The existing packaged executable
+has not been rebuilt; the bundled Python runtime has no PyInstaller installed.
+
+**User preference:** report available account usage during this project and
+at milestones. These limits are shared across the account; do not label their
+change as an exact project token count or cost.
 
 ## Run 25 — the expression language
 

@@ -737,6 +737,48 @@ def wilson(k, n, z=1.96):
     return p, max(0.0, centre - half), min(1.0, centre + half)
 
 
+# What the pool is worth as evidence when a rate is shown with the pool
+# behind it, in pseudo-observations. Ten, which reads as: a seat's own figure
+# starts to outweigh the pool's from about ten chances on.
+#
+# Measured rather than chosen, and the measurement is Run 29's. On Ignition
+# ring at bb=0.1, with each seat's decisions cut in time and scored only on
+# the half not seen, a fixed ten matched a value tuned per stat to within
+# 0.04% Brier overall and BEAT it by 0.6% on the seats seen fewer than ten
+# times -- because the per-stat value is itself fitted noise: for the same
+# stat it picked 10 on one half of the seats and 40 or 80 on the other.
+# Everything from five to twenty lands within 0.63%, so the number is not
+# delicate and a table of per-stat constants would be a table of opinions
+# defending noise. Against the raw rate -- which is what a small sample used
+# to print -- shrinking is 9.1% better overall and 24.2% better below ten
+# observations, over eight stats, losing on none.
+SHRINK = 10
+
+
+def shrunk(k, n, pool, m=SHRINK):
+    """
+    A rate with the pool behind it: the mean of the Beta posterior.
+
+    A rate on four observations is one of 0, 25, 50, 75 or 100 percent and
+    none of those is a read -- but "3-bet 100%" is believed anyway, which is
+    the whole reason this exists. This pulls a small sample towards what the
+    pool does and leaves a large one alone: at n=0 it IS the pool rate, and
+    the seat's own figure takes over from about `m` chances on.
+
+    `pool` must be the rate for the SAME stat under the SAME filter over the
+    pool, and getting that wrong is the way to misuse this. Shrinking a river
+    spot towards a preflop number, or an Ignition seat towards a pool that
+    averaged ACR in, moves the estimate confidently in the wrong direction --
+    and `fmt='RING'` matches two sites, so a pool needs its site named.
+
+    Returns None when there is no pool to borrow from, because a shrunk rate
+    with nothing behind it is just the raw rate wearing a different label.
+    """
+    if pool is None or n + m <= 0:
+        return None
+    return (k + m * pool) / (n + m)
+
+
 def split_point(con, where="1=1", table="decisions"):
     """
     The moment that divides a filter's rows in half by time, or None.
@@ -1108,6 +1150,47 @@ def check(db_path=DB):
     print(f"one pass agrees with thirty   {counted - off}/{counted}")
     if off:
         fails.append("the batched and per-stat counts disagree")
+
+    # Shrinking a rate towards the pool has four properties worth asserting,
+    # because every way the arithmetic could be wrong still returns a
+    # plausible percentage, which is the failure this project is built
+    # against. With nothing seen it must BE the pool; at exactly `SHRINK`
+    # chances it must sit halfway between the seat and the pool; with a
+    # thousand the seat must have its own figure back; and it must never
+    # leave the interval between the two, because a shrunk rate outside it is
+    # not a compromise but a third number nobody asked for.
+    bad = []
+    if shrunk(0, 0, 0.4) != 0.4:
+        bad.append("with nothing seen it is not the pool rate")
+    if abs(shrunk(SHRINK, SHRINK, 0.2) - 0.6) > 1e-12:
+        bad.append("at SHRINK chances it does not sit halfway")
+    if abs(shrunk(1000, 1000, 0.0) - 1.0) > 0.01:
+        bad.append("a thousand observations are still being overruled")
+    if shrunk(1, 2, None) is not None:
+        bad.append("it invented a pool to shrink towards")
+    for k, n, pool in ((0, 1, 0.5), (3, 3, 0.1), (1, 7, 0.9), (0, 0, 0.3)):
+        s = shrunk(k, n, pool)
+        raw = k / n if n else pool
+        if not (min(raw, pool) - 1e-12 <= s <= max(raw, pool) + 1e-12):
+            bad.append(f"shrunk({k},{n},{pool})={s} is outside [raw, pool]")
+    print(f"shrinking towards the pool    "
+          f"{'4 of 4 properties' if not bad else 'FAIL'}")
+    for b in bad:
+        print(f"    {b}")
+    fails += bad
+
+    # And on real rows, where both numbers come out of the engine rather than
+    # out of a literal -- an Ignition seat is the case the shrink exists for,
+    # since the identity dies with the sitting and the samples are tiny.
+    pool_w = "site='ignition' AND fmt='RING' AND is_hero=0"
+    _pn, _pk, pp, _l, _h = rate(con, "vpip", pool_w)
+    seats = rates_by_player(con, "vpip", pool_w)
+    outside = sum(1 for _s, (n, k) in seats.items() if n and not
+                  (min(k / n, pp) - 1e-9 <= shrunk(k, n, pp) <= max(k / n, pp) + 1e-9))
+    print(f"every seat's shrunk VPIP between seat and pool  "
+          f"{len(seats) - outside}/{len(seats)}")
+    if outside:
+        fails.append("a shrunk rate left the interval between the seat and the pool")
 
     # A saved stat must be indistinguishable from a shipped one, and the way
     # it would fail to be is silent: `load_custom` mutating a copy of the

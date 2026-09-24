@@ -56,7 +56,7 @@ import stats
 import stats as stats_module
 import strength
 from stats import (BY_KEY, STATS, detectable, difference, fmt, holm,
-                   rate, rates as stat_rates, rates_by, wilson)
+                   rate, rates as stat_rates, rates_by, shrunk, wilson)
 
 DB = Path(__file__).parent / "hands.db"
 
@@ -180,7 +180,7 @@ WEEKDAY_NAME = {v: k for k, v in WEEKDAYS.items()}
 
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
-           "--preset", "--export", "--sort",
+           "--preset", "--export", "--sort", "--alternative",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -937,19 +937,62 @@ def why_empty(con, parts):
             "nothing -- drop one at a time to find the pair that does")
 
 
-def stats_of(con, where):
+def pool_beside(con, argv):
+    """
+    The pool one named player's rates can be read against, or nothing.
+
+    Shrinking a rate towards a pool only means anything when the pool is the
+    SAME SITUATION with different people in it, so this is the caller's own
+    filter with the player taken out and everything else left exactly as it
+    was: a river 3-bet rate is compared with the pool's river 3-bet rate and
+    never with its overall one. Who counts as the pool comes from
+    `players.pool_for`, which is the one place that decides -- their own site
+    and stakes, hero out, and themselves out, because a prior that holds its
+    own evidence is not a prior.
+
+    Refused rather than guessed unless the filter names exactly one player
+    who sat on exactly one site. Two sites are two pools, and averaging two
+    of them into a number that describes neither is the mistake `fmt='RING'`
+    has already caused here once.
+    """
+    named = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--player"]
+    if len(named) != 1:
+        return None, ()
+    who = named[0]
+    sites = [r[0] for r in con.execute(
+        "SELECT DISTINCT site FROM decisions WHERE player = ?", (who,))]
+    if len(sites) != 1:
+        return None, ()
+    pool, params = players.pool_for(con, who, sites[0])
+    if not pool:
+        return None, ()
+    # Their own conditions stay; the clause naming them goes. `--vs-player`
+    # and `--players` survive this on purpose -- neither says whose rates
+    # these are, and dropping them would change the situation rather than
+    # the people in it.
+    rest = [sql for said, sql in build(argv)[2] if not said.startswith("player ")]
+    return " AND ".join(rest + [f"({pool})"]), params
+
+
+def stats_of(con, where, pool_where=None, pool_params=()):
     """
     Every stat that has anything to say under this filter, as data.
 
     Separated from the printing because a second front end wants the same
     numbers in a different shape, and two front ends computing them their own
     way is how they come to disagree.
+
+    With `pool_where` each row also carries what the pool does in the same
+    spot and the rate shrunk towards it. That is for the case the numbers
+    here mislead most: a filter naming one player turns thirty rates into
+    thirty small samples at once, and a 0% on two chances is read as a never.
     """
     n_dec = con.execute(
         f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
     # All of them in one pass. Asking each stat its own question meant
     # thirty scans of the same rows to fill one table.
     counted = stat_rates(con, where)
+    pooled = stat_rates(con, pool_where, pool_params) if pool_where else {}
     rows = []
     for s in STATS:
         # A spots-sourced stat cannot see a decision's conditions -- there is
@@ -961,9 +1004,20 @@ def stats_of(con, where):
         if not n:
             continue
         p, lo, hi = wilson(k, n)
-        rows.append({"key": s.key, "label": s.label, "group": s.group,
-                     "note": s.note, "n": n, "k": k, "pct": 100 * p,
-                     "band": 100 * (hi - lo) / 2})
+        row = {"key": s.key, "label": s.label, "group": s.group,
+               "note": s.note, "n": n, "k": k, "pct": 100 * p,
+               "band": 100 * (hi - lo) / 2}
+        if pool_where:
+            pn, pk = pooled.get(s.key, (0, 0))
+            # No pool for this stat is not a pool of zero. A stat the pool
+            # never had the chance to take gets no comparison at all, and
+            # printing 0.0% there would invent a population that folds
+            # everything.
+            pool = pk / pn if pn else None
+            row["pool"] = None if pool is None else 100 * pool
+            row["pool_n"] = pn
+            row["shrunk"] = None if pool is None else 100 * shrunk(k, n, pool)
+        rows.append(row)
     return n_dec, rows
 
 
@@ -1201,7 +1255,10 @@ def combo_at(i, j):
     return (hi + lo + "s") if i < j else (lo + hi + "o")
 
 
-def chart_of(con, where, stat=None, min_n=3):
+CHART_ALTERNATIVES = ("call", "raise", "fold", "check", "bet")
+
+
+def chart_of(con, where, stat=None, min_n=3, alternative=None):
     """
     The preflop chart: what the range that reached this spot is made of.
 
@@ -1230,6 +1287,26 @@ def chart_of(con, where, stat=None, min_n=3):
     drawn from a quarter of a range is the most convincing wrong picture
     this program can produce.
     """
+    other = None
+    if alternative:
+        if alternative not in CHART_ALTERNATIVES:
+            raise ValueError("Alternative action must be one of: "
+                             + ", ".join(CHART_ALTERNATIVES))
+        if isinstance(stat, str):
+            stat = BY_KEY.get(stat)
+        if stat is None or stat.source != "d" or stat.per != "decision":
+            raise ValueError("Choose a decision-based plain stat, such as "
+                             "threebet or rfi, before adding an alternative action.")
+        other = stats.Stat("_alternative", alternative, stat.chance,
+                           stats.ACTIONS[alternative][0])
+        overlap = stats.Stat("_overlap", "overlap", stat.chance,
+                             f"({stat.action}) AND ({other.action})")
+        if stats.rate(con, overlap, where)[1]:
+            raise ValueError("The base and alternative actions overlap in this "
+                             "spot. Choose mutually exclusive actions.")
+        # Visibility belongs to the shared chance too, not to unrelated
+        # streets that happen to pass the surrounding report filter.
+        where = f"({where}) AND ({stat.chance})"
     total = con.execute(
         f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
         f"FROM decisions WHERE {where})").fetchone()[0]
@@ -1245,23 +1322,43 @@ def chart_of(con, where, stat=None, min_n=3):
         cells = {c: (n, None) for c, n in rows}
     else:
         stat = BY_KEY[stat] if isinstance(stat, str) else stat
-        cells = {c: (n, k) for c, (n, k)
-                 in rates_by(con, stat, "combo", where).items() if c}
+        grouped = rates_by(con, stat, "combo", where, skip_null=other is None)
+        cells = {c: (n, k) for c, (n, k) in grouped.items() if c}
 
-    return {"mode": "composition" if stat is None else "rate",
+    result = {"mode": "composition" if stat is None else "rate",
             "stat": None if stat is None else stat.label,
             "cells": cells, "seen": seen, "total": total, "min_n": min_n,
             "peak": max((n for n, _k in cells.values()), default=0)}
+    if other is not None:
+        alternatives = rates_by(con, other, "combo", where, skip_null=False)
+        result.update(mode="comparison", alternative=alternative,
+                      alternative_cells={c: nk for c, nk in alternatives.items() if c},
+                      totals=(sum(n for n, _k in grouped.values()),
+                              sum(k for _n, k in grouped.values()),
+                              sum(k for _n, k in alternatives.values())))
+    return result
 
 
-def show_chart(con, where, label, stat=None, parts=(), min_n=3):
+def comparison_caption(chart):
+    """Both action totals include unseen cards; the coloured grid cannot."""
+    n, first, second = chart["totals"]
+    def shown(k):
+        return "--" if not n else f"{100 * k / n:.1f}%"
+    return (f"{chart['stat']}: {shown(first)} ({first:,}/{n:,}); "
+            f"{chart['alternative']}: {shown(second)} ({second:,}/{n:,}) "
+            "of all matching opportunities, including unseen cards.")
+
+
+def show_chart(con, where, label, stat=None, parts=(), min_n=3, alternative=None):
     """The chart, as 169 numbers, in the shape it is always drawn in."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
-    g = chart_of(con, where, stat, min_n)
+    g = chart_of(con, where, stat, min_n, alternative=alternative)
     if not g["total"]:
         print("  " + why_empty(con, parts))
         return
+    if g["mode"] == "comparison":
+        print(comparison_caption(g))
     if not g["seen"]:
         print(f"  {g['total']:,} player-hands match and none of them showed "
               f"cards, so there is no range to draw.")
@@ -1273,24 +1370,32 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3):
     share = 100.0 * g["seen"] / g["total"]
     print(f"{g['seen']:,} of {g['total']:,} player-hands showed cards "
           f"({share:.1f}%)")
-    if g["mode"] == "composition":
+    if g["mode"] == "comparison":
+        print(f"each cell is {g['stat']} / {g['alternative']}, in percent "
+              "of that combo's shared opportunities, followed by n\n")
+    elif g["mode"] == "composition":
         print("each cell is that combo's share of the range, in percent\n")
     else:
         print(f"each cell is {g['stat']}, in percent, for that combo\n")
 
-    print("      " + " ".join(f"{r:>4}" for r in CHART_RANKS))
+    width = 13 if g["mode"] == "comparison" else 4
+    print("      " + " ".join(f"{r:>{width}}" for r in CHART_RANKS))
     for i, hi in enumerate(CHART_RANKS):
         row = []
         for j in range(len(CHART_RANKS)):
             n, k = g["cells"].get(combo_at(i, j), (0, None))
-            if g["mode"] == "composition":
+            if g["mode"] == "comparison":
+                other_k = g["alternative_cells"].get(combo_at(i, j), (0, 0))[1]
+                pair = f". n={n}" if not n or n < min_n else f"{100 * k / n:.0f}/{100 * other_k / n:.0f} n={n}"
+                row.append(f"{pair:>13}")
+            elif g["mode"] == "composition":
                 # No minimum here, and deliberately: a combo dealt twice
                 # really is 0.1% of the range. The minimum belongs to a
                 # RATE, where two hands cannot say how often anything is
                 # done.
                 row.append("   ." if not n else f"{100.0 * n / g['seen']:4.1f}")
             else:
-                row.append("   ." if n < min_n else f"{100.0 * k / n:4.0f}")
+                row.append("   ." if not n or n < min_n else f"{100.0 * k / n:4.0f}")
         print(f"  {hi:>2}  " + " ".join(row))
 
     if g["mode"] == "composition":
@@ -1587,23 +1692,37 @@ def vs_note(where, groups):
     return "\n\n".join(out)
 
 
-def show_stats(con, where, label, parts=(), only=()):
+def show_stats(con, where, label, parts=(), only=(), argv=()):
     """Every stat that has anything to say under this filter."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
-    n_dec, rows = stats_of(con, where)
+    # A filter naming one player turns every row into a small sample at once,
+    # which is the one case these numbers mislead rather than merely wobble.
+    pool_where, pool_params = pool_beside(con, list(argv))
+    n_dec, rows = stats_of(con, where, pool_where, pool_params)
     print(f"{n_dec} decisions match\n")
     if not n_dec:
         print("  " + why_empty(con, parts))
         return
+    if pool_where:
+        print(f"  {'':49} {'pool':>7} {'w/ pool':>8}")
     last = None
     for r in rows:
         if r["group"] != last:
             print(f"  [{r['group']}]")
             last = r["group"]
         thin = " ?" if r["n"] < 30 else "  "
-        print(f"  {r['label']:22} {r['pct']:6.1f}% "
-              f"{'+/-%.0f' % r['band']:>7}{thin} n={r['n']:<6d}")
+        line = (f"  {r['label']:22} {r['pct']:6.1f}% "
+                f"{'+/-%.0f' % r['band']:>7}{thin} n={r['n']:<6d}")
+        if pool_where:
+            # Written with %-formatting rather than a nested f-string: the
+            # workflow builds on 3.11 and reusing the outer quote inside an
+            # f-string is 3.12 and later. A build that only fails on the
+            # release runner is the worst place to find that out.
+            ps = "-" if r.get("pool") is None else "%.1f%%" % r["pool"]
+            ss = "-" if r.get("shrunk") is None else "%.1f%%" % r["shrunk"]
+            line += f" {ps:>7} {ss:>8}"
+        print(line)
     if not rows:
         print("  no stat has a chance to occur inside this filter.")
         print("  (asking for a preflop stat inside --street flop does this)")
@@ -2312,6 +2431,8 @@ def usage():
     print(f"    {'--hand':14} replay one hand by id, ignoring every filter")
     print(f"    {'--chart':14} the 13x13 chart: what the range holds, or "
           f"one stat per combo with --show")
+    print("    --alternative ACTION  compare that stat with call/raise/fold/check/bet "
+          "on its same opportunities (--chart --show KEY)")
     print("\n  saving the filter as a stat of its own:")
     print(f"    {'--define':14} a key to save this filter under, so it can "
           f"be a column")
@@ -2593,6 +2714,55 @@ def check(db_path=DB):
         for name, why in UNREADABLE:
             print(f"    {name}: {why}")
 
+    # The pool a named player is read against. Both directions are failures
+    # and only one of them is loud: refusing when there is a pool loses a
+    # column, while NOT refusing when there is no well-defined pool prints a
+    # number against a population nobody chose -- and it prints it in the
+    # same typeface as a real one.
+    # Ring, and NOT NULL: Ignition's Zone and MTT rows have no identity at
+    # all, so the busiest "player" on that site is NULL by a wide margin and
+    # a check that picked it would be testing the absence of a player.
+    who = con.execute("SELECT player FROM decisions WHERE site='ignition' "
+                      "AND fmt='RING' AND player IS NOT NULL "
+                      "GROUP BY player ORDER BY COUNT(*) DESC LIMIT 1"
+                      ).fetchone()[0]
+    cases = [
+        ("no player named", [], False),
+        ("one player", ["--player", who], True),
+        ("two players named", ["--player", who, "--player", "somebody"], False),
+        ("a player and a street", ["--player", who, "--street", "flop"], True),
+    ]
+    got = []
+    for what, argv, want in cases:
+        pw, _pp = pool_beside(con, argv)
+        got.append((what, bool(pw) == want))
+    print(f"a named player gets a pool, others do not  "
+          f"{sum(1 for _w, ok in got if ok)}/{len(got)}")
+    for what, ok in got:
+        if not ok:
+            fails.append(f"pool_beside was wrong about {what!r}")
+
+    # And the pool has to be the same SITUATION with other people in it. A
+    # street dropped on the way through would compare a flop rate with an
+    # everywhere rate, which is the misuse the whole column is guarded
+    # against; the player's own rows surviving would make it their own mirror.
+    pw, pp = pool_beside(con, ["--player", who, "--street", "flop"])
+    mine = con.execute(f"SELECT COUNT(*) FROM decisions WHERE ({pw}) "
+                       f"AND player = ?", tuple(pp) + (who,)).fetchone()[0]
+    others = con.execute(f"SELECT COUNT(DISTINCT player) FROM decisions "
+                         f"WHERE {pw}", pp).fetchone()[0]
+    kept = "street" in pw and "flop" in pw
+    print(f"the pool keeps the spot and drops the player  "
+          f"street kept {'yes' if kept else 'NO'}, "
+          f"their own rows {mine}, other players {others}")
+    if mine:
+        fails.append("a player's own rows are in the pool they are read against")
+    if not kept:
+        fails.append("the pool dropped the rest of the filter, so it is a "
+                     "different situation")
+    if others < 2:
+        fails.append("the pool has nobody else in it")
+
     con.close()
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
@@ -2785,8 +2955,12 @@ def main(argv):
         # `--show` names the columns of a report, and here it names the one
         # stat the chart is of. Without it the chart is the range itself,
         # which is the question a chart is usually asked.
-        show_chart(con, where, label, columns[0] if opt("--show") else None,
-                  _parts)
+        try:
+            show_chart(con, where, label, columns[0] if opt("--show") else None,
+                       _parts, min_n=int(opt("--min", "3")),
+                       alternative=opt("--alternative"))
+        except ValueError as error:
+            raise SystemExit(str(error))
     elif mode == "--results":
         if dim:
             show_results_by(con, where, label, dim)
@@ -2796,7 +2970,7 @@ def main(argv):
         show_report(con, where, label, dim, columns, min_n)
     else:
         show_stats(con, where, label, _parts,
-                   only=columns if opt("--show") else ())
+                   only=columns if opt("--show") else (), argv=argv)
     con.close()
     return 0
 

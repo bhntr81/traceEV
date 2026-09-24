@@ -8,6 +8,135 @@ Newest first.
 
 ---
 
+## A rate with the pool behind it — 23 Sep 2026
+
+### Fixed -- the player profile printed percentages with no denominators
+
+`python players.py NAME` read its rates off the columns of the `players`
+table, which carries one rate per stat and a single `hands` count. So a 3-bet
+figure standing on twelve chances printed identically to one standing on
+twelve hundred, and the first rule in this repository is that no percentage
+ships without its n. The profile comes out of the engine now, which counts
+the chance as well as the action, and every row carries its own n and its
+Wilson interval.
+
+### Added -- `stats.shrunk`, and the pool behind every rate on that view
+
+A small sample does not merely have a wide interval, it has a *misleading
+point estimate*: one seat in the database has folded to a 3-bet 0 times out
+of 1, and the old view printed "0.0%". The profile now shows the pool's rate
+in the same games and the seat's rate shrunk towards it -- 47% for that row,
+which is what anybody would actually assume.
+
+The pool is the player's own games minus the player: same site, same stakes,
+hero out, and their own rows removed, because a prior containing the evidence
+it is meant to be independent of is not a prior. `players.py --check` holds
+it to both -- that the player is not inside their own pool, and that the pool
+never reaches a stake they never played.
+
+`stats.SHRINK` is 10 pseudo-observations and it was measured, not chosen. On
+Ignition ring at bb=0.1, scoring only on decisions the estimate had not seen,
+a fixed ten matched a value tuned per stat to within 0.04% Brier and beat it
+by 0.6% on the seats seen fewer than ten times -- the per-stat value being
+fitted noise, picking 10 on one half of the seats and 40 or 80 on the other
+for the same stat. Against the raw rate it is 9.1% better overall and 24.2%
+better below ten observations, across eight stats, losing on none.
+
+Both columns are shown rather than one replaced: the interval belongs to the
+raw count, and a reader who wants to know what was actually observed should
+not have to infer it back out.
+
+### Added -- the same two columns on the stats table, and in the window
+
+`query.py --player NAME` and the window's player box now carry `pool` and
+`w/ pool` across the whole table. Naming one player turns thirty rates into
+thirty small samples in one go: one seat here shows `4bet 100.0%` on a single
+chance, and `fold to 3bet 0.0%` on another.
+
+The pool is that filter with the player taken out and everything else left
+exactly as it was, so `--player NAME --street flop` is compared with the
+pool's flop numbers and never with its overall ones. `query.check` holds it
+to that -- the street survives, the player's own rows do not, and there are
+other people in it.
+
+The columns are absent rather than blank for every other filter. No player,
+two players, or a player who sat on two sites all get nothing, because there
+is then no single population that is "the same spot with other people in
+it". Expression stats get nothing either: a formula can be a count, a ratio
+or a profit, and shrinking one towards a rate would change its claim.
+
+---
+
+## The packaged program, three runs behind — 23 Sep 2026
+
+### Rebuilt -- the shortcut launched a build from 17 Sep
+
+`dist/TraceEV.exe` predated the expression language, the formula box in
+SAVE AS STAT and the two-action range chart: three runs of work that the
+program on the desktop had never contained. The same staleness had already
+cost a day on 15 Sep, when the stats "seemed off" in a build that predated
+the fix for them. Rebuilt from the current source, and verified by running
+its own check inside the executable rather than by the build exiting zero.
+
+The interpreter matters here and was not free to choose. This machine's
+Python 3.11 has no tkinter, and PyInstaller packages the runtime it is run
+on -- so building with it would have produced a GUI program with no Tk,
+which is a window that never appears and a process that says nothing about
+why. The build is Python 3.14.7 with Tk 9.0, the only interpreter on this
+machine that has it, and a version ahead of the 3.11 the workflow uses.
+
+### Fixed -- the assistant's key was written where Windows deletes it
+
+`ask.SETTINGS` was the last of the user's four files still measured from
+`__file__`. Frozen, that is PyInstaller's extraction directory, so a key
+typed into the settings box went somewhere that no longer existed by the
+next launch and the panel asked for it again every time. `hands.db`,
+`stats.json` and `filters.json` had each already been moved beside the
+executable, the last two after being found exactly this way. Only `claude`
+ever survived it, and only by the Desktop file it kept from before there
+was a settings file at all.
+
+`app.check` now holds all four to sitting beside the program, so the fourth
+occurrence is a failed check rather than a setting that quietly does not
+save. The assertion can only discriminate in a packaged build -- from
+source the code and the executable are the same directory -- so
+`python build.py --check` after a build is where it bites. The workflow
+runs that check *before* it builds, so CI does not yet exercise it.
+
+---
+
+## Two-action range charts — 19 Sep 2026
+
+The chart can now show a base stat and an alternative action in two colours,
+on the same opportunities: 3-bet versus call facing an open, for example.
+The desktop has an alternative-action selector; the command line takes
+`--chart --show threebet --alternative call`. The assistant knows the option,
+and opening its command in the window preserves both choices.
+
+Totals include unseen hole cards; the grid explicitly reports its known-card
+coverage. Hovering shows each combo's counts and sample size. All-in calls
+remain calls, all-in raises remain raises, and overlapping actions are refused.
+Existing range-composition and single-stat charts remain available. Ten
+known-count regressions cover the engine, command output, canvas, and handoff.
+
+---
+
+## Expression stats in the desktop window — 19 Sep 2026
+
+SAVE AS STAT now offers Plain stat and Expression modes. Formulas use the
+existing engine and saved-stat file, with validation before saving and an
+explicit undefined result when a formula cannot produce a value. Validation
+runs on the existing query worker so the window keeps drawing; queued saves
+are never discarded when view requests supersede one another.
+
+The stats tab has an expression selector that evaluates one formula under
+the current filters, with its sample count and no assumed percentage or
+confidence interval. Saving or forgetting refreshes the choices and clears
+cached reports. The saved-stat list includes expressions as well as plain
+stats. Desktop regressions use a temporary sample database and saved-stat file.
+
+---
+
 ## Expression stats, in Hand2Note's own language
 
 ### Added -- `stats.Expression`, `--define-expr`, six built-ins

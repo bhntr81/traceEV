@@ -335,6 +335,28 @@ the spot — H2N's range diagram. With `--show` each cell is that stat for
 that combo: `--show rfi` on the button is an opening range, read off the
 hands themselves rather than assumed.
 
+To see two actions in the same spot, add an alternative action:
+
+```bash
+python query.py --pool --site ignition --chart --show threebet --alternative call
+python query.py --pool --site ignition --pos BTN --chart --show rfi --alternative call
+```
+
+In the window, choose **3bet** in **chart of** and **call** in **alternative
+action**. Green bars show the base stat and blue bars the alternative. Both
+use the base stat's opportunities; grey is the remaining actions. Hover over
+a combo for its counts and sample size. The command-line grid prints both
+percentages and `n` in each cell. Cells below three opportunities are muted;
+`--min N` changes that threshold on the command line.
+
+Totals include matching opportunities with unknown hole cards, while the
+grid can only show known cards. The caption states both totals and the
+fraction of player-hands whose cards are known. The alternative does not
+change the base stat's definition. Comparisons require a decision-based
+plain stat, such as `threebet` or `rfi`; overlapping actions are refused.
+Use `--show` to name the base stat, rather than `--quick`, which selects
+actions already taken and would narrow away the other opportunities.
+
 Aces top left, suited above the diagonal, offsuit below. In the window it is
 the **chart** tab, with a *chart of* box beside it to switch between the two.
 
@@ -402,6 +424,19 @@ query per term, and with `--by` once per row. `stats.py --check` proves
 the language agrees with the engine: WWSF written as a formula against
 the built-in stat, to the point. Nothing but those ten functions can be
 called from a formula; a formula is data from a file.
+
+In the desktop window, open **Filters → SAVE AS STAT → Expression**.
+Give the formula a name and optional display label, enter the formula, and
+press **SAVE**. Validation runs on the query worker; the dialog reports the
+value over all player-hands and the smallest opportunity sample. An undefined
+result is shown as such, rather than as zero. The screen filter is not part
+of the saved formula.
+
+Choose a formula from the **expression** box above the **stats** tab to
+evaluate it under the current filters. Only the selected formula is evaluated.
+Its value is shown without an assumed percent sign or confidence interval:
+the formula itself determines whether it is a rate, count, ratio or profit.
+Saved formulas also appear in the dialog's **Saved / FORGET** list.
 
 ### Saving the filter as a report
 
@@ -893,6 +928,59 @@ them cover 63%. Use these unless the matchup really has to be heads up.
 
 Only ACR names people. An Ignition ring identity lasts as long as somebody
 stays in the seat, and Zone names nobody.
+
+#### One player in full, and the pool behind them
+
+`python players.py NAME` prints each rate with **its own n**, its interval,
+the pool's rate in the same games, and the rate shrunk towards that pool:
+
+```
+37663629:1:8   ignition   12 hands   FISH   (a seat, not a person ...)
+                            n     rate    95% interval    pool  w/ pool
+  VPIP                     12    83.3%      55.2-95.3%   31.9%    59.9%
+  3-bet                     6     0.0%       0.0-39.0%    6.6%     4.1%
+  fold to 3-bet             1     0.0%       0.0-79.3%   52.0%    47.3%
+```
+
+Read the last column, not the third, when `n` is small. That seat has folded
+to a 3-bet 0 times out of **1**, and "0.0%" is what a raw rate says about
+one observation — the interval beside it runs to 79%. With the pool behind
+it the same evidence reads 47%, which is what you would actually assume.
+
+The pool is that player's own games minus that player: the same site and the
+same stakes they were dealt into, hero excluded, and their own rows taken out
+so the thing they are compared against does not contain them. A 2NL seat is
+never shrunk towards a 5NL pool, and `fmt='RING'` matches two sites so the
+site is always named.
+
+The shrink is worth `stats.SHRINK` = **10** pseudo-observations, so a seat's
+own figure starts to outweigh the pool's from about ten chances on, and a
+player with hundreds barely moves — the 811-hand reg above shifts by a tenth
+of a point. Ten was measured rather than chosen; the reasoning and the
+numbers are beside the constant in `stats.py`, and Run 29 in `ROADMAP.md`.
+
+The same two columns appear on the **whole stats table** whenever a filter
+names one player — `python query.py --player NAME`, or the player box in the
+window's filter dialog. There the pool is that filter with the player taken
+out and everything else left alone, so a flop rate is compared with the
+pool's flop rate:
+
+```bash
+python query.py --player NAME                 every stat, with the pool beside it
+python query.py --player NAME --street flop   the pool's flop numbers, not its overall ones
+```
+
+That is the case these numbers mislead worst: naming one player turns thirty
+rates into thirty small samples at once, and several of them come back 0% or
+100% off one chance. One seat in the database shows `4bet 100.0%` on n=1.
+
+The columns are **absent, not blank**, for any other filter. Two players, no
+player, or a player who sat on two sites all get no pool, because there is
+then no single population that is "the same spot with other people in it",
+and a column that guessed one would print it in the same typeface as a real
+number. Expression stats never get them either: a formula can be a count, a
+ratio or a profit, and shrinking one towards a rate would change what it
+claims.
 
 ---
 

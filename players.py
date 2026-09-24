@@ -42,6 +42,7 @@ import re
 from pathlib import Path
 
 import sites
+import stats
 from stats import wilson
 
 DB = Path(__file__).parent / "hands.db"
@@ -470,6 +471,45 @@ def stamp(con):
     con.execute("ANALYZE")
 
 
+# The profile, in reading order. These were printed from the columns on the
+# `players` table until 23 Sep 2026, which meant they were printed WITHOUT
+# their denominators: that table carries one rate per stat and a single
+# `hands` count, so a 3-bet figure standing on twelve chances to 3-bet looked
+# exactly like one standing on twelve hundred. "No percentage without its n"
+# is this project's first reporting rule and this view was breaking it. They
+# come from the engine now, which counts the chance as well as the action.
+# The keys are the registry's, not the `players` table's column names -- the
+# table calls one of them `fold_to_threebet` and the registry calls it
+# `fold_to_3bet`, and reading the profile out of the engine is what made the
+# difference matter.
+PROFILE = [("VPIP", "vpip"), ("PFR", "pfr"), ("3-bet", "threebet"),
+           ("fold to 3-bet", "fold_to_3bet"), ("fold to steal", "fold_to_steal"),
+           ("won when saw flop", "wwsf"), ("went to showdown", "wtsd"),
+           ("won at showdown", "wsd")]
+
+
+def pool_for(con, player, site):
+    """
+    The pool a player's rates are read against: their own games, minus them.
+
+    Two things have to be right or the comparison is worse than none. The
+    player's own rows come OUT, because a prior that contains the evidence it
+    is meant to be independent of is not a prior. And the games have to match
+    -- `fmt='RING'` matches two sites and a 2NL pool is not a 5NL one -- so
+    this is pinned to the exact (fmt, bb) pairs the player was actually dealt
+    into rather than to the site as a whole.
+    """
+    games = con.execute("SELECT DISTINCT fmt, bb FROM decisions "
+                        "WHERE player=? AND site=?", (player, site)).fetchall()
+    if not games:
+        return None, ()
+    ors = " OR ".join("(fmt=? AND bb=?)" for _g in games)
+    params = [site, player]
+    for g in games:
+        params += [g[0], g[1]]
+    return f"site=? AND is_hero=0 AND player<>? AND ({ors})", tuple(params)
+
+
 def show(name, db_path=DB):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -482,13 +522,52 @@ def show(name, db_path=DB):
                                         "identity dies with the session)")
         print(f"\n{r['player']}   {r['site']}   {r['hands']:,} hands   "
               f"{r['class'].upper()}{note}")
-        for label, key, unit in (
-                ("VPIP", "vpip", "%"), ("PFR", "pfr", "%"),
-                ("3-bet", "threebet", "%"), ("fold to 3-bet", "fold_to_threebet", "%"),
-                ("won when saw flop", "wwsf", "%"), ("went to showdown", "wtsd", "%"),
-                ("won at showdown", "wsd", "%"), ("bb/100", "bb100", "")):
-            v = r[key]
-            print(f"  {label:20} {'-' if v is None else f'{v:6.1f}{unit}'}")
+        profile(con, r["player"], r["site"], r["bb100"])
+
+
+def profile(con, player, site, bb100=None):
+    """
+    One player's rates, each with its n, its interval, and the pool behind it.
+
+    The last column is the rate shrunk towards the pool by `stats.SHRINK`
+    pseudo-observations, and it is here because the column beside it lies
+    most exactly when it is read most eagerly: a 3-bet of 100% on two chances
+    is printed as 100%, and believed. Shrinking it is 24% better by Brier
+    below ten observations than printing the raw figure, measured on decisions
+    the estimate had not seen. Both are shown rather than one replaced,
+    because the raw count is what the interval belongs to.
+    """
+    mine, mp = "player=? AND site=?", (player, site)
+    pool_where, pool_params = pool_for(con, player, site)
+
+    # One pass for the decisions-sourced stats rather than one each: the
+    # lesson `rates` exists for. The showdown stats live in `spots` and
+    # cannot join that pass, so they are asked singly.
+    want = [stats.BY_KEY[k] for _l, k in PROFILE]
+    mine_d = stats.rates(con, mine, mp, want)
+    pool_d = stats.rates(con, pool_where, pool_params, want) if pool_where else {}
+
+    print(f"  {'':20} {'n':>6} {'rate':>8} {'95% interval':>15} "
+          f"{'pool':>7} {'w/ pool':>8}")
+    for label, key in PROFILE:
+        if key in mine_d:
+            n, k = mine_d[key]
+            pool = (lambda t: t[1] / t[0] if t[0] else None)(pool_d.get(key, (0, 0)))
+        else:
+            n, k, _p, _lo, _hi = stats.rate(con, key, mine, mp)
+            pool = None
+            if pool_where:
+                pn, pk, pp, _l, _h = stats.rate(con, key, pool_where, pool_params)
+                pool = pp
+        p, lo, hi = wilson(k, n)
+        s = stats.shrunk(k, n, pool)
+        iv = "-" if p is None else f"{lo * 100:4.1f}-{hi * 100:4.1f}%"
+        print(f"  {label:20} {n:>6} "
+              f"{'       -' if p is None else f'{p * 100:7.1f}%'} {iv:>15} "
+              f"{'      -' if pool is None else f'{pool * 100:6.1f}%'} "
+              f"{'       -' if s is None else f'{s * 100:7.1f}%'}")
+    if bb100 is not None:
+        print(f"  {'bb/100':20} {'':>6} {bb100:7.1f}")
 
 
 def leaderboard(db_path=DB, klass=None, min_hands=100):
@@ -706,6 +785,37 @@ def check(db_path=DB):
     print(f"the cohort says what it is           {said!r}")
     if "hands" not in said or "acr" not in said:
         fails.append(f"describe_cohort left the filter out of {said!r}")
+
+    # The pool a profile reads against has two ways to be quietly wrong, and
+    # both return a number. If the player is left in it, the prior contains
+    # the evidence it is supposed to be independent of -- harmless on a big
+    # pool and not on a small one, and it is exactly the seats with nothing
+    # to borrow from whose pools are smallest. If it is not pinned to their
+    # own stake, a 2NL seat is shrunk towards a 5NL pool, which `fmt='RING'`
+    # matching two sites already taught this project once.
+    seat = con.execute("SELECT player, site FROM players WHERE site='ignition' "
+                       "ORDER BY hands DESC LIMIT 1").fetchone()
+    if seat:
+        who, site = seat[0], seat[1]
+        where, params = pool_for(con, who, site)
+        in_pool = stats.rates_by_player(con, "vpip", where, params)
+        mine = con.execute("SELECT DISTINCT fmt, bb FROM decisions "
+                           "WHERE player=? AND site=?", (who, site)).fetchall()
+        theirs = con.execute(f"SELECT COUNT(DISTINCT bb) FROM decisions "
+                             f"WHERE {where}", params).fetchone()[0]
+        print(f"a profile's pool leaves the player out  "
+              f"{'yes' if who not in in_pool else 'NO -- they are in it'}")
+        print(f"a profile's pool is their own stakes    "
+              f"{theirs} of {len(set(m[1] for m in mine))} asked, "
+              f"{len(in_pool)} others in it")
+        if who in in_pool:
+            fails.append("a player is inside the pool their own rates are "
+                         "shrunk towards")
+        if theirs > len(set(m[1] for m in mine)):
+            fails.append("a profile's pool reaches stakes the player never "
+                         "played")
+        if not in_pool:
+            fails.append("a profile's pool is empty, so nothing is borrowed")
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
