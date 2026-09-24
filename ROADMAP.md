@@ -994,6 +994,64 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 32 — an audit for wrong numbers, and the hands the board makes (24 Sep 2026)
+
+**Goal:** find figures that are wrong and plausible, which is the failure this
+project is built against and the one its checks are least able to see.
+
+**Method, and its failure.** Five agents over the derivation, the engine, the
+filters, the money and the newest code, each able to run queries against the
+live database, with every finding put to two independent refuters. **Seventy
+of seventy-three agents died on a usage limit.** Two finders never ran and
+not one refuter did, and the script counted "no refuter returned" as "not
+refuted" -- so thirty-four findings arrived labelled confirmed with nothing
+having checked them. That is a fault in how the run was written, not a
+result. Everything below was reproduced by hand before anything was changed,
+and the rest are still leads.
+
+**Four real, of the eight examined.**
+
+`build()` returned parts that did not rejoin into its own clause. `--board
+mono,paired` appended two SQL parts under one description, so the pairs it
+returns were silently short. The WHERE stayed right, which is why 136 filter
+checks never saw it, but `pool_beside` rebuilds a filter FROM those pairs --
+a mono-and-paired flop would have been read against a pool of every mono
+flop, the exact misuse the pool PAF warns of. The check is the invariant now:
+rejoining the parts gives the clause back, 136 of 136.
+
+`rates_by` filed a per-hand stat under an arbitrary value of the dimension:
+the collapse to one row per (hand, seat) left the group expression bare in
+its SELECT. VPIP by facing printed a 4-bet rate of 78.3% on 506 player-hands
+where it is 38.9% on 1,058. Invisible, because each player-hand still landed
+in exactly one bucket and the denominators still added to the overall n.
+
+The range view stated two definitions of "a draw" five lines apart -- Run 31's
+own doing, the new sub-rows strict and the overlap row below still loose. 165
+and 1,053 about the same thing.
+
+**And the one that was worth the whole exercise.** `classify` guarded one pair
+against a hand the board makes and nothing above it, so two pair, trips, a
+straight, a flush, a boat and quads were credited to players holding no part
+of them -- 425 of 3,829 river hands called STRONG, including 30.6% of every
+`trips`. Seven `board X` categories now, all weak, decided by the ranks and
+suits that define the category rather than by which five cards `best5` chose,
+because on the flop all five are always in the hand.
+
+**The corroboration was not planned.** `strength.py --check` holds the labels
+to an independent test -- a better label must win more often at showdown --
+and it had reported **10 of 11 steps rising** for months. It reports **11 of
+11** now. The inversion was board trips winning 33.8% averaged into real
+trips winning 80.1%, dragging the row to 67.1% and below two pair. Nothing in
+the change was aimed at that test, which is the best evidence available that
+the new labels describe something real.
+
+**Result: PASS**, all 22 checks, 39 hands in `strength.KNOWN` including the
+negatives and the wheel.
+
+**Left undone:** 26 of the 34 leads are unexamined, and the two finders that
+never ran were money and the newest code. Re-running that audit is cheap now
+that the script's default is known to be wrong.
+
 ## Run 31 — the audit table, and the split it said was done (24 Sep 2026)
 
 **Goal:** none set beforehand. This began as housekeeping -- checking the

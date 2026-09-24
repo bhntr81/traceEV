@@ -180,6 +180,20 @@ Facts that stay true, and that have each been got wrong at least once:
 - **Nothing draws on the river.** `flush_draw` always knew; `straight_draw`
   did not, and a river range came back a third "straight draw" — drawing to
   a card that was never coming.
+- **A made hand has to be the player's own, and not only a pair.**
+  `pair_kind` has always called a pair entirely on the board `board pair`,
+  because otherwise every hand on a paired board has hit it. Nothing asked
+  the same question one category up until 24 Sep 2026, so `As Kd` on
+  `7h 7d 2c` was `board pair` and the SAME holding on `7h 7d 2c 2s` was
+  `two pair` and STRONG -- a hand every seat at the table held. On the river
+  that was 425 of 3,829 hands called strong, 30.6% of every `trips` among
+  them. `strength.board_made` now asks it of the ranks and suits that DEFINE
+  the category -- not of which five cards were picked, since on the flop all
+  five are always in the hand -- and the answer is a `board two pair`,
+  `board trips`, `board flush` and so on, all weak. The showdown ladder in
+  `strength.py --check` went from 10 of 11 steps rising to 11 of 11 when
+  they came out: the one inversion it had been reporting for months was
+  board hands diluting the real ones.
 - **A draw has to be the player's own.** Four hearts on the board is not a
   flush draw, it is a board everybody shares; a pair entirely on the board
   is `board pair` and not a pair the player holds. Every test in

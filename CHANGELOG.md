@@ -8,6 +8,43 @@ Newest first.
 
 ---
 
+## The hands the board makes are not the player's — 24 Sep 2026
+
+### Fixed -- two pair, trips, a straight, a flush, a boat and quads were credited to players holding none of them
+
+`pair_kind` has always called a pair entirely on the board `board pair`,
+because otherwise every hand on a paired board has hit it. One category up,
+nothing asked. So `As Kd` on `7h 7d 2c` was `board pair` and weak, and the
+**same holding** on `7h 7d 2c 2s` was `two pair` and STRONG -- a hand every
+seat at the table held.
+
+On the river that was 425 of 3,829 hands called strong: 30.6% of every
+`trips`, 14.0% of every `two pair`, and three of the six straight flushes.
+
+`strength.board_made` asks it of the ranks and suits that DEFINE the
+category, not of which five cards `best5` picked -- on the flop the hole and
+the board are five cards between them and all five are always in the hand,
+which is why the question has to be about the paired rank or the flush's
+suit, exactly as `pair_kind` asks it. A set is exempt by construction: it
+needs a pocket pair, so both cards are the player's.
+
+Seven new categories -- `board two pair`, `board trips`, `board straight`,
+`board flush`, `board boat`, `board quads`, `board straight flush` -- all
+weak, because a hand the board makes is not a hand that loses to a better
+one, it is a hand everybody holds. 496 decisions moved.
+
+**The project's own showdown ladder went from 10 of 11 steps rising to 11 of
+11.** That check has reported one inversion for months and it was this: board
+trips winning 33.8% were being averaged into real trips winning 80.1%, giving
+67.1% for the row and putting it below two pair. Nothing about the fix was
+aimed at that test.
+
+Found by an audit whose verification tier died on a usage limit, so it
+arrived as an unverified lead and was reproduced by hand before anything was
+changed. Eleven cases are in `strength.KNOWN` now, the negatives among them --
+the guard must not fire when the player pairs the second card, holds the
+third five, or completes the straight with a nine.
+
 ## Pair + a draw, the split Run 23 said it had made — 24 Sep 2026
 
 ### Added -- the third split of Hand2Note's postflop diagram

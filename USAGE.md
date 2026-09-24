@@ -821,6 +821,18 @@ The line between weak and strong is drawn under **middle pair**, and it is
 one list in `strength.WEAK` precisely so that disagreeing with it is a line
 changed rather than an argument.
 
+**A hand the board makes is not the player's.** A pair entirely on the board
+has always been `board pair`; since 24 Sep 2026 the same holds one category
+up, so you will see `board two pair`, `board trips`, `board straight`,
+`board flush`, `board boat`, `board quads` and `board straight flush`. All of
+them are weak -- not a hand that loses to a better one, a hand everybody at
+the table holds. `--made "board trips"` selects them, and `--made trips` no
+longer returns them.
+
+The test is the ranks and suits that make the category, not which five cards
+were picked: on a `7h 7d 2c 2s` board, `As Kd` is `board two pair` and
+`2s Kd` is `two pair`, because the second player made one of the pairs.
+
 Three rows are split further, because in each case one row was two different
 holdings: **top pair** by its kicker, **high card** by whether it is an ace,
 and every pair the player holds by whether it is also drawing.

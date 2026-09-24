@@ -65,7 +65,13 @@ GOOD = RANKS.index("T")
 # Strongest first, which is the order a range wants to be read down.
 ORDER = ("straight flush", "quads", "boat", "flush", "straight", "set",
          "trips", "two pair", "overpair", "top pair", "middle pair",
-         "weak pair", "under pair", "board pair", "high card")
+         "weak pair", "under pair",
+         # The hands the BOARD makes, which every seat at the table has and
+         # nobody can be ahead with. They sit down here with `board pair`,
+         # which has always been one of them, in the same order as above.
+         "board straight flush", "board quads", "board boat", "board flush",
+         "board straight", "board trips", "board two pair", "board pair",
+         "high card")
 
 # Which of those count as weak -- the one judgement in this module that is
 # opinion rather than cards. It is a single list for the reason Hand2Note
@@ -76,7 +82,12 @@ ORDER = ("straight flush", "quads", "boat", "flush", "straight", "set",
 # The line is drawn under middle pair, because a middle pair calls a river
 # bet and a bottom pair does not, and what the number is for is exactly how
 # much of a betting range is hands that cannot call.
-WEAK = ("high card", "board pair", "weak pair", "under pair")
+WEAK = ("high card", "board pair", "weak pair", "under pair",
+        # A hand the board makes is the weakest thing there is: it is not a
+        # hand that loses to a better one, it is a hand everybody holds, and
+        # the only way to win with it is for nobody to have anything else.
+        "board two pair", "board trips", "board straight", "board flush",
+        "board boat", "board quads", "board straight flush")
 
 # And where "strong" starts: top pair or better, which is the line the
 # user drew on 16 Sep 2026 on seeing a turn range called 58% "strong" that
@@ -222,6 +233,57 @@ def _kicker(rank, pair_rank, board_ranks):
     return "good" if rank >= GOOD else "weak"
 
 
+def board_made(shape, table):
+    """
+    Whether the board by itself holds the cards that make this hand.
+
+    `pair_kind` has always asked this of one pair -- a pair entirely on the
+    board is `board pair`, because otherwise every hand on a paired board has
+    hit it. Above one pair nothing asked, so `As Kd` on `7h 7d 2c` was
+    correctly `board pair` and the SAME holding on `7h 7d 2c 2s` was `two
+    pair` and STRONG: a hand every seat at the table had. On the river that
+    was 425 of 3,829 hands called strong, including 30.6% of every `trips`.
+
+    Asked of the ranks and suits that DEFINE the category, not of which five
+    cards were picked, because on the flop the hole and the board are five
+    cards between them and all five are always in the hand. That is the same
+    question `pair_kind` asks about the paired rank, one category up.
+    """
+    cat = shape[0]
+    ranks = [r for r, _s in table]
+    suits = {}
+    for _r, s in table:
+        suits[s] = suits.get(s, 0) + 1
+
+    if cat == 7:                                    # quads
+        return ranks.count(shape[1]) >= 4
+    if cat == 6:                                    # a boat
+        return ranks.count(shape[1]) >= 3 and ranks.count(shape[2]) >= 2
+    if cat == 3:                                    # trips
+        return ranks.count(shape[1]) >= 3
+    if cat == 2:                                    # two pair
+        return ranks.count(shape[1]) >= 2 and ranks.count(shape[2]) >= 2
+    if cat == 5:                                    # a flush
+        # The five ranks the flush is made of, all on the board in its suit.
+        # A player holding a higher card of that suit has their own flush,
+        # and `best5` will have picked it, so those five will not all be here.
+        for suit, count in suits.items():
+            if count >= 5:
+                have = {r for r, sx in table if sx == suit}
+                if all(r in have for r in shape[1:6]):
+                    return True
+        return False
+    if cat in (4, 8):                               # a straight, or straight flush
+        # `best5` reports a wheel as a run topped by the five, so the rank
+        # below the deuce is the ace playing low.
+        run = [shape[1] - i for i in range(5)]
+        pool = ranks
+        if cat == 8:
+            pool = [r for r, sx in table if suits.get(sx, 0) >= 5]
+        return all((r in pool) or (r == -1 and 12 in pool) for r in run)
+    return False
+
+
 def classify(cards, board):
     """(made, kicker, fd, sd) for one hand on one board, or all None."""
     hole, table = parse(cards), parse(board)
@@ -239,6 +301,12 @@ def classify(cards, board):
         name, kicker = pair_kind(shape[1], hole, table)
     elif shape[0] == 0:
         name = "high card"
+
+    # And above one pair, the question `pair_kind` already asks below it.
+    # A set is exempt by construction: it needs a pocket pair, so both of the
+    # cards making it are the player's.
+    if shape[0] >= 2 and board_made(shape, table):
+        name, kicker = "board " + name, None
 
     # A draw is only worth naming while it is still a draw. A made straight
     # that could improve to a better straight is a straight, and reporting
@@ -332,6 +400,26 @@ KNOWN = [
     # are hidden.
     ("2s 2d", "Kh 7d 2c", "set", None, None, None),
     ("As Kd", "7h 7d 2c", "board pair", None, None, None),
+    # The same question one category up, and the pair of rows that made the
+    # case: the identical holding, one card later. Before 24 Sep 2026 the
+    # second of these was "two pair" and STRONG -- a hand every seat held.
+    ("As Kd", "7h 7d 2c 2s", "board two pair", None, None, None),
+    # And the negatives, which matter more than the positives: the guard must
+    # not fire when any of it is actually the player's.
+    ("2s Kd", "7h 7d 2c", "two pair", None, None, None),
+    ("7s Kd", "7h 7d 2c 2s", "boat", None, None, None),
+    # Two hearts in the hand and one on the board is a backdoor flush draw,
+    # and trips is below a flush so the draw is still worth naming.
+    ("2h Jh", "5d 5c 5h", "board trips", None, "backdoor", None),
+    ("5s Jh", "5d 5c 2h", "trips", None, None, None),
+    ("4s Kd", "Kh Ah Jh 8h Th", "board flush", None, None, None),
+    ("4h Kd", "Ah Jh 8h Th 2c", "flush", None, None, None),
+    ("2d 6d", "Ts Kh Qh Ac Js", "board straight", None, None, None),
+    ("9d 6d", "Ts Kh Qh Jc 2d", "straight", None, None, None),
+    # The wheel, where best5 reports a run topped by the five and the ace
+    # plays below the deuce -- the one straight whose top card is not its
+    # highest rank, and the one the run arithmetic could get wrong.
+    ("Ah 2c", "3d 4s 5h 9c Kd", "straight", None, None, None),
     ("7s 7d", "7h 2d 3c", "set", None, None, None),
     ("As Ks", "Qs Js 2c", "high card", None, "nut", "gutshot"),
     ("9s 8s", "7s 6d 2c", "high card", None, "backdoor", "oesd"),
