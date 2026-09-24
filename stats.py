@@ -902,13 +902,32 @@ def rates_by(con, stat, group, where="1=1", params=(), skip_null=True):
                f"SUM({stat.chance} AND {stat.action}) FROM spots "
                f"WHERE ({where}){guard} GROUP BY 1")
     elif stat.per == "hand":
-        # A per-hand stat counts a player once however often they acted, so
-        # it has to collapse to one row per (hand, seat) before grouping.
+        # A per-hand stat counts a player once however often they acted, so it
+        # collapses to one row per (hand, seat) before grouping -- and the
+        # dimension has to be part of that collapse, not read off it.
+        #
+        # It was not, until 24 Sep 2026. `({group})` sat in the SELECT of a
+        # GROUP BY hand_id, seat, which SQLite answers from an arbitrary row of
+        # the group, so a player-hand that saw two values of the dimension was
+        # filed under whichever one the scan happened to keep. VPIP by facing
+        # printed 78.3% on 506 player-hands for a 4-bet where the answer is
+        # 38.9% on 1,058, and 100% on 5 for a 5-bet against 57.1% on 168.
+        # Nothing looked wrong because each player-hand still landed in exactly
+        # one bucket, so the denominators still added to the overall n.
+        #
+        # Grouping by the dimension too means a player-hand is counted in each
+        # bucket it actually reached, and `did` is whether the action happened
+        # THERE. So the buckets can now sum to more than the overall n -- 120,339
+        # against 113,399 for VPIP by facing -- which is correct: a hand that was
+        # opened and then 3-bet really did face both. For any dimension that
+        # cannot vary inside a player-hand, and position, site, stake and month
+        # cannot, the group is constant across the collapse and this changes
+        # nothing at all.
         sql = (f"SELECT g, COUNT(*), SUM(did) FROM ("
                f"  SELECT ({group}) g, hand_id, seat,"
                f"  MAX(CASE WHEN {stat.action} THEN 1 ELSE 0 END) did"
                f"  FROM {table} WHERE ({stat.chance}) AND ({where}){guard}"
-               f"  GROUP BY hand_id, seat) GROUP BY g")
+               f"  GROUP BY hand_id, seat, ({group})) GROUP BY g")
     else:
         sql = (f"SELECT {group}, COUNT(*), "
                f"SUM(CASE WHEN {stat.action} THEN 1 ELSE 0 END) "
@@ -1150,6 +1169,32 @@ def check(db_path=DB):
     print(f"one pass agrees with thirty   {counted - off}/{counted}")
     if off:
         fails.append("the batched and per-stat counts disagree")
+
+    # A per-hand stat split by a dimension that CHANGES INSIDE a hand. The
+    # collapse to one row per (hand, seat) has to group by the dimension as
+    # well; a bare group column in the SELECT of that collapse is answered by
+    # SQLite from an arbitrary row, which files the whole player-hand under one
+    # of the values it happened to see. Nothing looks wrong when it does --
+    # each player-hand still lands in exactly one bucket, so the denominators
+    # still add to the overall n -- and VPIP by facing printed a 4-bet rate of
+    # 78.3% on 506 player-hands where the answer is 38.9% on 1,058.
+    off = []
+    for key in ("vpip", "pfr"):
+        st = BY_KEY[key]
+        got = rates_by(con, key, "facing", "street='preflop'")
+        want = {f: (n or 0, k or 0) for f, n, k in con.execute(
+            f"SELECT facing, COUNT(*), SUM(did) FROM ("
+            f"  SELECT hand_id, seat, facing,"
+            f"  MAX(CASE WHEN {st.action} THEN 1 ELSE 0 END) did"
+            f"  FROM decisions WHERE ({st.chance}) AND facing IS NOT NULL"
+            f"  GROUP BY hand_id, seat, facing) GROUP BY facing")}
+        if got != want:
+            off.append(f"{key} by facing came out {got}, not {want}")
+    print(f"a per-hand stat splits by a dimension that varies in the hand  "
+          f"{'2 of 2' if not off else 'FAIL'}")
+    for o in off:
+        print(f"    {o}")
+    fails += off
 
     # Shrinking a rate towards the pool has four properties worth asserting,
     # because every way the arithmetic could be wrong still returns a

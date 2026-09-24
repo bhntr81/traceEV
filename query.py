@@ -776,21 +776,30 @@ def build(argv):
                 continue
             if a in RUNOUT_FLAG:
                 pre = RUNOUT_FLAG[a]
+                named = []
                 for name in v.split(","):
                     if name not in RUNOUT:
                         raise SystemExit(
                             f"unknown runout {name!r} -- one of: "
                             f"{', '.join(RUNOUT)}")
-                    parts.append("(" + RUNOUT[name].format(p=pre) + ")")
+                    named.append("(" + RUNOUT[name].format(p=pre) + ")")
+                # One part for one description, even when the value names
+                # several. `build` returns the two zipped together, and a flag
+                # that appends two parts under one label silently shortens
+                # that list -- the WHERE stays right, and everything reading
+                # the pairs loses a clause off the end.
+                parts.append("(" + " AND ".join(named) + ")")
                 described.append(f"{a.lstrip('-')} {v}")
                 continue
             if a == "--board":
+                named = []
                 for name in v.split(","):
                     if name not in BOARDS:
                         raise SystemExit(
                             f"unknown board texture {name!r} -- "
                             f"one of: {', '.join(BOARDS)}")
-                    parts.append(BOARDS[name])
+                    named.append("(" + BOARDS[name] + ")")
+                parts.append("(" + " AND ".join(named) + ")")
                 described.append("board " + v)
                 continue
             tpl = VALUE_FLAGS[a]
@@ -1194,15 +1203,26 @@ def range_of(con, where):
     # summing to a hundred while quietly reclassifying every pair that
     # happens to have one.
     draws = []
-    pairs = ", ".join(q(c) for c in strength.ORDER if "pair" in c)
+    # "A pair and a draw" has to mean here what "+ a draw" means eight lines
+    # up, or the table states two different things and the reader takes the
+    # lower rows as the total of the upper ones. It did: the sub-rows summed
+    # to 202 on Ignition's flops and this row said 1,053, because it counted
+    # every pair category including the board's, and counted a backdoor flush
+    # draw as drawing -- 780 of those 1,053 were a backdoor and nothing else.
+    # Both rows are `strength`'s definitions now, which is the point of their
+    # being in `strength` at all.
+    #
+    # The first three rows are unchanged and deliberately loose: "a flush
+    # draw" is a count of flush draws, backdoors included, and says so.
+    own = ", ".join(q(c) for c in strength.OWN_PAIR)
     for label, sql in (("a flush draw", "fd IS NOT NULL"),
                        ("a straight draw", "sd IS NOT NULL"),
                        ("both at once", "fd IS NOT NULL AND sd IS NOT NULL"),
                        ("a pair and a draw",
-                        f"made IN ({pairs}) AND (fd IS NOT NULL OR sd IS NOT NULL)"),
+                        f"made IN ({own}) AND {strength.DRAWING}"),
                        ("weak, but drawing",
                         f"made IN ({', '.join(q(w) for w in strength.WEAK)}) "
-                        f"AND (fd IS NOT NULL OR sd IS NOT NULL)")):
+                        f"AND {strength.DRAWING}")):
         n = con.execute(f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
                         f"AND made IS NOT NULL AND ({sql})").fetchone()[0]
         if n:
@@ -2579,6 +2599,24 @@ def check(db_path=DB):
         "SELECT player FROM decisions WHERE player IS NOT NULL LIMIT 1"
     ).fetchone()[0]]))
 
+    # `build` returns the clause, a label, and the two zipped together. A flag
+    # that appends more SQL parts than descriptions silently SHORTENS that
+    # third list, and the WHERE stays perfectly correct while everything
+    # reading the pairs loses a clause off the end -- `pool_beside` rebuilt a
+    # filter from them and would have compared a mono-and-paired flop against
+    # a pool of every mono flop. `--board`, `--turn-card` and `--river-card`
+    # all did this with a comma-separated value. The invariant is exact:
+    # rejoining the pairs has to give the clause back.
+    misjoined = []
+    for name, argv in cases:
+        where, _l, pairs = build(argv)
+        if (" AND ".join(sql for _d, sql in pairs) if pairs else "1=1") != where:
+            misjoined.append(name)
+    print(f"the clause rebuilds from its own parts  "
+          f"{len(cases) - len(misjoined)}/{len(cases)}")
+    for m in misjoined:
+        fails.append(f"{m}: build's parts do not rejoin into its WHERE")
+
     for name, argv in cases:
         where, _, _p = build(argv)
         checked += 1
@@ -2837,6 +2875,21 @@ def check(db_path=DB):
                 bad_split.append(f"{street}: {p} is not the player's own pair")
         if street == "river" and drawing:
             bad_split.append(f"river: {sorted(drawing)} are drawing, on the river")
+    # And the sub-rows have to add up to the overlap row that sits below them,
+    # because a reader takes the lower row as the total of the upper ones. For
+    # one day they did not: the sub-rows used strength.DRAWING over OWN_PAIR
+    # and the overlap row counted every pair category and every backdoor, so
+    # the table said 165 and 1,053 about the same thing, five lines apart.
+    for street in ("flop", "turn"):
+        got = range_of(con, f"site='ignition' AND fmt='RING' AND street='{street}'")
+        subs = sum(r["n"] for r in got["rows"]
+                   if r.get("sub") and r["made"].strip() == "+ a draw")
+        overlap = next((d["n"] for d in got["draws"]
+                        if d["label"] == "a pair and a draw"), 0)
+        if subs != overlap:
+            bad_split.append(f"{street}: the + a draw rows total {subs} and "
+                             f"'a pair and a draw' says {overlap}")
+
     print(f"pair + a draw is a subset, of a pair, and not on the river  "
           f"{'yes' if not bad_split else 'NO'}")
     for b in bad_split:

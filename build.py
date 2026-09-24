@@ -79,11 +79,20 @@ def build():
         # terminal around with it is the thing this was meant to stop.
         "--windowed",
         "--name", "TraceEV",
+        # The window and the shortcut both take their icon from the binary.
+        # Windows wants a .ico and macOS an .icns; PyInstaller ignores the
+        # flag on Linux. Only Windows' is in the repository, so the flag is
+        # added only when the file for this platform is actually there --
+        # passing a missing one fails the build rather than being ignored.
         "--distpath", str(DIST),
         "--workpath", str(HERE / "build"),
         "--specpath", str(HERE / "build"),
         "--noconfirm",
     ]
+    art = HERE / ("TraceEV.icns" if platform.system() == "Darwin"
+                  else "TraceEV.ico")
+    if art.exists() and platform.system() in ("Windows", "Darwin"):
+        cmd += ["--icon", str(art)]
     for m in MODULES:
         cmd += ["--hidden-import", m]
     cmd.append(str(HERE / "app.py"))
