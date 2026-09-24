@@ -821,6 +821,34 @@ The line between weak and strong is drawn under **middle pair**, and it is
 one list in `strength.WEAK` precisely so that disagreeing with it is a line
 changed rather than an argument.
 
+Three rows are split further, because in each case one row was two different
+holdings: **top pair** by its kicker, **high card** by whether it is an ace,
+and every pair the player holds by whether it is also drawing.
+
+```
+  top pair        11.0%     516  strong #####
+    good kicker    7.7%     361  strong ####
+    weak kicker    3.3%     155  strong ##
+    + a draw       0.8%      38  strong
+  middle pair     12.7%     598         ######
+    + a draw       1.4%      68         #
+```
+
+A pair that is also drawing can call a raise on the equity rather than on the
+pair, which is a different hand to play. `board pair` never gets the row --
+a board everybody shares, with a draw, is a draw -- and neither does two
+pair. Nothing gets it on the river, because nothing draws there.
+
+A **backdoor** flush draw does not count as drawing: it needs two more cards,
+and counting it would take the group from 1,510 decisions to 2,887, so nearly
+half of it would be hands not drawing yet. Which pairs count and what counts
+as a draw are `strength.OWN_PAIR` and `strength.DRAWING`, one line each, for
+the same reason `WEAK` is.
+
+The indented rows are subsets and deliberately overlap: `+ a draw` under top
+pair is also inside one of the kicker rows. They are left out of the WEAK and
+STRONG totals, which is why those still add to a hundred.
+
 **It is the range that was *seen*.** Ignition shows every hand at showdown
 including the folds; ACR shows 23%. So on an ACR-heavy filter this describes
 the hands that reached showdown, which is the stronger half of what was

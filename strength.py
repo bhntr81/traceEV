@@ -83,6 +83,28 @@ WEAK = ("high card", "board pair", "weak pair", "under pair")
 # was a quarter middle pair. Everything else that is not weak is MEDIUM --
 # middle pair, the hands that call once and do not like it. The three
 # together are the whole of ORDER.
+# The pair categories that are a pair the PLAYER holds, for the "pair + a
+# draw" split. `board pair` is not in the list because it is not their pair --
+# a board everybody shares, with a draw, is a draw. `two pair` is not either:
+# the group Hand2Note draws is one pair plus a draw, and a hand that already
+# has two pair is not deciding whether its equity is enough.
+OWN_PAIR = ("overpair", "top pair", "middle pair", "weak pair", "under pair")
+
+# And what counts as drawing while holding one, which is the second judgement
+# in this module that is opinion rather than cards -- so it is one line, for
+# the same reason WEAK is.
+#
+# A backdoor flush draw is excluded. It needs two more cards, it is worth
+# roughly a quarter of what a real flush draw is, and there are 4,233 of them
+# in this database against 2,116 live ones. Counting them takes "pair + a
+# draw" from 1,510 decisions to 2,887 -- so nearly half the group would be
+# hands that are not drawing yet, which is the opposite of what it is for.
+# Every straight draw counts, gutshots included, because a gutshot is eight
+# percent and it is live now. Nothing draws on the river, and the `fd`/`sd`
+# columns already know that, so no street condition is needed here: the count
+# for the river comes back zero on its own.
+DRAWING = "((fd IS NOT NULL AND fd <> 'backdoor') OR sd IS NOT NULL)"
+
 STRONG = ("straight flush", "quads", "boat", "flush", "straight", "set",
           "trips", "two pair", "overpair", "top pair")
 MEDIUM = tuple(c for c in ORDER if c not in STRONG and c not in WEAK)

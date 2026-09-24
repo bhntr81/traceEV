@@ -994,6 +994,44 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 31 — the audit table, and the split it said was done (24 Sep 2026)
+
+**Goal:** none set beforehand. This began as housekeeping -- checking the
+Hand2Note page-by-page table against the code -- and turned into two
+corrections and one feature, so it is recorded as it happened.
+
+**Result: PASS**, all 22 checks.
+
+**The table was out of date in a way that costs real work.** Eleven rows read
+"missing" for things later runs had built: rake paid, hands per hour, sort by
+biggest win or loss, the hole-card grid, the won-hand and went-to-showdown
+columns of the actions view, the by-size split with its reactions, action
+profit by hand strength, top pair by kicker, bet size relative to the previous
+bet, expression stats, and the two-colour range map. The table is left as
+written, since it is dated and was true then, with the closures listed under
+its heading. Every row still called open was verified absent from the code
+rather than trusted from the table.
+
+**Two things the run log had wrong.** Run 23 records closing "the range view's
+kicker, ace-high and pair-plus-draw groups". It closed two of the three, and
+`query.py`'s own comment beside them said so: "the two splits Hand2Note's
+diagram draws and this one did not". And the table asked for action profit by
+hand strength as `--by made`; it shipped as `--by hand`, and `made` is not a
+dimension, which is the only reason that row still read as open. A run log
+that claims a gap is closed is worse than one that says nothing, because the
+next person does not look.
+
+**So pair + a draw was built**, which is the third split and the last of the
+six ranked gaps from the 16 Sep reading. A pair that is also drawing can call
+a raise on its equity rather than on its pair. `strength.OWN_PAIR` and
+`strength.DRAWING` hold the two opinions in a line each, beside `WEAK`, for
+the reason `WEAK` is a line. A backdoor flush draw does not count: it takes
+the group from 1,510 to 2,887, so nearly half of it would be hands not drawing
+yet. The check holds the row to being a subset of its parent -- the failure
+that would otherwise be silent, since sub-rows sit outside the totals and an
+oversized one still prints plausibly -- to appearing only for a pair the
+player holds, and to never appearing on the river.
+
 ## Run 30 — what Run 29 actually found, built (23 Sep 2026)
 
 **Goal:** the one thing the goal-5 measurement supported -- a displayed rate
@@ -1335,8 +1373,8 @@ where:
 | the two-colour preflop range map | `--chart --alternative`, Run 27 |
 
 Still missing, and each verified absent from the code on 24 Sep rather than
-assumed from this table: **pair + draw as a group** (askable as a made-hand
-filter plus a draw filter, but not a row), distance to fish as a number
+assumed from this table (**pair + draw was on this list and was built the same
+day, Run 31**): distance to fish as a number
 rather than a side, straddle, "all folded to BB" as a facing, the initial pot
 on a street, fish on the blinds, antes, out-of-queue posts, note templates, a
 hand inserted into a note, notes on a stat, an anonymised one-hand share,

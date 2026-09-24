@@ -8,6 +8,35 @@ Newest first.
 
 ---
 
+## Pair + a draw, the split Run 23 said it had made — 24 Sep 2026
+
+### Added -- the third split of Hand2Note's postflop diagram
+
+The range view split top pair by its kicker and a high card by whether it is
+an ace. The third split the diagram draws -- a pair that is also drawing --
+was recorded as done by Run 23 and was not: `query.py`'s own comment beside
+the other two read "the two splits Hand2Note's diagram draws and this one did
+not". It is built now, and the run log is corrected.
+
+A pair that is also drawing can call a raise on its equity rather than on the
+pair, which is a different hand to play, and the two were one row.
+
+`strength.OWN_PAIR` says which pairs are the player's own. A board pair is
+not -- a board everybody shares, with a draw, is a draw -- and two pair is
+not the group the diagram draws. `strength.DRAWING` says what counts as
+drawing, and excludes a **backdoor** flush draw: it needs two more cards, and
+counting it takes the group from 1,510 decisions to 2,887, so nearly half of
+it would be hands that are not drawing yet. Both are one line each, for the
+reason `WEAK` is one line: somebody will disagree and the disagreement should
+be a line changed.
+
+`query.check` holds the split to three things, the first of which would
+otherwise fail in silence, since sub-rows are deliberately outside the totals
+and an oversized one still prints: the row is a subset of its parent, it only
+appears for a pair the player holds, and it never appears on the river --
+nothing draws there, and the count comes back zero on its own rather than by a
+street condition.
+
 ## A rate with the pool behind it — 23 Sep 2026
 
 ### Fixed -- the player profile printed percentages with no denominators

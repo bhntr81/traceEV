@@ -1164,10 +1164,19 @@ def range_of(con, where):
         # top pair by its kicker (TPGK and TPWK in its labels), and a high
         # card by whether it is an ace -- a bluff-catcher and nothing are
         # different holdings and were one row.
-        splits = {"top pair": (("good kicker", "kicker IN ('top', 'good')"),
-                               ("weak kicker", "kicker = 'weak'")),
-                  "high card": (("ace high", "combo LIKE 'A%'"),
-                                ("lower", "combo NOT LIKE 'A%'"))}.get(name)
+        splits = list({"top pair": (("good kicker", "kicker IN ('top', 'good')"),
+                                    ("weak kicker", "kicker = 'weak'")),
+                       "high card": (("ace high", "combo LIKE 'A%'"),
+                                     ("lower", "combo NOT LIKE 'A%'"))}.get(name) or ())
+        # The third split Hand2Note's diagram draws, and the one Run 23
+        # recorded as done without doing it. A pair that is also drawing plays
+        # differently from a pair that is not -- it can call a raise on the
+        # equity rather than on the pair -- and the two were one row. Which
+        # pairs count as the player's own, and what counts as drawing, are
+        # `strength`'s lists rather than a condition written here, because both
+        # are opinions and an opinion belongs in one place.
+        if name in strength.OWN_PAIR:
+            splits.append(("+ a draw", strength.DRAWING))
         for label, sql in splits or ():
             k = con.execute(f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
                             f"AND made = ? AND ({sql})", (name,)).fetchone()[0]
@@ -2802,6 +2811,39 @@ def check(db_path=DB):
                      "different situation")
     if others < 2:
         fails.append("the pool has nobody else in it")
+
+    # The "pair + a draw" split. Three properties, and the first is the one
+    # that would fail in silence: a sub-row bigger than the parent it is a
+    # subset of still prints, and still adds to something plausible, because
+    # sub-rows are deliberately left out of the totals. The other two are the
+    # PAFs this split has to respect -- a board pair is not the player's pair,
+    # and nothing draws on the river.
+    bad_split = []
+    for street in ("flop", "turn", "river"):
+        got = range_of(con, f"site='ignition' AND fmt='RING' AND street='{street}'")
+        rows, parent = {}, None
+        for r in got["rows"]:
+            if r.get("sub"):
+                rows.setdefault(parent, {})[r["made"].strip()] = r["n"]
+            else:
+                parent = r["made"]
+        drawing = {p: d["+ a draw"] for p, d in rows.items() if "+ a draw" in d}
+        sizes = {r["made"]: r["n"] for r in got["rows"] if not r.get("sub")}
+        for p, k in drawing.items():
+            if k > sizes.get(p, 0):
+                bad_split.append(f"{street}: {p} has {k} drawing of {sizes.get(p)}")
+        for p in drawing:
+            if p not in strength.OWN_PAIR:
+                bad_split.append(f"{street}: {p} is not the player's own pair")
+        if street == "river" and drawing:
+            bad_split.append(f"river: {sorted(drawing)} are drawing, on the river")
+    print(f"pair + a draw is a subset, of a pair, and not on the river  "
+          f"{'yes' if not bad_split else 'NO'}")
+    for b in bad_split:
+        print(f"    {b}")
+    fails += bad_split
+    if "backdoor" in strength.DRAWING and "<>" not in strength.DRAWING:
+        fails.append("a backdoor flush draw counts as drawing")
 
     # The report's pool has to be split by the same dimension as the report.
     # One pool rate reused down every row would shrink a big blind's VPIP
