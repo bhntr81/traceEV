@@ -65,6 +65,25 @@ is then no single population that is "the same spot with other people in
 it". Expression stats get nothing either: a formula can be a count, a ratio
 or a profit, and shrinking one towards a rate would change its claim.
 
+### Added -- and on `--by`, where the cells are thinnest of all
+
+A split divides an already small sample by the number of rows, so a report
+under a one-player filter is mostly cells marked `?`: one seat's VPIP by
+position runs on one to three chances a row. The whole grid now repeats below
+itself with the pool behind each cell, in the command line and in the
+window's report tab.
+
+The pool is split by the same dimension, because a cell's comparison is the
+pool in that same row -- the big blind against the pool's big blind, never
+against its button. `query.check` holds the pool's own cells to varying
+across positions, since one rate reused down every row would lean every row
+the same way and look reasonable doing it. `--by player` is refused: the
+pool's rows would be other people's names and none would line up.
+
+Below rather than beside. This view already keeps its denominators in a block
+of their own on the stated grounds that nobody can read a grid with an n in
+every cell, and a second percentage per cell would be that mistake twice.
+
 ---
 
 ## The packaged program, three runs behind — 23 Sep 2026

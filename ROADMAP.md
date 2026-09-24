@@ -1056,11 +1056,29 @@ count, a ratio or a profit and shrinking one would change its claim. The two
 front ends agree to the decimal on the seat above, which is the check that
 matters when the same number is computed in two places.
 
-**Left undone.** Nothing was replaced anywhere; both columns are additions,
-because the interval belongs to the raw count. The report and actions views
-still show raw rates only -- the same argument applies to them, but "the pool
-for this cell" is a different question once a row is a position or a stake
-rather than a player, and it should be answered before it is coded.
+**Then the report, once the question it raised had an answer.** "What is the
+pool for this cell" looked like a different question when a row is a position
+rather than a player. It is not: **the dimension is part of the situation**,
+so a cell's pool is the pool's own cell at the same dimension value, and the
+rule is the one the stats table already uses one column further in. It costs
+one extra pass per column rather than one per cell. This is the view that
+needed it most -- a split divides an already small sample by the number of
+rows, and the seat above runs on one to three chances per position, every
+cell marked `?`. Its two rows shrink towards 25.6% and 49.7%, not towards one
+number, which is the whole point and is what `query.check` now asserts by
+holding the pool's own cells to varying across positions.
+
+Below the grid rather than inside it, in both front ends: this view already
+keeps its denominators in a block of their own because nobody can read a grid
+with an n in every cell, and a second percentage per cell would be that
+mistake twice. `--by player` is refused -- the pool's rows are other people's
+names and none lines up with the only row there would be.
+
+**Left undone.** The actions view still shows raw rates. A row there is an
+action rather than a situation, so "the pool for this row" is a genuinely
+different question again, and it has not been answered yet. Nothing was
+replaced anywhere: every pool figure in this run is an addition, because the
+interval belongs to the raw count.
 
 ## Run 29 — goal 5, measured and answered NO (23 Sep 2026)
 

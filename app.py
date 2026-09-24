@@ -1307,6 +1307,18 @@ class App(ImportMixin, ttk.Frame):
                               key=lambda k: order(k) if k is not None else "")
                 out.update(dim=dim, cols=cols, grid=grid, counts=counts,
                            keys=keys)
+                # Splitting a filter that names one player divides a sample
+                # that was already small by the number of rows, so this is the
+                # view whose cells are thinnest. The pool is split by the same
+                # dimension, because a cell's comparison is the pool in that
+                # same row, not the pool overall. Refused when the split is
+                # the player: no pool row would line up with the only row.
+                pw, pp = ((None, ()) if (dim or "position") == "player"
+                          else query.pool_beside(con, list(filter_argv)))
+                if pw:
+                    out["pool_grid"] = {
+                        c: query.rates_by(con, BY_KEY[c], expr, pw, pp)
+                        for c in cols}
             elif view == "results":
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
@@ -1630,6 +1642,27 @@ class App(ImportMixin, ttk.Frame):
                 thin = thin or (0 < n < 30)
             row.append(f"{out['counts'].get(k, (0, 0))[0]:,}")
             tv.insert("", "end", values=row, tags=("thin",) if thin else ())
+
+        # The same rows again with the pool behind each cell, below rather
+        # than beside. A second percentage inside every cell would double the
+        # numbers on a grid that is already dense, which is the same argument
+        # that keeps the denominators in their own column. The n is left off
+        # these rows on purpose: it is the row above's, and a shrunk figure
+        # does not rest on it alone.
+        if out.get("pool_grid"):
+            tv.insert("", "end", tags=("group",),
+                      values=[f"WITH THE POOL BEHIND EACH CELL "
+                              f"(shrunk by {stats.SHRINK})"]
+                             + [""] * len(cols[1:]))
+            for k in out["keys"]:
+                row = [str(k)]
+                for c in out["cols"]:
+                    n, kk = out["grid"][c].get(k, (0, 0))
+                    pn, pk = out["pool_grid"].get(c, {}).get(k, (0, 0))
+                    row.append("–" if not n or not pn
+                               else f"{100 * stats.shrunk(kk, n, pk / pn):.1f}%")
+                row.append("")
+                tv.insert("", "end", values=row)
 
     def _render_results(self, tv, out):
         self._cols(tv, ("figure", "value"), (320, 220), {"figure": "w"})
@@ -3623,6 +3656,39 @@ def check(db_path=DB):
     # the assistant its provider and key every time the packaged program
     # closed. This is the check that says so rather than the next person
     # finding it the way the first two were found.
+    # The report's pool columns appear only under a filter naming one player,
+    # and the worker decides that three conditions deep. Driven through
+    # `_work` rather than read off the source, because the way this fails is
+    # a column that quietly stops being produced -- the table still draws,
+    # still looks complete, and is missing the half worth reading.
+    named = con.execute("SELECT player FROM decisions WHERE site='ignition' "
+                        "AND fmt='RING' AND player IS NOT NULL GROUP BY player "
+                        "ORDER BY COUNT(*) DESC LIMIT 1").fetchone()[0]
+    one = app._work(0, "report", f"player = {query.q(named)}", "one", (),
+                    "position", None, filter_argv=["--player", named])
+    anyone = app._work(0, "report", "1=1", "all", (), "position", None)
+    borrowed = bool(one.get("pool_grid")) and not anyone.get("pool_grid")
+    print(f"the report borrows a pool for one player only  "
+          f"{'yes' if borrowed else 'NO'}")
+    if not borrowed:
+        fails.append("the report's pool columns do not follow the filter")
+
+    # And it has to DRAW. Producing the grid and rendering it are different
+    # steps, and the second one only runs when somebody filters to one player
+    # and opens this tab -- so a fault there would first be seen by the user,
+    # in the one place the numbers were added to help.
+    probe = ttk.Treeview(root)
+    app._render_report(probe, one)
+    drawn = probe.get_children("")
+    titles = [r for r in drawn
+              if "WITH THE POOL" in str(probe.item(r, "values")[0])]
+    want = 2 * len(one["keys"]) + 1
+    print(f"and draws them   {len(drawn)}/{want} rows, "
+          f"{'one heading' if len(titles) == 1 else 'NO heading'}")
+    if len(drawn) != want or len(titles) != 1:
+        fails.append("the report's pool rows are computed but not drawn")
+    probe.destroy()
+
     mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
             "filters.json": query.SAVED, "ai.json": ask.SETTINGS}
     astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)

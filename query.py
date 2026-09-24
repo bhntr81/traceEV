@@ -2087,7 +2087,7 @@ def show_hand(con, hand_id, seat=None):
         print(f"\nTOTAL POT {d['pot']:.2f}{rake}")
 
 
-def show_report(con, where, label, dim, columns, min_n=30):
+def show_report(con, where, label, dim, columns, min_n=30, argv=()):
     """
     One row per value of the dimension, one column per stat.
 
@@ -2106,6 +2106,19 @@ def show_report(con, where, label, dim, columns, min_n=30):
         raise SystemExit("--by needs at least one plain stat in --show, for the row's n")
     stats = [BY_KEY[c] for c in plain]
     grid = {s.key: rates_by(con, s, expr, where) for s in stats}
+    # A cell's pool is the pool's own cell at the SAME dimension value -- a
+    # button 3bet read against the pool's button 3bet, never against its 3bet
+    # everywhere. The dimension is part of the situation, which makes this the
+    # same rule the stats table uses, one column further in, and it costs one
+    # extra pass per column rather than one per cell.
+    #
+    # Refused when the split is itself the player: the pool's rows are then
+    # other people's names, not one of them lines up with the single row this
+    # table would have, and every cell would come back empty.
+    pool_where, pool_params = ((None, ()) if dim == "player"
+                               else pool_beside(con, list(argv)))
+    pool_grid = ({s.key: rates_by(con, s, expr, pool_where, pool_params)
+                  for s in stats} if pool_where else {})
     # An expression column is a formula evaluated once per row: the group
     # is added to the filter and the terms run again. Slower than the
     # plain columns' single pass, and asked for by name, so it is paid.
@@ -2163,7 +2176,34 @@ def show_report(con, where, label, dim, columns, min_n=30):
         n = counts.get(k, (0, 0))[0]
         print(f"    {str(k)[:width - 1]:<{width}} n={n}")
     print("\n  '?' marks a cell measured on fewer than "
-          f"{min_n} chances -- ignore it.")
+          f"{min_n} chances -- " + ("ignore it." if not pool_grid
+                                    else "read it off the table below."))
+
+    # The same grid with the pool behind each cell, below rather than beside.
+    # This view already refuses to put an n next to every cell, on the stated
+    # grounds that nobody can read such a table, and a second percentage per
+    # cell would be that mistake twice. Splitting a filter that names one
+    # player divides a sample that was already small by the number of rows,
+    # so this is the table whose raw cells are least worth reading.
+    if pool_grid:
+        print()
+        print(f"  the same cells with the pool behind them, shrunk by "
+              f"{stats_module.SHRINK} pseudo-observations:")
+        print(head)
+        print("  " + "-" * (len(head) - 2))
+        for k in keys:
+            cells = []
+            for c in columns:
+                n, kk = grid[c].get(k, (0, 0))
+                pn, pk = pool_grid.get(c, {}).get(k, (0, 0))
+                # An expression is a count, a ratio or a profit, and shrinking
+                # one towards a rate would change what it claims. A cell the
+                # pool never had the chance to take has nothing to borrow.
+                if c in exprs or not n or kk is None or not pn:
+                    cells.append(f"{'--':>11}")
+                else:
+                    cells.append(f"{100 * shrunk(kk, n, pk / pn):9.1f}% ")
+            print(f"  {str(k)[:width - 1]:<{width}}" + "".join(cells))
     note = vs_note(where, {st.group for st in stats})
     if note:
         print("\n" + note)
@@ -2763,6 +2803,24 @@ def check(db_path=DB):
     if others < 2:
         fails.append("the pool has nobody else in it")
 
+    # The report's pool has to be split by the same dimension as the report.
+    # One pool rate reused down every row would shrink a big blind's VPIP
+    # towards a number with the button averaged into it, and would look
+    # entirely reasonable doing so -- the rows would just all lean the same
+    # way. So the pool's own cells must vary across positions.
+    pw2, pp2 = pool_beside(con, ["--player", who])
+    by_pos = rates_by(con, BY_KEY["vpip"], DIMENSIONS["position"][0], pw2, pp2)
+    seen = {k: kk / n for k, (n, kk) in by_pos.items() if n}
+    if seen:
+        lo, hi = min(seen.values()), max(seen.values())
+        print(f"the report's pool splits by the dimension  "
+              f"{len(seen)} positions, pool VPIP {100 * lo:.0f}-{100 * hi:.0f}%")
+        if len(seen) < 4 or hi - lo < 0.05:
+            fails.append("the pool's cells barely vary by position, so a "
+                         "report would shrink every row towards one number")
+    else:
+        fails.append("the pool has no cells to split")
+
     con.close()
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
@@ -2967,7 +3025,8 @@ def main(argv):
         else:
             show_results(con, where, label, _parts)
     elif dim:
-        show_report(con, where, label, dim, columns, min_n)
+        show_report(con, where, label, dim, columns, min_n,
+                    argv=argv)
     else:
         show_stats(con, where, label, _parts,
                    only=columns if opt("--show") else (), argv=argv)

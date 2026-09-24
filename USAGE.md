@@ -982,6 +982,33 @@ number. Expression stats never get them either: a formula can be a count, a
 ratio or a profit, and shrinking one towards a rate would change what it
 claims.
 
+#### Split by something, with the pool split the same way
+
+`--by` divides a sample that was already small by the number of rows, so it
+is the view whose cells are thinnest. With one player named, the whole grid
+is repeated below it with the pool behind each cell:
+
+```
+  position           VPIP        PFR       3bet
+  HJ                0.0%?      0.0%?         --
+  BB              100.0%?      0.0%?      0.0%?
+
+  the same cells with the pool behind them, shrunk by 10 pseudo-observations:
+  position           VPIP        PFR       3bet
+  HJ               25.6%      16.0%          --
+  BB               49.7%       6.9%       6.1%
+```
+
+Every raw cell there carries a `?`, on one to three chances. The pool is
+split by the same dimension, so the big blind is read against the pool's big
+blind and not against its button -- which is why the two rows shrink towards
+25.6% and 49.7% rather than towards one number.
+
+Below rather than beside, because a second percentage inside each cell would
+double the numbers on a grid that already keeps its denominators in their own
+block. `--by player` gets nothing: the pool's rows would be other people's
+names and none would line up with the single row.
+
 ---
 
 ### `query.py` — the one you will use most
