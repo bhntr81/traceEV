@@ -1074,11 +1074,31 @@ with an n in every cell, and a second percentage per cell would be that
 mistake twice. `--by player` is refused -- the pool's rows are other people's
 names and none lines up with the only row there would be.
 
-**Left undone.** The actions view still shows raw rates. A row there is an
-action rather than a situation, so "the pool for this row" is a genuinely
-different question again, and it has not been answered yet. Nothing was
-replaced anywhere: every pool figure in this run is an addition, because the
-interval belongs to the raw count.
+**The actions view was tried and deliberately left alone.** Its question did
+have an answer: a frequency there is one share of a whole -- each action's
+share of the spot, or each dimension value's share of the action -- so adding
+the pool's share of each as pseudo-counts over the SAME denominator is the
+Dirichlet posterior mean, and it needs no arithmetic this project does not
+already have. The shares even add to exactly 100 by construction, which
+independently shrinking each row against its own denominator would not.
+
+It was built, measured and reverted, because the support does not match. A
+player's actions are a SUBSET of the pool's: the seat used above has never
+shoved a flop and the pool does so 2.3% of the time, so the shrunk column came
+to 99.6% rather than 100%. The deficit is real information -- it is exactly
+the pool's mass on actions this player has never taken -- but every way of
+presenting it is worse than the raw column. Inventing rows with n=0 gives an
+action never taken a "bb/hand" of 0.00, which reads as break-even rather than
+as absent. Renormalising the pool onto the player's own actions removes the
+pool's fold mass and silently inflates everything else. Shipping a column that
+does not add to 100 invites the reader to conclude the table is broken, and
+they would be half right. None of the other views has this problem, because a
+rate there is one proportion and not a share of a partition.
+
+So it is not built, and this paragraph is why rather than a gap nobody got to.
+
+Nothing was replaced anywhere: every pool figure in this run is an addition,
+because the interval belongs to the raw count.
 
 ## Run 29 — goal 5, measured and answered NO (23 Sep 2026)
 
