@@ -8,6 +8,28 @@ Newest first.
 
 ---
 
+## The window's report printed rates over n=0 — 24 Sep 2026
+
+### Fixed -- the Report tab's row count was always VPIP's denominator
+
+`show_report` fixed this on the command line a while ago and left the reason
+beside it: the row's n is the column `--show` named, because "VPIP counts
+preflop decisions, and a filter that begins at the turn has none --
+`--street turn --facing bet --by texture` printed a fold rate on every row
+over n=0, and the assistant reading it reported the table as broken."
+
+The window was never fixed. It has no `--show` for that view, so it asked for
+VPIP's denominator every time. Filtered to the flop and split by texture it
+printed five rows reading **n=0** while `fold to cbet` and `flop aggression`
+beside them carried 5,112 and 8,071 real chances between them.
+
+It now takes the first column that has any chances under the filter -- the
+first question the table can actually answer -- and falls back to the first
+column when none has any, where zero is the honest answer. The same five rows
+read 273, 1,278, 252, 456 and 2,853.
+
+`app.check` asserts it: if any column has a rate, some row must have an n.
+
 ## Four filters and a stat that were quietly wrong — 24 Sep 2026
 
 ### Fixed -- `--until DATE` dropped the entire day it named

@@ -1302,7 +1302,19 @@ class App(ImportMixin, ttk.Frame):
                 cols = query.DEFAULT_COLUMNS
                 grid = {c: query.rates_by(con, BY_KEY[c], expr, where)
                         for c in cols}
-                counts = query.rates_by(con, BY_KEY["vpip"], expr, where)
+                # The row's n has to be a denominator this table actually has.
+                # It was always VPIP's, and VPIP counts preflop decisions --
+                # so a filter starting at the flop printed every row over
+                # "n=0" while the flop columns beside it carried real rates,
+                # which is the same failure `show_report` records fixing on
+                # the command line: "the assistant reading it reported the
+                # table as broken". There it uses the column `--show` named;
+                # this view has no --show, so it takes the first column with
+                # any chances under the filter -- the first question the
+                # table can answer -- and falls back to the first column when
+                # nothing has any, where 0 is the honest answer.
+                counts = next((g for g in (grid[c] for c in cols)
+                               if any(n for n, _k in g.values())), grid[cols[0]])
                 keys = sorted({k for g in grid.values() for k in g},
                               key=lambda k: order(k) if k is not None else "")
                 out.update(dim=dim, cols=cols, grid=grid, counts=counts,
@@ -3677,6 +3689,19 @@ def check(db_path=DB):
     # steps, and the second one only runs when somebody filters to one player
     # and opens this tab -- so a fault there would first be seen by the user,
     # in the one place the numbers were added to help.
+    # The row's n must be a denominator the table has. Under a flop filter
+    # every shown rate belongs to a flop stat and VPIP has no chances at all,
+    # so pinning the column to VPIP printed five texture rows over "n=0"
+    # beside real percentages.
+    flop_w, flop_l, flop_p = query.build(["--street", "flop", "--facing", "bet"])
+    rep = app._work(0, "report", flop_w, flop_l, flop_p, "texture", None)
+    has_rate = any(n for c in rep["cols"] for n, _k in rep["grid"][c].values())
+    has_n = any(rep["counts"].get(k, (0, 0))[0] for k in rep["keys"])
+    print(f"the report's n is a denominator it has  "
+          f"{'yes' if has_rate and has_n else 'NO'}")
+    if has_rate and not has_n:
+        fails.append("the report prints rates over rows whose n is zero")
+
     probe = ttk.Treeview(root)
     app._render_report(probe, one)
     drawn = probe.get_children("")
