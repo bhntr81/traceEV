@@ -455,7 +455,8 @@ function render(d){
         <tr><td>per 100 hands</td><td>${money(t.bb100)} bb/100</td></tr>
         <tr><td>error on that</td><td class="n">±${t.error.toFixed(0)} bb/100</td></tr>
         <tr><td>saw a flop</td><td class="n">${t.saw_flop.toLocaleString()}</td></tr>
-        <tr><td>won at showdown</td><td class="n">${t.wtsd.toLocaleString()}</td></tr>
+        <tr><td>went to showdown</td><td class="n">${t.wtsd.toLocaleString()}</td></tr>
+        <tr><td>won at showdown</td><td class="n">${t.wsd.toLocaleString()}</td></tr>
         </tbody></table>
         <p class="n" style="margin-top:14px;max-width:56ch">One hand's result has a
         standard deviation around 11.7bb, so the error on a win rate is about

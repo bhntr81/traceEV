@@ -8,6 +8,50 @@ Newest first.
 
 ---
 
+## Three more in the money view — 25 Sep 2026
+
+### Fixed -- `--results --by` counted a hand once for every value it passed through
+
+Each value of the dimension selected its seats separately, and each selected
+seat's **whole hand** was then summed into that row. Where the dimension is a
+property of the hand -- position, stake, site, month, texture -- every
+decision carries the same value, the rows partition and nothing was wrong,
+which is why this survived. Where it changes during the hand it is not:
+`eff_bb` falls as the pot grows, so a hand where hero lost a hundred blinds
+was counted in full under deep, medium **and** short -- and it reached
+"short" precisely because it was a big loss, a selection effect that
+guarantees the row looks ruinous.
+
+```
+short (<40bb)   623   -2853.3   -458.0 bb/100     <- printed
+short (<40bb)   220      +38.6    +17.5 bb/100     <- true
+```
+
+The four rows added to 23,207 hands and -5,025.5 bb against a table total of
+22,032 and -377.2. The seat's **first** matching decision now decides -- the
+stack it sat down with rather than the one it was left holding, which is how
+Hand2Note's Stack sizes report splits -- and `--by position` is unchanged
+because position cannot change inside a hand.
+
+### Fixed -- "won at showdown" was the went-to-showdown count
+
+`results_of` selected `SUM(s.wtsd)` and the view printed it under "won at
+showdown". `wsd` sits in the next column of `spots` and was never selected.
+It printed **927** where 507 won, and 927 against the 3,417 flops on the line
+above reads as 27.1% -- an unremarkable-looking W$SD, where the truth is
+14.8%. Both lines are printed now, in all three front ends.
+
+### Fixed -- a date without leading zeros was a silent no-op
+
+The 24 Sep fix decided "is this a bare date" by `len(v) == 10`, and
+`2026-8-25` is nine characters. It fell through to the text comparison, where
+`played_at <= '2026-8-25'` is true of every August timestamp: `--until
+2026-8-25` selected **all 174,298 rows** and narrowed nothing, while `--since
+2026-8-25` selected **none**. Length was never the question; the shape is.
+
+All three found by the second audit pass, on the money lens the first pass
+commissioned and never ran, and each re-derived by hand before being touched.
+
 ## Hero's win rate was printed at twice its true loss — 24 Sep 2026
 
 ### Fixed -- `--results` dropped every hand you were dealt but never acted in

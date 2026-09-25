@@ -1685,7 +1685,8 @@ class App(ImportMixin, ttk.Frame):
                 ("per 100 hands", f"{t['bb100']:+.1f} bb/100"),
                 ("error on that", f"±{t['error']:.0f} bb/100"),
                 ("saw a flop", f"{t['saw_flop']:,}"),
-                ("won at showdown", f"{t['wtsd']:,}")]
+                ("went to showdown", f"{t['wtsd']:,}"),
+                ("won at showdown", f"{t['wsd']:,}")]
         if t.get("raked"):
             rows.append(("rake paid", f"{t['rake_bb']:,.1f} bb  (${t['rake']:,.2f} "
                                       f"on {t['raked']:,} pots won where written)"))

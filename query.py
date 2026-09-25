@@ -822,10 +822,18 @@ def build(argv):
                 # `--since X --until X` returned nothing at all. A bare date
                 # means to the end of that day; a value with a time in it is
                 # taken at its word. Still a range scan, so still indexed.
-                bare = len(v.strip()) == 10
-                parts.append(f"played_at < date({q(v)}, '+1 day')" if bare
+                day = as_date(v)
+                parts.append(f"played_at < date({q(day)}, '+1 day')" if day
                              else f"played_at <= {q(v)}")
                 described.append(f"until {v}")
+                continue
+            if a == "--since":
+                # Padded for the same reason: the comparison is textual, and
+                # `played_at >= '2026-8-25'` is false for every timestamp in
+                # August, so the unpadded form selected nothing at all.
+                day = as_date(v)
+                parts.append(f"played_at >= {q(day or v)}")
+                described.append(f"since {v}")
                 continue
             if a == "--hour" and "-" in v:
                 lo, _, hi = v.partition("-")
@@ -2279,15 +2287,57 @@ def show_report(con, where, label, dim, columns, min_n=30, argv=()):
         print("\n" + note)
 
 
+def placed_by(con, where, expr):
+    # Each hand belongs to ONE row. It did not: the seats were selected once
+    # per value of the dimension and every selected seat's WHOLE hand was
+    # then summed into that row, so a hand passing through several values had
+    # its full result counted in each. For a dimension that is a property of
+    # the hand -- position, stake, site, month, texture -- that is harmless:
+    # every decision carries the same value and the rows partition, which is
+    # why this survived. For one that changes DURING a hand it is not.
+    # `eff_bb` falls as the pot grows, so a hand where hero lost a hundred
+    # blinds was counted in full under deep, medium AND short -- and it
+    # reached "short" precisely because it was a big loss, a selection effect
+    # guaranteeing that row looks ruinous. It printed -458.0 bb/100 over 623
+    # hands, and the four rows added to 23,207 hands and -5,025.5 bb against
+    # a table total of 22,032 and -377.2.
+    #
+    # The seat's FIRST matching decision decides: the stack it sat down with
+    # rather than the one it was left holding, which is how Hand2Note's own
+    # Stack sizes report splits. Where the dimension cannot change inside a
+    # hand that is the value every decision had, so those tables do not move.
+    placed = {}
+    for hid, seat, g in con.execute(
+            f"SELECT hand_id, seat, ({expr}) FROM decisions "
+            f"WHERE ({where}) ORDER BY hand_id, seat, n"):
+        placed.setdefault((hid, seat), g)
+    # And the seats that never acted, which have no decision to be placed by.
+    # Only a hand-level dimension can place them, and `spots` says which this
+    # is by whether the expression runs there at all.
+    try:
+        for hid, seat, g in con.execute(
+                f"SELECT hand_id, seat, ({expr}) FROM spots WHERE ({where}) "
+                f"AND NOT EXISTS (SELECT 1 FROM decisions d WHERE "
+                f"d.hand_id = spots.hand_id AND d.seat = spots.seat)"):
+            placed.setdefault((hid, seat), g)
+    except sqlite3.OperationalError:
+        pass
+
+    return placed
+
+
 def show_results_by(con, where, label, dim):
     """Money, split by the dimension. The tracking half of a tracker."""
     expr, order = DIMENSIONS[dim]
     print(f"\nfilter: {label}")
     print(f"by {dim}")
     print("=" * (len(label) + 8))
-    values = [r[0] for r in con.execute(
-        f"SELECT DISTINCT {expr} FROM decisions WHERE ({where}) "
-        f"AND ({expr}) IS NOT NULL")]
+    placed = placed_by(con, where, expr)
+    groups = {}
+    for pair, g in placed.items():
+        if g is not None:
+            groups.setdefault(g, []).append(pair)
+    values = list(groups)
     if not values:
         print("nothing matches")
         return
@@ -2295,8 +2345,7 @@ def show_results_by(con, where, label, dim):
           f"{'+/-':>8}")
     print("  " + "-" * 50)
     for v in sorted(values, key=order):
-        lit = q(v) if isinstance(v, str) else str(v)
-        pairs = matching_seats(con, f"({where}) AND ({expr}) = {lit}")
+        pairs = groups[v]
         if not pairs:
             continue
         con.execute(
@@ -2314,6 +2363,27 @@ def show_results_by(con, where, label, dim):
         # because it is usually larger than the differences between them.
         print(f"  {str(v)[:14]:<14}{n:>8}{net or 0:>11.1f}"
               f"{100 * (net or 0) / n:>10.1f}{1170 / n ** 0.5:>8.0f}")
+
+
+def as_date(v):
+    """
+    A bare year-month-day, zero-padded, or None when this is not one.
+
+    `played_at` is compared as TEXT, so the padding is not cosmetic: on
+    24 Sep 2026 `--until` was taught to treat a bare date as the end of its
+    day by measuring `len(v) == 10`, and `2026-8-25` is nine characters. It
+    fell through to the string comparison and `played_at <= '2026-8-25'` is
+    true of every August timestamp -- the filter selected all 174,298 rows
+    and narrowed nothing. `--since 2026-8-25` is the same mistake the other
+    way and selected none. Length was never the question; the shape is.
+    """
+    bits = v.strip().split("-")
+    if len(bits) != 3 or not all(b.isdigit() for b in bits):
+        return None
+    y, m, d = bits
+    if len(y) != 4 or not 1 <= len(m) <= 2 or not 1 <= len(d) <= 2:
+        return None
+    return f"{y}-{int(m):02d}-{int(d):02d}"
 
 
 def matching_seats(con, where):
@@ -2394,9 +2464,16 @@ def select_cohort(con, spec):
 def results_of(con, pairs):
     """The money over a set of (hand, seat) pairs, tournaments excluded."""
     select_into(con, pairs)
-    n, net_bb, money, saw, wtsd, wwsf, mean, msq = con.execute(
+    # `wsd` is selected as well as `wtsd`, because the view printed the
+    # second under the first's name: "won at showdown 927" was the number
+    # that REACHED one, where 507 won it. The two sit side by side in
+    # `spots` and the rest of the project keeps them apart -- players.py
+    # divides one by the other for W$SD -- so this was a mislabel in one
+    # view, and a convincing one: 927 against the 3,417 flops printed above
+    # it reads as 27.1%, an ordinary-looking W$SD, where the truth is 14.8%.
+    n, net_bb, money, saw, wtsd, wsd, wwsf, mean, msq = con.execute(
         "SELECT COUNT(*), SUM(s.net_bb), SUM(s.won - s.put_in), "
-        "       SUM(s.saw_flop), SUM(s.wtsd), SUM(s.wwsf), "
+        "       SUM(s.saw_flop), SUM(s.wtsd), SUM(s.wsd), SUM(s.wwsf), "
         "       AVG(s.net_bb), AVG(s.net_bb * s.net_bb) "
         "FROM spots s JOIN _sel ON _sel.hand_id = s.hand_id "
         "AND _sel.seat = s.seat WHERE s.fmt <> 'MTT'").fetchone()
@@ -2423,7 +2500,8 @@ def results_of(con, pairs):
         "  WHERE s.fmt <> 'MTT' AND h.rake IS NOT NULL AND s.won > 0 AND h.bb > 0) x"
     ).fetchone()
     return {"hands": n, "net_bb": net_bb or 0.0, "money": money or 0.0,
-            "saw_flop": saw or 0, "wtsd": wtsd or 0, "wwsf": wwsf or 0,
+            "saw_flop": saw or 0, "wtsd": wtsd or 0, "wsd": wsd or 0,
+            "wwsf": wwsf or 0,
             "bb100": 100 * (net_bb or 0.0) / n,
             "error": 100 * max(var, 0.0) ** 0.5 / n ** 0.5 if n > 1 else 1170 / n ** 0.5,
             "rake": rake or 0.0, "rake_bb": rake_bb or 0.0, "raked": raked or 0}
@@ -2447,9 +2525,9 @@ def show_results(con, where, label, parts=()):
     if not got:
         print("nothing matches outside tournaments")
         return
-    n, net_bb, money, saw, wtsd, wwsf = (
+    n, net_bb, money, saw, wtsd, wsd, wwsf = (
         got["hands"], got["net_bb"], got["money"], got["saw_flop"],
-        got["wtsd"], got["wwsf"])
+        got["wtsd"], got["wsd"], got["wwsf"])
     print(f"  hands            {n:8d}")
     print(f"  net              {net_bb or 0:+8.1f} bb   (${money or 0:+.2f})")
     print(f"  per 100 hands    {100 * (net_bb or 0) / n:+8.1f} bb/100")
@@ -2462,7 +2540,8 @@ def show_results(con, where, label, parts=()):
           f"   <- and this is why")
     if saw:
         print(f"  saw a flop       {saw:8d}   ({100 * saw / n:.1f}%)")
-        print(f"  won at showdown  {wtsd or 0:8d}")
+        print(f"  went to showdown {wtsd or 0:8d}")
+        print(f"  won at showdown  {wsd or 0:8d}")
         print(f"  won after flop   {100 * (wwsf or 0) / saw:8.1f}%")
     if got["raked"]:
         print(f"  rake paid        {got['rake_bb']:8.1f} bb   (${got['rake']:.2f}, "
@@ -2687,6 +2766,52 @@ def check(db_path=DB):
           f"{len(cases) - len(misjoined)}/{len(cases)}")
     for m in misjoined:
         fails.append(f"{m}: build's parts do not rejoin into its WHERE")
+
+    # A hand belongs to one row of a split, and the rows must add back. They
+    # did not: each value selected its seats separately and summed each
+    # seat's WHOLE hand, so a hand crossing several values was counted in
+    # each -- --by stack added to 23,207 hands and -5,025.5 bb against a
+    # total of 22,032 and -377.2, and printed the short-stack row at
+    # -458.0 bb/100 where it is +17.5. A dimension that cannot change inside
+    # a hand partitioned correctly all along, which is why only the ones that
+    # can were wrong, and why both kinds are checked here.
+    hero_w = build(["--hero"])[0]
+    for dim in ("position", "stack", "pot"):
+        placed = placed_by(con, hero_w, DIMENSIONS[dim][0])
+        rows = {}
+        for pair, g in placed.items():
+            rows.setdefault(g, set()).add(pair)
+        total = sum(len(v) for v in rows.values())
+        distinct = len(set().union(*rows.values())) if rows else 0
+        if total != distinct:
+            fails.append(f"--by {dim} counts {total - distinct} hands twice")
+    print(f"a split puts each hand in one row  "
+          f"{'3 of 3 dimensions' if not any('counts' in f for f in fails) else 'FAIL'}")
+
+    # A date written without leading zeros must mean the same day as one
+    # with them. `played_at` is compared as text, so it did not: `--until
+    # 2026-8-25` selected every row in the table and `--since 2026-8-25`
+    # selected none, both without complaint.
+    for flag in ("--since", "--until"):
+        padded = build([flag, "2026-08-25"])[0]
+        bare = build([flag, "2026-8-25"])[0]
+        a = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {padded}").fetchone()[0]
+        b = con.execute(f"SELECT COUNT(*) FROM decisions WHERE {bare}").fetchone()[0]
+        if a != b:
+            fails.append(f"{flag} 2026-8-25 selects {b} where 2026-08-25 selects {a}")
+    print(f"a date without leading zeros means the same day  "
+          f"{'yes' if not any('2026-8-25' in f for f in fails) else 'NO'}")
+
+    # And won-at-showdown must be the hands WON at one. The view printed the
+    # count that reached a showdown under that label -- 927 where 507 won --
+    # and 927 against the flops above it reads as a believable 27%.
+    hero_pairs = matching_seats(con, build(["--hero"])[0])
+    got = results_of(con, hero_pairs)
+    if got and got["wsd"] > got["wtsd"]:
+        fails.append(f"won at showdown {got['wsd']} exceeds went to showdown "
+                     f"{got['wtsd']}, so one of them is the other")
+    print(f"won at showdown is not the went-to-showdown count  "
+          f"{got['wsd']:,} won of {got['wtsd']:,} reached")
 
     # A seat dealt in and never given a turn has no row in `decisions`, so
     # reading the money's hand set from there alone dropped hero's walks --
