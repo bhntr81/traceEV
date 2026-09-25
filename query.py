@@ -2317,10 +2317,40 @@ def show_results_by(con, where, label, dim):
 
 
 def matching_seats(con, where):
-    """The (hand, seat) pairs that had a decision matching the filter."""
-    return con.execute(
+    """
+    The (hand, seat) pairs the filter selects, including the silent ones.
+
+    Money is a property of a hand, so these are summed whole -- but a seat
+    that was DEALT IN and never got a turn has no row in `decisions` at all,
+    and reading the set from there alone dropped it. Hero's big blind when
+    everybody folds is exactly that seat: 740 of them, plus 4 small blinds,
+    744 hands worth +348.8 bb. They are all wins, by construction, so losing
+    them is not noise -- it took hero from -377.2 bb over 22,032 hands to
+    -726.0 bb over 21,288, and printed the loss rate as -3.4 bb/100 against a
+    true -1.71. `--hero --sessions` printed 22,150 hands and -377.2 bb three
+    lines below it, from `sessions.py`, which counts hands rather than
+    decisions and was right all along.
+
+    A silent seat can only belong to a filter that does not ask about a
+    decision: `--hero` includes the walk, `--hero --street flop` cannot,
+    because the seat never saw a flop. `spots` holds one row per player per
+    hand and carries the hand-level columns -- site, fmt, bb, position,
+    is_hero, played_at -- and none of the per-decision ones, so the table
+    decides which kind of filter this is. If the clause runs there it was
+    hand-level; if it names a column `spots` has not got, SQLite says so and
+    the answer is the decisions alone.
+    """
+    pairs = con.execute(
         f"SELECT DISTINCT hand_id, seat FROM decisions WHERE {where}"
     ).fetchall()
+    try:
+        silent = con.execute(
+            f"SELECT hand_id, seat FROM spots WHERE ({where}) AND NOT EXISTS ("
+            f"  SELECT 1 FROM decisions d WHERE d.hand_id = spots.hand_id "
+            f"  AND d.seat = spots.seat)").fetchall()
+    except sqlite3.OperationalError:
+        return pairs
+    return pairs + silent
 
 
 def select_into(con, pairs):
@@ -2657,6 +2687,27 @@ def check(db_path=DB):
           f"{len(cases) - len(misjoined)}/{len(cases)}")
     for m in misjoined:
         fails.append(f"{m}: build's parts do not rejoin into its WHERE")
+
+    # A seat dealt in and never given a turn has no row in `decisions`, so
+    # reading the money's hand set from there alone dropped hero's walks --
+    # 744 of them, every one a win, which printed the loss rate at double.
+    # Both halves of the rule are worth holding: a hand-level filter keeps
+    # those seats, and a filter naming a per-decision column must not, since
+    # a seat that never acted cannot have acted on the flop.
+    hero = build(["--hero"])[0]
+    kept = len(matching_seats(con, hero))
+    dealt = con.execute("SELECT COUNT(*) FROM spots WHERE is_hero = 1").fetchone()[0]
+    acted = con.execute("SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+                        f"FROM decisions WHERE {hero})").fetchone()[0]
+    print(f"the money keeps seats that never acted  "
+          f"{kept:,} of {dealt:,} dealt, {kept - acted:,} of them silent")
+    if kept != dealt:
+        fails.append(f"--hero selects {kept} seats of the {dealt} hero was dealt")
+    flop = build(["--hero", "--street", "flop"])[0]
+    flop_acted = con.execute("SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
+                             f"FROM decisions WHERE {flop})").fetchone()[0]
+    if len(matching_seats(con, flop)) != flop_acted:
+        fails.append("a filter naming a street picked up seats that never acted")
 
     # Three filters that returned a wrong answer while looking ordinary.
     # `--until` compared a date against a 19-character timestamp as a string

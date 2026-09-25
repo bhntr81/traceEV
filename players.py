@@ -390,16 +390,35 @@ def stamp(con):
     klass = {(r[0], r[1]): r[2]
              for r in con.execute("SELECT site, player, class FROM players")}
 
-    dealt, who_is, button = {}, {}, {}
+    dealt, who_is, seen_btn, seen_sb = {}, {}, {}, {}
     for r in con.execute("SELECT hand_id, seat, player, position FROM spots"):
         dealt.setdefault(r["hand_id"], set()).add(r["seat"])
         who_is[(r["hand_id"], r["seat"])] = r["player"]
-        # The postflop order runs clockwise from the button. Heads up the
-        # small blind IS the button and acts last, and there is no BTN
-        # label to find, so the small blind stands in for it.
-        if r["position"] == "BTN" or (r["position"] == "SB"
-                                      and r["hand_id"] not in button):
-            button[r["hand_id"]] = r["seat"]
+        if r["position"] == "BTN":
+            seen_btn[r["hand_id"]] = r["seat"]
+        elif r["position"] == "SB":
+            seen_sb.setdefault(r["hand_id"], r["seat"])
+
+    # The postflop order runs clockwise from the button. Heads up the small
+    # blind IS the button and acts last, and there is no BTN label to find,
+    # so it stands in -- but ONLY heads up, which is the half of that
+    # sentence the code did not say until 24 Sep 2026. It stood in whenever
+    # no BTN label was found at all, and for the 105 multiway hands that have
+    # none that rotates the order by most of an orbit: `fish_left` and
+    # `fish_right` were largely each other's across 868 decisions. The check
+    # that holds left + right = n_fish went on passing the whole time,
+    # because the split stayed consistent and was merely on the wrong axis.
+    #
+    # Where the button cannot be known the sides are left NULL. That is the
+    # difference between not measured and measured wrongly, and only the
+    # sides go: `n_reg` and `n_fish` count who else is in the pot and do not
+    # care where anybody sits.
+    button = {}
+    for hid, seats in dealt.items():
+        if hid in seen_btn:
+            button[hid] = seen_btn[hid]
+        elif len(seats) == 2 and hid in seen_sb:
+            button[hid] = seen_sb[hid]
 
     by_hand = {}
     for r in con.execute("SELECT hand_id, n, seat, player, site, action "
@@ -409,11 +428,14 @@ def stamp(con):
     out = []
     for hid, acts in by_hand.items():
         live = dealt.get(hid) or {a["seat"] for a in acts}
-        btn = button.get(hid, max(live))
+        btn = button.get(hid)
         # A seat's place in the postflop order: 0 for the first to act after
         # the button, counting clockwise, so "after me" is a bigger number.
+        # With no button there is no such order, and `sides` says so.
+        sides = btn is not None
         top = max(live) + 1
-        order = {seat: (seat - btn - 1) % top for seat in live}
+        order = ({seat: (seat - btn - 1) % top for seat in live}
+                 if sides else {})
         folded = set()
         for a in acts:
             here = live - folded
@@ -434,10 +456,10 @@ def stamp(con):
                 other,
                 sum(c == "reg" for c, _left in company),
                 sum(c == "fish" for c, _left in company),
-                sum(c == "fish" and left for c, left in company),
-                sum(c == "fish" and not left for c, left in company),
-                sum(c == "reg" and left for c, left in company),
-                sum(c == "reg" and not left for c, left in company),
+                sum(c == "fish" and left for c, left in company) if sides else None,
+                sum(c == "fish" and not left for c, left in company) if sides else None,
+                sum(c == "reg" and left for c, left in company) if sides else None,
+                sum(c == "reg" and not left for c, left in company) if sides else None,
                 a["hand_id"], a["n"]))
             if a["action"] == "F":
                 folded.add(a["seat"])
@@ -699,10 +721,22 @@ def check(db_path=DB):
     # Every fish in the pot sits on one side of the player or the other,
     # and so does every reg; a row where the sides do not add up to the
     # company is a row where the order was read wrong.
+    # Guarded on the SIDES being known rather than on the company, because
+    # since 24 Sep 2026 they can differ: a multiway hand whose history names
+    # no button has no postflop order to place anybody in, so the sides are
+    # NULL while `n_fish` is perfectly well known. Guarding on `n_fish` would
+    # have let those rows fall out of the comparison without saying so, and a
+    # check quietly measuring fewer rows than it claims is the shape of the
+    # problem this file is full of.
+    unknown = con.execute(
+        "SELECT COUNT(*) FROM decisions WHERE n_fish IS NOT NULL "
+        "AND fish_left IS NULL").fetchone()[0]
+    print(f"hands with no button to sit beside  {unknown:,} decisions, "
+          f"sides left NULL rather than guessed")
     sides = con.execute(
         "SELECT COUNT(*), SUM(fish_left + fish_right <> n_fish "
         "OR reg_left + reg_right <> n_reg) FROM decisions "
-        "WHERE n_fish IS NOT NULL").fetchone()
+        "WHERE n_fish IS NOT NULL AND fish_left IS NOT NULL").fetchone()
     print(f"left + right = company            "
           f"{sides[0] - (sides[1] or 0):,}/{sides[0]:,}"
           f"{'' if not sides[1] else '   <-- DISAGREE'}")

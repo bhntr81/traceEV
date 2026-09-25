@@ -8,6 +8,44 @@ Newest first.
 
 ---
 
+## Hero's win rate was printed at twice its true loss — 24 Sep 2026
+
+### Fixed -- `--results` dropped every hand you were dealt but never acted in
+
+`matching_seats` read the money's hand set from `SELECT DISTINCT hand_id,
+seat FROM decisions`. A seat that was dealt in and never got a turn has no
+row there at all -- and your big blind when everybody folds to it is exactly
+that seat.
+
+744 hands, 740 of them walks in the big blind and 4 in the small, worth
+**+348.8 bb between them**. Every one is a win by construction, so losing
+them was not noise in both directions:
+
+| | hands | net | per 100 |
+|---|---|---|---|
+| printed | 21,288 | -726.0 bb | **-3.4 bb/100** |
+| true | 22,032 | -377.2 bb | **-1.71 bb/100** |
+
+The program contradicted itself on screen. `--hero --sessions` prints
+"22,150 hands, -377.2 bb" from `sessions.py`, which counts hands rather than
+decisions and was right the whole time -- three lines below the wrong figure.
+The dollar total was wrong too, $+63.22 against $+234.89.
+
+A silent seat can only belong to a filter that does not ask about a decision:
+`--hero` includes the walk, `--hero --street flop` cannot, because that seat
+never saw a flop. `spots` holds one row per player per hand with the
+hand-level columns and none of the per-decision ones, so the table itself
+decides which kind of filter it is -- if the clause runs against `spots` it
+was hand-level, and if it names a column `spots` has not got, SQLite says so
+and the decisions alone are the answer. `--hero --street flop --results` is
+unchanged at 3,417 hands.
+
+`query.check` holds both halves: `--hero` must select all 22,150 seats hero
+was dealt, and a filter naming a street must select only the ones that acted.
+
+Found by the second audit pass, on the money lens that the first pass
+commissioned and never ran.
+
 ## The window's report printed rates over n=0 — 24 Sep 2026
 
 ### Fixed -- the Report tab's row count was always VPIP's denominator
