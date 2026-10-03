@@ -8,6 +8,18 @@ Newest first.
 
 ---
 
+## The HUD is back in scope — 3 Oct 2026
+
+### Changed -- "No HUD" is no longer a rule
+
+The HUD was cut on 5 Sep 2026 together with the solver. The solver was a
+different product; the HUD is not -- it shows what people do, at the table,
+from the same stat engine -- so it comes back. `CLAUDE.md`, `README.md` and
+`ROADMAP.md` now say so. No code changes: the HUD is being designed, and
+its first step is incremental import.
+
+---
+
 ## Three more in the money view — 25 Sep 2026
 
 ### Fixed -- `--results --by` counted a hand once for every value it passed through

@@ -1430,8 +1430,9 @@ kicker, A-high, pair + draw), then expression stats.
 ## Hand2Note, page by page — what it has that this does not (16 Sep 2026)
 
 Read from the manual's Features and Custom Stats pages and their
-screenshots, saved under `Desktop/h2n_manual`. HUD items are out of scope
-by decision and are listed only so the list is complete. "Have" means
+screenshots, saved under `Desktop/h2n_manual`. HUD items were out of scope
+by decision when this was written and are listed only so the list is
+complete; the HUD came back into scope on 3 Oct 2026. "Have" means
 the same question can be asked here, not that the screen looks alike.
 
 **Audited against the code on 24 Sep 2026, and most of it is out of date.**
@@ -1521,7 +1522,7 @@ cohort picker.
 | Notes per player, **note templates**, inserting a hand into a note, **notes on a stat**, badges (rule-based icons) | have player notes and hand marks; templates, hand-in-note, stat notes, badges missing (badges are HUD) |
 | Marked hands with **labels** (named, coloured) and per-hand notes | have marks (`--tag`), which are labels; per-hand notes exist in `notes.py` |
 | Share a hand as a link or image, hiding names and showdown | **missing** — `--export` writes text; an anonymised one-hand export is close |
-| Showdowns indicator (count of new showdowns per opponent since sitting down) | HUD; out of scope |
+| Showdowns indicator (count of new showdowns per opponent since sitting down) | HUD; in scope since 3 Oct 2026, not built |
 
 ### Statistics engine
 
@@ -1643,3 +1644,16 @@ row. Hero with a fish in the pot: +15 (right) and +19 (left) bb/100,
 each ±22; regs only, +0.5 ±10. What remains of the manual's list:
 configurable hand categories, expression stats, bet size relative to
 the previous bet. Then goal 5.
+
+## 3 Oct 2026 — the HUD is back in scope
+
+The user's decision: take "No HUD" out as a rule and design one. Step 9 of
+Part II was cut on 5 Sep with the solver, on the grounds that a HUD shows at
+the table what a report already shows away from it. That is still true, and
+it is now the reason to build it rather than the reason not to: the HUD is a
+view over the stat engine, not a second engine. The solver stays out.
+
+Its foundation is incremental import. Every import today re-derives every
+table, three quarters of a minute at twelve thousand hands, and a HUD needs a
+new hand counted in a second or two. Nothing is built until the design is
+signed off.

@@ -6,8 +6,12 @@ converter's export. The folder is still `Desktop/poker_analysis`; the program,
 the window, the log and the build are TraceEV.
 
 **Scope, and it is narrow on purpose: the tracking and filtering half of a
-Hand2Note. No HUD, no solver.** A tracker says what people do; a solver says
-what is correct. The solver modules that used to share this folder — `walk`,
+Hand2Note, and a HUD over it. No solver.** A tracker says what people do; a
+solver says what is correct. The HUD was cut with the solver on 5 Sep 2026
+and brought back on 3 Oct 2026 by the user's decision: it shows what people
+do, at the table, from the same stat engine, so it is the same product. It is
+built on incremental import, and a number on it is held to every rule below
+that a number in a report is. The solver modules that used to share this folder — `walk`,
 `leaks`, `poptree`, `bestresponse`, `postflop`, `gtowizard/` — were deleted
 on 5 Sep 2026, 2,733 lines of a different product. They are in the history
 at `4927a11` if they are ever wanted. **Nothing here reaches them, and
