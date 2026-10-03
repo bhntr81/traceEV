@@ -375,8 +375,16 @@ def build(db_path=DB):
             # be worked out -- and it must be, because an all-in player takes
             # no further decisions and otherwise looks like one who declined
             # to act on every street that followed.
+            # A raise names the STREET total, and `contributed` is the whole
+            # hand's, so the street's share has to come off before the two
+            # meet. Preflop they are the same figure and nothing showed; on
+            # the turn a player raising all in for 5.43 after 24 went in on
+            # the flop came out as having 24 left, and every Ignition all-in
+            # raise after the flop was recorded as not all in -- 9 of them in
+            # FPDB's corpus, found the first time CI ran the checks on it.
             is_raise = a["action"] in ("R", "A") and total is not None
-            went_in = (total - contributed) if is_raise else amount
+            on_street = contributed - at_start.get(seat, 0.0)
+            went_in = (total - on_street) if is_raise else amount
             said = a["allin"] if "allin" in a and a["allin"] is not None else 0
             allin = int(bool(said) or stack - went_in <= 0.005)
             pot_frac = raise_x = None

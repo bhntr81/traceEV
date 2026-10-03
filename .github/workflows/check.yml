@@ -1,0 +1,83 @@
+# Every module's check, on every push and pull request.
+#
+# Until this file nothing ran `check.py` but a person, and build.yml ran
+# only what works without hands -- imports, the log, the build script --
+# because the rest of the checks read `hands.db`, which is the user's own
+# play and is in no repository.
+#
+# The stand-in for `hands.db` is FPDB's regression corpus: twenty years of
+# real files from every site we parse, the one public corpus there is. It is
+# AGPL and is not copied into this repository; it is fetched here, at a
+# pinned commit so that a run on Tuesday checks the same hands as Monday's,
+# to the path `fixtures.py` already reads it from.
+name: check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # ChazDazzle/fpdb-chaz, the corpus `fixtures.py` names. Move it on
+  # deliberately: new files are new findings, and they should arrive in a
+  # commit of their own rather than as a red run nobody caused.
+  FPDB_COMMIT: c8a0f99da4e540ecfe63da87e6088bfe4c0a637c
+
+jobs:
+  # The parsers against every fixture they claim: every file read in full,
+  # money, positions and blinds proved, and no verb any parser met and did
+  # not know. Separate from the full suite so that a parser regression is
+  # named by the job that failed, not found at the bottom of a long log.
+  parsers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch the FPDB corpus
+        run: |
+          mkdir -p ~/Desktop/hand_samples && cd ~/Desktop/hand_samples
+          git clone --filter=blob:none --no-checkout https://github.com/ChazDazzle/fpdb-chaz.git
+          cd fpdb-chaz
+          git sparse-checkout set pyfpdb/regression-test-files
+          git checkout "$FPDB_COMMIT"
+
+      - name: Our parsers against the corpus
+        run: python fixtures.py --check
+
+  # Everything `check.py` runs, against a database built from that corpus
+  # and the hand-written hands in fixtures/synthetic. Two checks ask more of
+  # the data than 991 hands can give, and are not skipped for it: `ask.py`'s
+  # worked example has a synthetic hand to find, and `population.py` says
+  # in its output that no line has the sample to test and passes on that,
+  # where on the user's database the five-finding goal applies in full.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # setup-python's interpreter carries Tk; the window needs a display to
+      # open on, and four of the checks open one.
+      - name: Install a virtual display
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Fetch the FPDB corpus
+        run: |
+          mkdir -p ~/Desktop/hand_samples && cd ~/Desktop/hand_samples
+          git clone --filter=blob:none --no-checkout https://github.com/ChazDazzle/fpdb-chaz.git
+          cd fpdb-chaz
+          git sparse-checkout set pyfpdb/regression-test-files
+          git checkout "$FPDB_COMMIT"
+
+      - name: Build hands.db from the corpus
+        run: python fixtures.py --build hands.db
+
+      - name: check.py
+        run: xvfb-run -a python check.py

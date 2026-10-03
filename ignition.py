@@ -298,6 +298,15 @@ def parse_hand(text, source=""):
             verb = "R" if "(raise)" in rest else "A"
             amount = nums[0] if nums else None
             total = nums[-1] if nums else amount
+            if verb == "A" and len(nums) == 1:
+                # "All-in $2" is what was ADDED -- the money check sums it
+                # as such and balances -- so the street total is that on top
+                # of what the seat already had in. Taken as the total itself,
+                # a small blind calling all in for its last $2 over a $24
+                # raise had put in "$2" on the street, `decisions` worked out
+                # it still had chips, and 29 all-ins in FPDB's corpus were
+                # recorded as not all in.
+                total = round(street_in.get(seat["seat"], 0.0) + (amount or 0.0), 2)
             if verb == "R" and len(nums) == 1:
                 # The 2012 one-figure form again: the street total.
                 amount = round(total - street_in.get(seat["seat"], 0.0), 2)
@@ -312,6 +321,15 @@ def parse_hand(text, source=""):
         actions.append({"street": street, "n": order,
                         "position": seat["position"], "seat": seat["seat"],
                         "action": verb, "amount": amount, "total": total})
+
+    # Nobody bets before the flop -- the blinds are posts and the first
+    # chips in after them are a raise -- so a preflop "Bets" is the flop's
+    # action filed under the deal, in a history that never wrote the board.
+    # Two of FPDB's 2012 files are like that. Read anyway, every postflop
+    # decision in them was a preflop one, and a check-call on the turn
+    # counted as a 4-bet pot.
+    if any(a["street"] == "preflop" and a["action"] == "B" for a in actions):
+        return None
 
     # What each player put in by choice. Ignition writes calls, bets and
     # the first figure of a raise as the amount ADDED, so these sum
