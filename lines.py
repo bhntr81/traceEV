@@ -207,14 +207,11 @@ def strings_for(acts):
     return plain, sized, order, nodes, own_rows
 
 
-def build(db_path=DB):
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    migrate(con)
-
+def rows_for(con, where="1=1"):
+    """The line columns for every decision matching `where`, keyed to it."""
     acts_by = {}
     for r in con.execute("SELECT hand_id, n, seat, street, action, agg, pot_frac "
-                         "FROM decisions ORDER BY hand_id, n"):
+                         f"FROM decisions WHERE {where} ORDER BY hand_id, n"):
         acts_by.setdefault(r["hand_id"], []).append(r)
 
     rows = []
@@ -227,16 +224,12 @@ def build(db_path=DB):
         for a, (node, node_sz), (own, own_node) in zip(acts, nodes, own_rows):
             rows.append(street_cols + (line, line_sz, node, node_sz,
                                        own, own_node, hid, a["n"]))
+    return acts_by, rows
 
-    # Ninety thousand separate UPDATEs against an eighty-megabyte database is
-    # a minute of work for something that should take a second. Staged in a
-    # temporary table and joined instead, which SQLite does in one pass.
-    # Dropped before the update and rebuilt after it. Maintaining six
-    # B-trees while rewriting every row took the rebuild from 8 seconds to
-    # 42; building them once at the end costs three.
-    for col in INDEXED:
-        con.execute(f"DROP INDEX IF EXISTS dec_{col}")
 
+def stage(con, rows):
+    """Write these rows' columns onto `decisions` in one joined UPDATE."""
+    con.execute("DROP TABLE IF EXISTS temp.staged")
     con.execute("CREATE TEMP TABLE staged (" +
                 ", ".join(f"{c} TEXT" for c in LINE_COLUMNS) +
                 ", hand_id TEXT, n INT)")
@@ -249,6 +242,38 @@ def build(db_path=DB):
         + ", ".join(f"{c} = staged.{c}" for c in LINE_COLUMNS)
         + " FROM staged WHERE decisions.hand_id = staged.hand_id "
           "AND decisions.n = staged.n")
+    con.execute("DROP TABLE temp.staged")
+
+
+def update(con):
+    """
+    The strings for the hands in the temporary table `dirty` only.
+
+    A hand's line is a fact about that hand alone, so nothing outside it
+    can change. The indexes stay: dropping six B-trees to rewrite a handful
+    of rows would cost far more than keeping them up to date.
+    """
+    _acts, rows = rows_for(con, "hand_id IN (SELECT hand_id FROM dirty)")
+    stage(con, rows)
+    return len(rows)
+
+
+def build(db_path=DB):
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    migrate(con)
+    acts_by, rows = rows_for(con)
+
+    # Ninety thousand separate UPDATEs against an eighty-megabyte database is
+    # a minute of work for something that should take a second. Staged in a
+    # temporary table and joined instead, which SQLite does in one pass.
+    # Dropped before the update and rebuilt after it. Maintaining six
+    # B-trees while rewriting every row took the rebuild from 8 seconds to
+    # 42; building them once at the end costs three.
+    for col in INDEXED:
+        con.execute(f"DROP INDEX IF EXISTS dec_{col}")
+
+    stage(con, rows)
 
     # The whole argument for strings rather than a graph is that a prefix
     # match is an index seek. Without these it is a scan of every row, which

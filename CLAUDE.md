@@ -95,8 +95,13 @@ columns and every line filter silently matches nothing. Run it after.
 python decisions.py && python lines.py
 ```
 
-`importer.CHAIN` is this order written as a list, and `importer.rebuild`
-walks it -- so an import runs all of it. That list and the diagram above are
+`importer.CHAIN` is this order written as a list, and both `importer.rebuild`
+and `importer.update` walk it. A rebuild derives every hand; an update, which
+is what an import runs, derives the hands in a temporary table `dirty`, and a
+stage that looks across hands adds whatever else they changed. Every stage
+therefore has a `build(db_path)` and an `update(con)`, and the second must end
+where the first would: `importer.py --check` replays hands both ways and
+compares every derived row. That list and the diagram above are
 the same fact twice; if one changes, change the other. It ran two stages of
 five until 9 Sep 2026 and every import deleted twenty-two columns.
 

@@ -332,28 +332,76 @@ def totals(con, where="1=1", params=()):
         GROUP BY site, player""", params).fetchall()
 
 
+def row_of(r):
+    """A `players` row from one row of `totals`."""
+    n = r["hands"]
+    pct = lambda k, d: (100.0 * k / d) if d else None
+    return (
+        r["site"], r["player"],
+        # A site with names names a person. An Ignition ring seat names
+        # a chair, and the person in it changes without the name doing
+        # so. The registry says which a site is.
+        int(sites.of(r["site"]).names), n,
+        pct(r["vpip"], n), pct(r["pfr"], n),
+        pct(r["tb"], r["tb_n"]), pct(r["f3"], r["f3_n"]),
+        pct(r["wwsf"], r["flops"]), pct(r["wtsd"], r["flops"]),
+        pct(r["wsd"], r["wtsd"]),
+        (100.0 * r["net"] / r["money_hands"]) if r["money_hands"] else None,
+        classify(n, r["vpip"], r["pfr"]))
+
+
+def update(con):
+    """
+    Recount the players in the hands in `dirty`, and restamp what that moved.
+
+    Only those players' totals can have changed: the ones in the hands now,
+    and the ones `spots.update` took out of them (`touched`), which may
+    have no hands left at all. But a class is not a fact about one hand. A
+    player who crosses from unknown to fish in tonight's hand is a fish on
+    every row of theirs from last month, and is a fish in the company of
+    everybody who ever sat with them -- so every hand that player is in is
+    stamped again, not only the new ones. That is rare after a player's
+    first few hundred hands, which is why this is still cheap.
+    """
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS touched "
+                "(site TEXT, player TEXT, PRIMARY KEY (site, player))")
+    con.execute("INSERT OR IGNORE INTO touched SELECT DISTINCT site, player "
+                "FROM spots WHERE hand_id IN (SELECT hand_id FROM dirty) "
+                "AND player IS NOT NULL")
+    mine = "(site, player) IN (SELECT site, player FROM touched)"
+    was = {(r[0], r[1]): r[2] for r in con.execute(
+        f"SELECT site, player, class FROM players WHERE {mine}")}
+    con.execute(f"DELETE FROM players WHERE {mine}")
+    rows = [row_of(r) for r in totals(con, mine)]
+    con.executemany(
+        "INSERT INTO players VALUES (" + ",".join("?" * 13) + ")", rows)
+    now = {(r[0], r[1]): r[12] for r in rows}
+
+    moved = [k for k in set(was) | set(now) if was.get(k) != now.get(k)]
+    con.execute("DROP TABLE IF EXISTS temp.restamp")
+    con.execute("CREATE TEMP TABLE restamp (hand_id TEXT PRIMARY KEY)")
+    con.execute("INSERT INTO restamp SELECT hand_id FROM dirty")
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS reclassed "
+                "(site TEXT, player TEXT)")
+    con.execute("DELETE FROM reclassed")
+    con.executemany("INSERT INTO reclassed VALUES (?,?)", moved)
+    con.execute("INSERT OR IGNORE INTO restamp SELECT DISTINCT hand_id "
+                "FROM spots WHERE (site, player) IN "
+                "(SELECT site, player FROM reclassed)")
+    stamp(con, "hand_id IN (SELECT hand_id FROM restamp)", analyze=False)
+    con.execute("DROP TABLE temp.restamp")
+    con.execute("DROP TABLE temp.reclassed")
+    con.execute("DROP TABLE temp.touched")
+    return len(rows)
+
+
 def build(db_path=DB):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
     migrate(con)
 
-    rows = []
-    for r in totals(con):
-        n = r["hands"]
-        pct = lambda k, d: (100.0 * k / d) if d else None
-        rows.append((
-            r["site"], r["player"],
-            # A site with names names a person. An Ignition ring seat names
-            # a chair, and the person in it changes without the name doing
-            # so. The registry says which a site is.
-            int(sites.of(r["site"]).names), n,
-            pct(r["vpip"], n), pct(r["pfr"], n),
-            pct(r["tb"], r["tb_n"]), pct(r["f3"], r["f3_n"]),
-            pct(r["wwsf"], r["flops"]), pct(r["wtsd"], r["flops"]),
-            pct(r["wsd"], r["wtsd"]),
-            (100.0 * r["net"] / r["money_hands"]) if r["money_hands"] else None,
-            classify(n, r["vpip"], r["pfr"])))
+    rows = [row_of(r) for r in totals(con)]
     con.executemany(
         "INSERT INTO players VALUES (" + ",".join("?" * 13) + ")", rows)
 
@@ -367,7 +415,7 @@ def build(db_path=DB):
     return len(rows)
 
 
-def stamp(con):
+def stamp(con, where="1=1", analyze=True):
     """
     Put the class of the player acting, and of the one they face, on every
     decision.
@@ -391,7 +439,8 @@ def stamp(con):
              for r in con.execute("SELECT site, player, class FROM players")}
 
     dealt, who_is, seen_btn, seen_sb = {}, {}, {}, {}
-    for r in con.execute("SELECT hand_id, seat, player, position FROM spots"):
+    for r in con.execute("SELECT hand_id, seat, player, position FROM spots "
+                         f"WHERE {where}"):
         dealt.setdefault(r["hand_id"], set()).add(r["seat"])
         who_is[(r["hand_id"], r["seat"])] = r["player"]
         if r["position"] == "BTN":
@@ -422,7 +471,7 @@ def stamp(con):
 
     by_hand = {}
     for r in con.execute("SELECT hand_id, n, seat, player, site, action "
-                         "FROM decisions ORDER BY hand_id, n"):
+                         f"FROM decisions WHERE {where} ORDER BY hand_id, n"):
         by_hand.setdefault(r["hand_id"], []).append(r)
 
     out = []
@@ -464,6 +513,7 @@ def stamp(con):
             if a["action"] == "F":
                 folded.add(a["seat"])
 
+    con.execute("DROP TABLE IF EXISTS temp.stamped")
     con.execute("CREATE TEMP TABLE stamped ("
                 + ", ".join(f"{c} {t}" for c, t in COLUMNS)
                 + ", hand_id TEXT, n INT)")
@@ -490,7 +540,9 @@ def stamp(con):
                 "ON decisions(fish_left, reg_left, street)")
     con.execute("CREATE INDEX IF NOT EXISTS dec_right "
                 "ON decisions(fish_right, reg_right, street)")
-    con.execute("ANALYZE")
+    con.execute("DROP TABLE temp.stamped")
+    if analyze:
+        con.execute("ANALYZE")
 
 
 # The profile, in reading order. These were printed from the columns on the

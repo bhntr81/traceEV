@@ -345,6 +345,70 @@ def build(db_path=DB):
     seat_ids = identify(hands, seats_by,
                         {key: notes.alias_map(con, key) for key in sites.named()})
 
+    got = derive(con, hands, seats_by, acts_by, seat_ids)
+    con.commit()
+    con.close()
+    return got
+
+
+def update(con):
+    """
+    Derive only the hands in the temporary table `dirty`, in place.
+
+    Identity is the one thing here that is not a fact about a single hand.
+    An Ignition seat's name counts the hands dealt since that seat was last
+    seen, across every table, so a hand imported from an older file shifts
+    the names of hands that were already derived -- and an alias added since
+    the last import renames a player everywhere. So the names are worked out
+    again over the whole history, which is cheap because it reads only the
+    seats, and every hand whose names came out different joins `dirty`. The
+    stages after this one then re-derive those hands too, and a refresh
+    ends exactly where a rebuild would.
+
+    The identities that leave a hand are kept in the temporary table
+    `touched`, because `players` has to recount them and after this they
+    are no longer in `spots` to be found.
+    """
+    hands = con.execute(
+        "SELECT * FROM hands WHERE game='HOLDEM' ORDER BY played_at, hand_id"
+    ).fetchall()
+    seats_by = {}
+    for r in con.execute("SELECT hand_id, seat, label FROM seats "
+                         "ORDER BY hand_id, seat"):
+        seats_by.setdefault(r[0], []).append({"seat": r[1], "label": r[2]})
+
+    import notes
+    seat_ids = identify(hands, seats_by,
+                        {key: notes.alias_map(con, key) for key in sites.named()})
+    moved = {hid for hid, seat, player in con.execute(
+        "SELECT hand_id, seat, player FROM spots")
+        if seat_ids.get((hid, seat)) != player}
+    con.executemany("INSERT OR IGNORE INTO dirty VALUES (?)",
+                    [(h,) for h in moved])
+
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS touched "
+                "(site TEXT, player TEXT, PRIMARY KEY (site, player))")
+    con.execute("INSERT OR IGNORE INTO touched SELECT DISTINCT site, player "
+                "FROM spots WHERE hand_id IN (SELECT hand_id FROM dirty) "
+                "AND player IS NOT NULL")
+    for table in ("spots", "bets"):
+        con.execute(f"DELETE FROM {table} "
+                    "WHERE hand_id IN (SELECT hand_id FROM dirty)")
+
+    wanted = {r[0] for r in con.execute("SELECT hand_id FROM dirty")}
+    hands = [h for h in hands if h["hand_id"] in wanted]
+    seats_by, acts_by = {}, {}
+    for r in con.execute("SELECT * FROM seats WHERE hand_id IN "
+                         "(SELECT hand_id FROM dirty) ORDER BY hand_id, seat"):
+        seats_by.setdefault(r["hand_id"], []).append(dict(r))
+    for r in con.execute("SELECT * FROM actions WHERE hand_id IN "
+                         "(SELECT hand_id FROM dirty) ORDER BY hand_id, n"):
+        acts_by.setdefault(r["hand_id"], []).append(dict(r))
+    return derive(con, hands, seats_by, acts_by, seat_ids)
+
+
+def derive(con, hands, seats_by, acts_by, seat_ids):
+    """The rows of `spots` and `bets` for these hands, written."""
     spot_rows, bet_rows = [], []
     for h in hands:
         hid, bb, site = h["hand_id"], h["bb"], h["site"]
@@ -444,8 +508,6 @@ def build(db_path=DB):
 
     insert("spots", spot_rows)
     insert("bets", bet_rows)
-    con.commit()
-    con.close()
     return len(spot_rows), len(bet_rows)
 
 

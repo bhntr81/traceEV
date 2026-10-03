@@ -532,7 +532,7 @@ class ImportMixin:
         if not got["added"]:
             return (f"nothing new in {got['files']} files "
                     f"({got['known']} hands already known)")
-        return f"{got['added']} hands added, and the tables rebuilt"
+        return f"{got['added']} hands added, and the tables brought up to date"
 
     def import_folder(self):
         folder = filedialog.askdirectory(title="folder of hand histories")
@@ -572,7 +572,7 @@ class ImportMixin:
         got = importer.load(paths, DB, progress=say)
         say(f"{got['added']} hands added, {got['known']} already known")
         if got["added"]:
-            importer.rebuild(progress=say)
+            importer.update(got["ids"], DB, progress=say)
         return (f"{got['added']} hands added"
                 + (f", {got['unknown']} files unrecognised"
                    if got["unknown"] else ""))
