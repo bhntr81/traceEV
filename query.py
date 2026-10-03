@@ -198,6 +198,7 @@ WEEKDAY_NAME = {v: k for k, v in WEEKDAYS.items()}
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            "--preset", "--export", "--sort", "--alternative", "--range-of",
+           "--open", "--save-view",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -578,6 +579,92 @@ def forget_filter(name, path=None):
         raise ValueError(f"no saved report called {name!r}")
     del saved[name]
     write_saved(saved, path)
+
+
+# Where a whole view keeps its name: who, the situation, the tab, and how
+# it is drawn -- Hand2Note's saved report, which reopens the window as it
+# was rather than adding a filter to whatever is on it.
+#
+# Not `filters.json`, and deliberately. A report there is a SITUATION that
+# joins the report box and is laid over any tab and any players, so it
+# must not carry columns or a cohort (see `save_filter`). A view is the
+# opposite object: it replaces everything, so everything is what it keeps.
+# One argv, in the vocabulary both front ends already speak, so that
+# `--open NAME` on the command line and Views > Open in the window read
+# the same entry and nothing has to translate between them.
+VIEWS = Path(__file__).parent / "views.json"
+MODES = ("--stats", "--hands", "--results", "--graph", "--range",
+         "--chart", "--sessions", "--actions", "--overfolds")
+UNREADABLE_VIEWS = []
+
+
+def view_situation(argv):
+    """A view's argv without its tab, options and cohort: what `build` reads."""
+    import players
+    _spec, rest = players.parse_cohort(list(argv))
+    return situation_only([a for a in rest if a not in MODES])
+
+
+def saved_views(path=None):
+    """
+    The saved views, each proved to still build, like `saved_filters`.
+
+    One that no longer does -- a flag renamed, a cohort condition dropped --
+    is named in `UNREADABLE_VIEWS` and left in the file, rather than taking
+    the menu with it or vanishing from it unremarked.
+    """
+    import players
+    UNREADABLE_VIEWS[:] = []
+    path = Path(path or VIEWS)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        UNREADABLE_VIEWS.append(("(the file itself)", str(e)))
+        return {}
+    out = {}
+    for name, argv in raw.items():
+        try:
+            players.parse_cohort(list(argv))
+            build(view_situation(argv))
+        except (SystemExit, TypeError) as e:
+            UNREADABLE_VIEWS.append((str(name), str(e)))
+            continue
+        out[str(name)] = [str(a) for a in argv]
+    return out
+
+
+def save_view(name, argv, path=None):
+    """Keep this argv under a name. Returns the situation, in words."""
+    name = " ".join(str(name).split())
+    if not name:
+        raise ValueError("a view needs a name")
+    argv = [str(a) for a in argv]
+    _where, described, _parts = build(view_situation(argv))
+    path = Path(path or VIEWS)
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    saved[name] = argv
+    path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+    return described
+
+
+def forget_view(name, path=None):
+    path = Path(path or VIEWS)
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if name not in saved:
+        raise ValueError(f"no saved view called {name!r}")
+    del saved[name]
+    path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+
+
+def view_argv(name, path=None):
+    known = saved_views(path)
+    if name not in known:
+        raise SystemExit(f"no saved view called {name!r}"
+                         + (f" -- choose from: {', '.join(known)}" if known
+                            else " -- save one with --save-view NAME"))
+    return known[name]
 
 # Eight columns is what fits and what gets read. Anything else is available
 # with --show.
@@ -3339,10 +3426,35 @@ def main(argv):
         return 0
     if "--check" in argv:
         return 0 if check() else 1
+    if "--views" in argv:
+        for name, flags in saved_views().items():
+            print(f"\n  {name}\n      {' '.join(flags)}")
+        for name, why in UNREADABLE_VIEWS:
+            print(f"\n  {name}   BROKEN -- {why}")
+        if not saved_views() and not UNREADABLE_VIEWS:
+            print("no saved views -- save one with --save-view NAME")
+        return 1 if UNREADABLE_VIEWS else 0
+    if "--save-view" in argv:
+        i = argv.index("--save-view")
+        if i + 1 >= len(argv):
+            raise SystemExit("--save-view needs a name")
+        name = argv[i + 1]
+        try:
+            described = save_view(name, argv[:i] + argv[i + 2:])
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"saved the view {name!r}\n  filter: {described}")
+        return 0
+    if "--open" in argv:
+        # The saved view first and anything typed after it, so a flag added
+        # on the command line narrows the view rather than being lost.
+        i = argv.index("--open")
+        if i + 1 >= len(argv):
+            raise SystemExit("--open needs the name of a saved view")
+        argv = view_argv(argv[i + 1]) + argv[:i] + argv[i + 2:]
     cohort_spec, argv = players.parse_cohort(argv)
     mode = "--stats"
-    for m in ("--stats", "--hands", "--results", "--graph", "--range",
-              "--chart", "--sessions", "--actions", "--overfolds"):
+    for m in MODES:
         if m in argv:
             mode = m
             argv = [a for a in argv if a != m]

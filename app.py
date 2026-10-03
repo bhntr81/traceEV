@@ -40,7 +40,7 @@ import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
 
@@ -70,6 +70,7 @@ query.DB = DB
 stats.DB = DB
 stats.load_custom(HERE / "stats.json")
 query.SAVED = HERE / "filters.json"
+query.VIEWS = HERE / "views.json"
 # The assistant's provider, key and model are the user's in the same way,
 # and `ask`'s own comment says they live beside the program -- but its path
 # was the last one still measured from the code. Frozen, that is the
@@ -389,6 +390,13 @@ class ImportMixin:
         m.add_command(label="Import a file…", command=self.import_file)
         m.add_command(label="Merge another database…", command=self.import_db)
         bar.add_cascade(label="Import", menu=m)
+
+        # Read from the file each time it opens, so a view saved a moment
+        # ago is in it without the menu having been told.
+        v = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                    activebackground=ACCENT, activeforeground=BG)
+        v.configure(postcommand=lambda: self._fill_views(v))
+        bar.add_cascade(label="Views", menu=v)
 
         u = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
@@ -1037,22 +1045,28 @@ class App(ImportMixin, ttk.Frame):
         (self.multi[group].add if var.get() else self.multi[group].discard)(value)
         self.refresh()
 
-    def argv(self):
+    def _cohort_argv(self):
+        if self.cohort_spec is None:
+            return []
+        conditions, site, klass, durable = self.cohort_spec
+        argv = ["--cohort"]
+        flags = {"fold_to_threebet": "--fold-to-threebet"}
+        for field, value in conditions:
+            argv += [flags.get(field, "--" + field), value]
+        if site:
+            argv += ["--site", site]
+        if klass:
+            argv += ["--class", klass]
+        if durable is not None:
+            argv += ["--durable", str(durable)]
+        return argv
+
+    def argv(self, cohort=True):
         """The window's state as the argument list `query.build` understands."""
         argv = query.preset_argv(self.preset.get()) if self.preset.get() else []
         argv += [fl for fl, v in self.flags.items() if v.get()]
-        if self.cohort_spec is not None:
-            conditions, site, klass, durable = self.cohort_spec
-            argv.append("--cohort")
-            flags = {"fold_to_threebet": "--fold-to-threebet"}
-            for field, value in conditions:
-                argv += [flags.get(field, "--" + field), value]
-            if site:
-                argv += ["--site", site]
-            if klass:
-                argv += ["--class", klass]
-            if durable is not None:
-                argv += ["--durable", str(durable)]
+        if cohort:
+            argv += self._cohort_argv()
         # "Against" is the pot's matchup, in the user's words: BTN vs BB is
         # any time the button raised and the big blind did not fold. With
         # no "my position" chosen it is every seat's pots against those.
@@ -1125,7 +1139,89 @@ class App(ImportMixin, ttk.Frame):
               "--actions": "actions", "--overfolds": "overfolds",
               "--graph": "graph"}
 
-    def apply_argv(self, argv):
+    def view_argv(self):
+        """
+        Everything on the screen as one command line, for a saved view.
+
+        The situation, then the tab and how it is drawn, then the players
+        last. Last because `players.parse_cohort` reads the first `--site`
+        it meets as the cohort's, and a cohort with no site of its own
+        would otherwise take the site the filter was on; `open_view` reads
+        the players from the `--cohort` on and the rest from before it.
+        """
+        view = self.nb.tab(self.nb.select(), "text")
+        argv = self.argv(cohort=False)
+        flag = {t: f for f, t in self.TAB_OF.items()}.get(view)
+        if flag:
+            argv.append(flag)
+        if view in ("report", "results", "actions", "overfolds") and (
+                self.by.get() or view == "report"):
+            argv += ["--by", self.by.get() or "position"]
+        if view == "chart":
+            if self.chart_stat():
+                argv += ["--show", self.chart_stat()]
+            if self.alternative.get():
+                argv += ["--alternative", self.alternative.get()]
+        if view == "stats" and self.picked:
+            argv += ["--range-of", self.picked]
+            if TOOK.get(self.took.get()):
+                argv += ["--alternative", TOOK[self.took.get()]]
+        return argv + self._cohort_argv()
+
+    def open_view(self, name):
+        """A saved view, onto the window: everything it had, and nothing else."""
+        argv = query.view_argv(name)
+        cut = argv.index("--cohort") if "--cohort" in argv else len(argv)
+        spec, rest = players.parse_cohort(argv[cut:])
+        # The split box keeps its choice across an assistant's handoff,
+        # which names no split; a view that had none means none.
+        self.by.set("")
+        self.apply_argv(argv[:cut] + rest, cohort_spec=spec)
+
+    def save_view(self):
+        name = simpledialog.askstring(
+            "Save this view", "A name for everything on the screen -- who, "
+                              "the filter, the tab and its choices:",
+            parent=self.master)
+        if not name or not name.strip():
+            return
+        if name.strip() in query.saved_views() and not messagebox.askyesno(
+                "Replace it?", f"There is already a view called {name!r}. "
+                               f"Replace it with this one?", parent=self.master):
+            return
+        try:
+            query.save_view(name, self.view_argv())
+        except (ValueError, SystemExit) as error:
+            messagebox.showerror("Not saved", str(error), parent=self.master)
+
+    def forget_view(self, name):
+        if messagebox.askyesno("Forget it?", f"Forget the view {name!r}? "
+                               "This cannot be undone.", parent=self.master):
+            query.forget_view(name)
+
+    def _fill_views(self, menu):
+        """The Views menu, read from the file each time it is opened."""
+        menu.delete(0, "end")
+        menu.add_command(label="Save this view…", command=self.save_view)
+        known = query.saved_views()
+        if known:
+            menu.add_separator()
+        for name in known:
+            menu.add_command(label=name,
+                             command=lambda n=name: self.open_view(n))
+        if known:
+            menu.add_separator()
+            forget = tk.Menu(menu, tearoff=0, background=PANEL, foreground=INK,
+                             activebackground=ACCENT, activeforeground=BG)
+            for name in known:
+                forget.add_command(label=name,
+                                   command=lambda n=name: self.forget_view(n))
+            menu.add_cascade(label="Forget", menu=forget)
+        for name, why in query.UNREADABLE_VIEWS:
+            menu.add_command(label=f"{name} (broken: {why[:60]})",
+                             state="disabled")
+
+    def apply_argv(self, argv, cohort_spec=None):
         """
         A command line, into the window's own boxes -- the inverse of `argv`.
 
@@ -1137,8 +1233,11 @@ class App(ImportMixin, ttk.Frame):
         bar shows what was kept.
         """
         self.clear_filters()
+        if cohort_spec is not None:
+            self.cohort_spec = cohort_spec
+            self.cohort_btn.configure(text="Players: active")
         tab, argv = "stats", list(argv)
-        shown, alternative = None, ""
+        shown, alternative, range_of = None, "", None
         self.alternative.set("")
         self.of.set("the range itself")
         i = 0
@@ -1180,6 +1279,9 @@ class App(ImportMixin, ttk.Frame):
             elif a == "--alternative" and i + 1 < len(argv):
                 alternative = argv[i + 1]
                 i += 2
+            elif a == "--range-of" and i + 1 < len(argv):
+                range_of = argv[i + 1]
+                i += 2
             elif a in query.OPTIONS and i + 1 < len(argv):
                 i += 2
             else:
@@ -1189,6 +1291,13 @@ class App(ImportMixin, ttk.Frame):
                 self.of.set(BY_KEY[shown].label)
             if alternative in query.CHART_ALTERNATIVES:
                 self.alternative.set(alternative)
+        self.picked = None
+        self.took.set(next(iter(TOOK)))
+        if tab == "stats" and range_of in BY_KEY:
+            self.picked = range_of
+            self.took.set(next((w for w, alt in TOOK.items()
+                                if alt == (alternative or None)),
+                               next(iter(TOOK))))
         for name, frame in self.tabs.items():
             if name == tab:
                 self.nb.select(frame)
@@ -3736,6 +3845,65 @@ def check(db_path=DB):
         fails.append("a hand-counted stat was given an alternative range")
     app.picked = None
 
+    # A saved view has to come back as it was saved: the same rows, the same
+    # tab, the same choices on it, and the same players. Saved and opened
+    # through the window's own methods and the command line's, into a file
+    # of its own so the user's views are never touched. The first has a
+    # cohort with no site of its own beside a filter that has one, which is
+    # the case `parse_cohort` would have read wrong had the players not
+    # been written last.
+    import contextlib, io, tempfile
+    real_views = query.VIEWS
+    query.VIEWS = Path(tempfile.mkdtemp()) / "views.json"
+    states = [
+        (["--hero"], {"site": "ignition"}, {"pot": {"raised"}}, "chart",
+         ([("vpip", ">=30")], None, None, None),
+         lambda: (app.of.set(BY_KEY["threebet"].label),
+                  app.alternative.set("call"))),
+        (["--pool"], {}, {"street": {"flop"}}, "stats", None,
+         lambda: (setattr(app, "picked", "cbet_flop"),
+                  app.took.set("fold instead"))),
+        (["--hero"], {}, {}, "report", None, lambda: app.by.set("stack")),
+    ]
+    unlike = []
+    for i, (flags, vals, multi, tab, spec, extra) in enumerate(states):
+        app.clear_filters()
+        app.by.set("")
+        for f in flags:
+            app.flags[f].set(True)
+        for n, v in vals.items():
+            app.vals[n].set(v)
+        for g, v in multi.items():
+            app.multi[g] = set(v)
+        app.cohort_spec = spec
+        app.nb.select(app.tabs[tab])
+        extra()
+        before = app.view_argv()
+        where_before = query.build(players.parse_cohort(app.argv())[1])[0]
+        query.save_view(f"view {i}", before)
+        app.clear_filters()
+        app.nb.select(app.tabs["hands"])
+        app.open_view(f"view {i}")
+        after = app.view_argv()
+        where_after = query.build(players.parse_cohort(app.argv())[1])[0]
+        if (before != after or where_before != where_after
+                or app.cohort_spec != spec
+                or app.nb.tab(app.nb.select(), "text") != tab):
+            unlike.append(f"{' '.join(before)} came back as {' '.join(after)}")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                query.main(["--open", f"view {i}"])
+        except SystemExit as e:
+            unlike.append(f"--open 'view {i}' refused: {e}")
+    print(f"a saved view reopens as it was  "
+          f"{len(states) - len(unlike)}/{len(states)}")
+    for u in unlike:
+        print(f"    {u}")
+    fails += unlike
+    query.VIEWS = real_views
+    app.clear_filters()
+    app.picked = None
+
     # The dark theme is only dark if `clam` is the theme in use; the others
     # hand their drawing to Windows and ignore every colour set here.
     # The dialog must offer what the command line can express. A filter that
@@ -3902,7 +4070,8 @@ def check(db_path=DB):
     probe.destroy()
 
     mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
-            "filters.json": query.SAVED, "ai.json": ask.SETTINGS}
+            "filters.json": query.SAVED, "ai.json": ask.SETTINGS,
+            "views.json": query.VIEWS}
     astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)
     print(f"the user's files sit beside it {len(mine) - len(astray)}/{len(mine)}")
     if astray:

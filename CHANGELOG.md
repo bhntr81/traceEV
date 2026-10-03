@@ -8,6 +8,33 @@ Newest first.
 
 ---
 
+## Saved views -- 3 Oct 2026
+
+### Added -- save the whole window under a name, and open it again
+
+Hand2Note saves a report as everything on the screen and reopens it as it
+was. Here a report (`filters.json`) has only ever been the situation,
+on purpose: it joins the report box and is laid over any tab and any
+players, so a report that carried `--show` or a cohort would rewrite every
+view it was opened in. A view is the other object. It keeps who, the
+filter, the tab and the choices on it, and opening it replaces the window's
+state rather than adding to it.
+
+One argv in `views.json`, in the vocabulary both front ends already speak:
+`query.py --save-view NAME ...`, `--views`, `--open NAME [more flags]`, and
+the window's **Views** menu read and write the same entries.
+
+The players are written last, for a reason found while writing the check.
+`players.parse_cohort` takes the first `--site` it meets as the cohort's,
+so a Players filter with no site of its own, saved in front of a filter
+on Ignition, came back with the site moved into the cohort and the site
+box empty. `app.py --check` saves three views and opens each through the
+window and through the command line. It requires the same argv, the same
+WHERE, the same players and the same tab, and it fails 2/3 with the order
+reversed.
+
+---
+
 ## A stat and the hands it was made of -- 3 Oct 2026
 
 ### Added -- the stats tab draws the range of the row you click

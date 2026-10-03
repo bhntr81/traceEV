@@ -496,6 +496,30 @@ REPORT** button at the foot of the filter dialog.
 `--forget` takes either a saved stat or a saved report; it refuses if you
 somehow have both under one name rather than guessing which you meant.
 
+### Saving the whole view
+
+A report is only the situation, laid over whatever tab and players are on
+the screen. A **view** is everything: who (me, the pool, a site, a player,
+the Players cohort), the filter, the tab, and the choices on it -- the
+split, the chart's stat and alternative, the stat clicked on the stats tab.
+Opening one replaces the window's state with it, which is Hand2Note's saved
+report.
+
+```bash
+python query.py --save-view "BTN 3bet pots" --pool --site ignition --pot 3bet --pos BTN --chart --show cbet_flop
+python query.py --views
+python query.py --open "BTN 3bet pots"
+python query.py --open "BTN 3bet pots" --since 2026-09-01
+```
+
+In the window it is the **Views** menu: **Save this view…**, then each saved
+one by name, and **Forget** below them. They live in `views.json` beside the
+program, separate from `filters.json`: a report joins the report box and
+must not carry columns or people, and a view must carry both. Flags typed
+after `--open NAME` narrow the view rather than replacing it. A view that no
+longer builds -- a flag renamed since -- is listed as broken rather than
+dropped.
+
 ### Sizes, depth and the game
 
 ```bash
