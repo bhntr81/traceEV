@@ -1997,11 +1997,14 @@ class App(ImportMixin, ttk.Frame):
             c.create_text(14, 4, anchor="nw", fill=INK, font=(UI, 9),
                           text=f"{g['stat']}: {k:,} of {n:,} chances"
                                + (f" ({100.0 * k / n:.1f}%)" if n else "")
-                               + " -- these are those hands")
+                               + " -- these are those hands"
+                               + ("" if "held" not in g else
+                                  "\n" + query.held_line(g["held"])))
 
         comparison = g["mode"] == "comparison"
         rate = g["mode"] in ("rate", "comparison")
-        top, foot = 16 + (18 if "took" in g else 0), 112 if comparison else 52
+        top = 16 + (18 if "took" in g else 0) + (16 if "held" in g else 0)
+        foot = 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
         if side:
@@ -3844,6 +3847,21 @@ def check(db_path=DB):
         fails.append("the stats tab's range is computed but not drawn")
     if not refused["range"].get("error"):
         fails.append("a hand-counted stat was given an alternative range")
+    # The weak share under a postflop range is `range_of`'s over the same
+    # rows, and a preflop range has none: nothing is made before the flop,
+    # and a line there would be a tier breakdown of an empty set.
+    flop = query.stat_range_of(con, "1=1", "cbet_flop")
+    held = flop.get("held")
+    want = query.range_of(con, f"({BY_KEY['cbet_flop'].chance}) AND "
+                               f"({BY_KEY['cbet_flop'].action})")
+    weak_ok = (held and abs(held["weak"] - want["weak"]) < 1e-9
+               and "held" not in g)
+    print(f"a postflop range says how much is weak  "
+          f"{(format(held['weak'], '.0f') + '%') if held else 'NO'}"
+          f"; a preflop one says nothing  {'yes' if 'held' not in g else 'NO'}")
+    if not weak_ok:
+        fails.append("the weak share beside a stat's range is missing, or "
+                     "differs from the range tab's, or drawn preflop")
     app.picked = None
 
     # A saved view has to come back as it was saved: the same rows, the same

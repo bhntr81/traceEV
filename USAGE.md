@@ -404,6 +404,18 @@ The first line printed is what the chart is a range *of*:
 148 of 148 player-hands showed cards (100.0%)
 ```
 
+After the flop a second line says what those hands had made, in the range
+tab's three tiers -- for a c-bet range, how much of it was weak:
+
+```
+cbet flop: 343 of 397 chances (86.4%) -- the chart is those hands
+on the board: strong 29%, middle pair 14%, weak 57% (of the 343 decisions with cards shown)
+```
+
+That is `range_of` over the same rows, so weak is `strength.WEAK` and the
+range tab under the same filter and `--quick cbet_flop` gives the full
+breakdown behind it. Preflop nothing has been made yet and there is no line.
+
 With `--alternative` it is the hands that did that instead on the same
 chances -- the call range beside the 3-bet range. A stat counted once per
 hand (VPIP, PFR) has no single decision that could have been a call

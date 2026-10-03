@@ -1589,9 +1589,26 @@ def stat_range_of(con, where, stat, alternative=None):
         said = f"{alternative} instead of {stat.label}"
     took = stats.Stat("_took", said, stat.chance, action, per=stat.per)
     n, k = stats.rate(con, took, where)[:2]
-    chart = chart_of(con, f"({where}) AND ({stat.chance}) AND ({action})")
+    these = f"({where}) AND ({stat.chance}) AND ({action})"
+    chart = chart_of(con, these)
     chart.update(stat=said, took=(k, n))
+    # After the flop the same hands have a second description, what they
+    # had made on the board, and the question a c-bet range is asked most
+    # is how much of it is weak -- Hand2Note puts that percentage beside
+    # its range for exactly this. It is `range_of`'s, so the line between
+    # weak and strong is `strength.WEAK` and nowhere else. Preflop nothing
+    # has been made and the rows have no `made`, so there is no line.
+    held = range_of(con, these)
+    if held["n"]:
+        chart["held"] = {t: held[t] for t in ("strong", "medium", "weak", "n")}
     return chart
+
+
+def held_line(held):
+    """What a postflop range had made, in the three tiers, as one line."""
+    return (f"on the board: strong {held['strong']:.0f}%, middle pair "
+            f"{held['medium']:.0f}%, weak {held['weak']:.0f}% "
+            f"(of the {held['n']:,} decisions with cards shown)")
 
 
 def comparison_caption(chart):
@@ -1618,6 +1635,8 @@ def show_chart(con, where, label, stat=None, parts=(), min_n=3, alternative=None
         print(f"{g['stat']}: {k:,} of {n:,} chances"
               + (f" ({100.0 * k / n:.1f}%)" if n else "")
               + " -- the chart is those hands")
+        if g.get("held"):
+            print(held_line(g["held"]))
     if not g["total"]:
         print("  " + why_empty(con, parts))
         return

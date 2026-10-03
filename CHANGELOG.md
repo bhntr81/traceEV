@@ -58,6 +58,18 @@ so it counts player-hands once and carries the seen fraction like every
 other chart. `app.py --check` holds it to the hands that 3-bet counted
 directly, by both roads it reaches the window.
 
+### Added -- how much of a postflop range is weak, beside it
+
+Hand2Note prints a weak percentage beside a betting range, the "how often
+is this a bluff" number. The range tab has had the same three tiers since
+`strength.WEAK`, but only for the hands that reached a spot. A clicked
+postflop stat now gets one line under its heading, `strong / middle pair /
+weak` over the hands that took it, from `range_of` over the same rows, so
+the line between weak and strong is still drawn in one place only. The
+closed 12 Sep branch let each bar be flipped to weak by right-click. That
+is left out on purpose: the project's rule is that disagreeing with the
+line is a line changed in `strength.WEAK`, not a different answer per click.
+
 ### Added -- `--no-reg-vs-fish`
 
 Hand2Note's "exclude reg vs fish", as a switch: a reg's decisions with a
