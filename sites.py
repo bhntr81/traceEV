@@ -78,6 +78,12 @@ class Site:
     # format. The parser is shared and this is what tells the rooms apart;
     # empty for the room whose format it is.
     brand: str = ""
+    # Whether the HUD draws on this room's tables. Two things have to be
+    # true: the room allows a HUD, and a label is a person, because a box of
+    # numbers over a seat whose occupant changes without the name doing so
+    # is a box of somebody else's numbers. PartyPoker has banned HUDs since
+    # 2019; Ignition names nobody; the app rooms arrive after the session.
+    hud: bool = False
 
     def header(self, line):
         """True if this line begins one of THIS site's hands."""
@@ -90,13 +96,14 @@ SITES = (
          places=(r"%USERPROFILE%\Ignition Casino Poker\Hand History",
                  r"%USERPROFILE%\Bovada Poker\Hand History"),
          about="Ignition; Bovada and Bodog are the same network and format"),
-    Site("acr", acr, names=True, reveals=False, rake=True,
+    Site("acr", acr, names=True, reveals=False, rake=True, hud=True,
          places=(r"%LOCALAPPDATA%\AmericasCardroom\handHistory",
                  r"%LOCALAPPDATA%\BlackChipPoker\handHistory",
                  r"%USERPROFILE%\Documents\AmericasCardroom"),
          about="ACR -- the Winning Poker Network, shared with Black Chip, "
                "YaPoker and True Poker"),
     Site("pokerstars", pokerstars, names=True, reveals=False, rake=True,
+         hud=True,
          places=(r"%LOCALAPPDATA%\PokerStars\HandHistory",
                  r"%LOCALAPPDATA%\PokerStars.EU\HandHistory",
                  r"%LOCALAPPDATA%\PokerStars.UK\HandHistory"),
@@ -142,6 +149,11 @@ def of(key):
 def named():
     """Sites where a label is a person -- the ones a player report is for."""
     return tuple(s.key for s in SITES if s.names)
+
+
+def with_hud():
+    """Sites whose tables the HUD draws on."""
+    return tuple(s.key for s in SITES if s.hud)
 
 
 def revealing():

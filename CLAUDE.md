@@ -151,6 +151,11 @@ Facts that stay true, and that have each been got wrong at least once:
   it too. Every population query needs a site as well, or it is averaging
   two different games into a number that describes neither.
   `sites.revealing()` is the pool; `sites.named()` is the people.
+- **A HUD only where a HUD is allowed and a label is a person.**
+  `Site.hud` is ACR and PokerStars. PartyPoker has banned them since 2019,
+  and an Ignition seat is a different person after they stand up; a box
+  beside it would be the last occupant's numbers. `hud.py` computes
+  nothing of its own -- every figure on it is `stats.py`'s.
 - **Only sites with names have people.** ACR writes the screen name and it
   is the same player next week at another stake. An Ignition ring identity
   is `table:seat:segment` -- one person for as long as they stay sat
@@ -313,7 +318,7 @@ Facts that stay true, and that have each been got wrong at least once:
   on, so `python build.py` under an interpreter without tkinter produces a
   windowed program with no Tk: a window that never appears, from a build with
   no console to say why. The 3.11 install here has no tkinter -- it also
-  fails four of `check.py`'s twenty-two for the same reason, and all four are
+  fails four of `check.py`'s twenty-three for the same reason, and all four are
   exactly the modules that import Tk, which is how to tell that apart from a
   regression. Build with the 3.14 install, which has Tk 9.0 and PyInstaller.
   The workflow builds on 3.11 with Tk 8.6 via `setup-python`, so the shipped

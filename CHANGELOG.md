@@ -8,6 +8,38 @@ Newest first.
 
 ---
 
+## A HUD, on ACR and PokerStars -- 3 Oct 2026
+
+### Added -- `hud.py`, and `Site.hud`
+
+A box beside each opponent while the table is played, kept beside their
+seat as the window moves. It is a view and nothing else: the numbers are
+`stats.rates` and `stats.shrunk`, the people are `spots.identify`'s, the
+class is `players.classify`'s, and a hand reaches it through
+`importer.update`, the incremental import that came before it for this
+reason. A HUD that worked out its own VPIP would be a second answer to a
+question the project answers once.
+
+Shrunk towards the table's game by default -- its site and stake, the
+player taken out -- because a rate on one chance printed bare is
+believed, and the profile view's "fold to 3-bet 0.0%" was. `hud.json`
+with `"rates": "raw"` prints them as Hand2Note does. The stats, the faint
+threshold and the seat layout are settings too.
+
+`hud.py --check` holds every number to `stats.rate` and a pool written
+out longhand, pooled and raw; hero to the bottom of every table size;
+every table name in the database to the window titles it should match,
+"Halley" not claiming "Halley II"; and a history file that grows while
+it is watched to reaching the boxes. A pool that left the player in, and
+a faint line drawn one chance too late, each failed it.
+
+What it has not been held to is a poker client: the window code runs
+only on Windows, and the seat ellipse is a guess. `hud.py --demo` draws
+the HUD over a pretend table named after the last one played, so the
+whole of it but the client can be seen.
+
+---
+
 ## An import derives only what it changed -- 3 Oct 2026
 
 ### Changed -- `importer.update`, and an `update(con)` on every stage of the chain

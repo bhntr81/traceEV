@@ -15,6 +15,7 @@ hands.db.bak*
 # not the project's
 stats.json
 filters.json
+hud.json
 
 # runtime log
 TraceEV.log*

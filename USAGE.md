@@ -1320,6 +1320,60 @@ replays a thousand hands both ways and fails on any row that differs.
 
 ---
 
+## The HUD
+
+```bash
+python hud.py              # watch the hand history folders, draw a box beside each opponent
+python hud.py --demo       # a pretend table named after your last one, with the HUD over it
+python hud.py --print      # the numbers for the tables you played last, as text
+python hud.py --windows    # every window title, and which table it matched
+```
+
+Open the poker client, start `hud.py`, and sit down. Every second it looks
+at the client's hand history folder; when a hand is written it is imported
+the way **Import new hands** imports it, and every table whose file moved
+gets its boxes worked out again. Only ACR and PokerStars: `Site.hud` says
+which sites allow one and have names that are people.
+
+A box reads:
+
+```
+Somebody  75h  REG
+19 / 6 / 11
+(55) / (60) / (48)
+```
+
+the name, how many hands of theirs you have, and a class only when
+`players.classify` gave one. Then VPIP / PFR / 3-bet, and fold to 3-bet /
+flop c-bet / fold to c-bet. A number in brackets -- drawn faint on the
+screen -- rests on fewer than ten chances. A dash is no chance at all,
+which is not the same as zero.
+
+**The numbers are pulled towards the table's game**, the same way the
+player profile pulls them (`stats.shrunk`): a player seen fold to one
+3-bet out of one does not read 100. The game is the table's site and
+stake with the player taken out. To see raw rates as Hand2Note prints
+them, and to change anything else, write a `hud.json` beside the
+program -- yours, and not in the repository:
+
+```json
+{"rates": "raw",
+ "lines": [["vpip", "pfr", "threebet", "wtsd"], ["cbet_flop", "fold_to_cbet"]],
+ "faint_below": 20,
+ "ellipse": [0.5, 0.45, 0.42, 0.38]}
+```
+
+`lines` takes any stat key, including one you saved in `stats.json`.
+`ellipse` is where the seats lie on a table window -- centre and half-size
+as fractions of the window -- and is a first guess: if the boxes sit off
+the names, that is the number to change. Hero is put at the bottom, as
+both clients do with a preferred seat.
+
+If a table gets no boxes, run `--windows` with it open and look at its
+title: the table is found by its name from the hand history at the start
+of the title, and a title that does not start with it is the thing to
+report.
+
 ## Keeping it up to date
 
 The window checks GitHub on every launch, on a worker thread, and says
