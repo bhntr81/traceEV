@@ -1366,6 +1366,7 @@ tables and will fail as a consequence.
 ```bash
 python fixtures.py              # what FPDB's regression corpus holds, per room
 python fixtures.py --check      # our parsers against every fixture they claim
+python fixtures.py --build F    # the same fixtures as a full database at F
 ```
 
 Your own histories are one client, one year, one format. FPDB -- the free
@@ -1387,6 +1388,15 @@ three proofs hold on the fixtures as they hold on your database. A file
 the parser reads as well as the file allows -- two hands glued under one
 header -- is listed in `fixtures.KNOWN` with its reason and left out of
 the proofs, so a real gap can never be averaged away by it.
+
+`--build` loads the same files into a new database with every derived
+table, which is what `.github/workflows/check.yml` runs `check.py` against
+on every push: the checks need hands, and yours are in no repository. It
+refuses a path that already exists, so it cannot write over `hands.db`.
+Two checks fail on it for want of hands rather than for a defect --
+`population.py` wants five pool findings to survive a split and `ask.py`
+needs a 3-bet pot the corpus does not hold -- and they are left failing
+there rather than skipped.
 
 `python fixtures.py` alone surveys the corpus: how many files each room
 has, and which our parsers do not yet claim. That list, in order of how

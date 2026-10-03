@@ -8,6 +8,41 @@ Newest first.
 
 ---
 
+## The checks run on every push -- 3 Oct 2026
+
+### Added -- `.github/workflows/check.yml`, and `fixtures.py --build`
+
+Nothing ran `check.py` but a person. `build.yml` ran the three checks that
+work without hands, at tag time only, because every other check reads
+`hands.db` and that is the user's own play, in no repository.
+
+FPDB's regression corpus stands in for it: fetched at a pinned commit,
+loaded by `fixtures.py --build` from exactly the files `fixtures.py
+--check` proves, and every derived table built. Two jobs: the parsers
+against the corpus, then all of `check.py` under a virtual display so the
+four window checks run too. On the first run 16 of 22 pass.
+
+Of the six that do not, two are about the user's hands rather than the
+code: `population.py` asks for five pool findings and `ask.py` for a 3-bet
+pot the corpus does not hold. The other four are invariants that should
+hold on any hands and do not on these. Each is a handful of rows in old
+or unusual files, and each is the kind of quiet disagreement these checks
+exist to catch:
+
+```
+decisions  saw flop (cash)         gap 8, of which all-ins 4
+lines      pot type counts raises  5,426/5,433
+sessions   hands stamped           990/991
+stats      raise_cbet              13.02% n=215 vs 14.35% n=223
+```
+
+The first has a cause found already: Bovada's 2012 client writes a call
+for the last of a stack as `All-in $2`, the amount added, and the parser
+records that figure as the street total, so `decisions` works out the
+player had chips left and the all-in is lost. They are left red in CI
+rather than excused, to be fixed one at a time.
+
+
 ## Three more in the money view — 25 Sep 2026
 
 ### Fixed -- `--results --by` counted a hand once for every value it passed through

@@ -26,6 +26,7 @@ Two questions, both answered from the fixtures rather than from memory:
 
     python fixtures.py            what is there, by site, ours and not
     python fixtures.py --check    our parsers against every fixture they recognise
+    python fixtures.py --build F  those same fixtures as a full database at F
 """
 
 import sqlite3
@@ -152,6 +153,49 @@ def show():
         print(f"  {folder:16} {n} files")
 
 
+def claim():
+    """
+    The fixtures each parser recognises, by site, and the KNOWN ones set aside.
+
+    One function because two things read it -- the check, and the database
+    built for the continuous-integration run -- and they have to mean the
+    same files: a database built from a file the check refuses would fail
+    the money proof in CI and pass it here.
+    """
+    claimed, known = {}, []
+    for folder, f in fixture_files():
+        key = importer.sniff(f)
+        if key and f.name in KNOWN:
+            known.append((key, f.name))
+        elif key:
+            claimed.setdefault(key, []).append((folder, f))
+    return claimed, known
+
+
+def build(db_path):
+    """
+    The fixtures as a database with every derived table, for `check.py`.
+
+    Most of the checks read `hands.db`, which is the user's own play and is
+    in no repository, so a CI run without it proves nothing beyond imports.
+    The fixtures are the one corpus that is public, so they stand in. It
+    refuses a path that exists: the default target is `hands.db`, and that
+    is the only copy of somebody's hands.
+    """
+    db_path = Path(db_path)
+    if db_path.exists():
+        print(f"{db_path} exists -- refusing to write over it")
+        return False
+    if not FPDB.exists():
+        print(f"no fixtures at {FPDB} -- see `python fixtures.py`")
+        return False
+    claimed, _known = claim()
+    paths = [f for items in claimed.values() for _folder, f in items]
+    importer.load(paths, db_path=db_path, progress=None)
+    importer.rebuild(db_path=db_path, progress=print)
+    return True
+
+
 def check():
     """
     Our three parsers against every fixture they claim, in a scratch database.
@@ -169,13 +213,7 @@ def check():
         print("\nPASS (nothing to check)")
         return True
 
-    claimed, known = {}, []
-    for folder, f in fixture_files():
-        key = importer.sniff(f)
-        if key and f.name in KNOWN:
-            known.append((key, f.name))
-        elif key:
-            claimed.setdefault(key, []).append((folder, f))
+    claimed, known = claim()
     print(f"fixtures our parsers claim   "
           + ", ".join(f"{k}:{len(v)}" for k, v in sorted(claimed.items())))
     for key, name in known:
@@ -239,6 +277,9 @@ def check():
 def main(argv):
     if "--check" in argv:
         return 0 if check() else 1
+    if "--build" in argv:
+        at = argv.index("--build") + 1
+        return 0 if build(argv[at] if at < len(argv) else importer.DB) else 1
     if "--help" in argv:
         print(__doc__)
         return 0
