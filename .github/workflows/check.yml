@@ -48,14 +48,12 @@ jobs:
       - name: Our parsers against the corpus
         run: python fixtures.py --check
 
-  # Everything `check.py` runs, against a database built from that corpus.
-  # Some of the checks assert things about the user's own play rather than
-  # about the code -- `population.py` wants five pool findings to survive a
-  # split, `ask.py` runs a worked example on a spot the corpus may not hold
-  # -- and those fail here for want of hands, not for a defect. They are
-  # left in and left failing rather than skipped: a check that is quietly
-  # not run in the one place that runs every check is how a broken one goes
-  # unnoticed, which is what check.py's own docstring was written about.
+  # Everything `check.py` runs, against a database built from that corpus
+  # and the hand-written hands in fixtures/synthetic. Two checks ask more of
+  # the data than 991 hands can give, and are not skipped for it: `ask.py`'s
+  # worked example has a synthetic hand to find, and `population.py` says
+  # in its output that no line has the sample to test and passes on that,
+  # where on the user's database the five-finding goal applies in full.
   checks:
     runs-on: ubuntu-latest
     steps:

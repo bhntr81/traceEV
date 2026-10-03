@@ -26,7 +26,7 @@ Two questions, both answered from the fixtures rather than from memory:
 
     python fixtures.py            what is there, by site, ours and not
     python fixtures.py --check    our parsers against every fixture they recognise
-    python fixtures.py --build F  those same fixtures as a full database at F
+    python fixtures.py --build F  those fixtures, and fixtures/synthetic, as a database at F
 """
 
 import sqlite3
@@ -40,6 +40,10 @@ import sites
 
 SAMPLES = Path.home() / "Desktop" / "hand_samples"
 FPDB = SAMPLES / "fpdb-chaz" / "pyfpdb" / "regression-test-files"
+# Hands written here for a check that needs a spot the corpus does not hold.
+# Each is a real history's format with invented players, and is loaded only
+# into the database `--build` makes -- never claimed as a site's output.
+SYNTHETIC = Path(__file__).parent / "fixtures" / "synthetic"
 
 # Site folders in FPDB's tree that will never need a parser here, and why.
 # A room that is gone writes no new histories; a room that is not a room
@@ -195,6 +199,11 @@ def build(db_path):
         return False
     claimed, _known = claim()
     paths = [f for items in claimed.values() for _folder, f in items]
+    # `ask.py`'s worked example is a 3-bet pot, BTN against SB, called down
+    # to a river bet, and 991 hands of the corpus never play one. Run on
+    # nothing, it proves only that the flags parse; with this hand it proves
+    # they select the spot they name.
+    paths += sorted(SYNTHETIC.glob("*.txt"))
     importer.load(paths, db_path=db_path, progress=None)
     importer.rebuild(db_path=db_path, progress=print)
     return True

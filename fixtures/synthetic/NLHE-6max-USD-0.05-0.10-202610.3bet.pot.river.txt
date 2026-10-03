@@ -1,0 +1,43 @@
+PokerStars Game #900000000001:  Hold'em No Limit ($0.05/$0.10 USD) - 2026/10/03 12:00:00 ET
+Table 'Synthetic' 6-max Seat #4 is the button
+Seat 1: Hero ($10 in chips) 
+Seat 2: Carol ($10 in chips) 
+Seat 3: Dave ($10 in chips) 
+Seat 4: Button ($10 in chips) 
+Seat 5: Small ($10 in chips) 
+Seat 6: Big ($10 in chips) 
+Small: posts small blind $0.05
+Big: posts big blind $0.10
+*** HOLE CARDS ***
+Dealt to Hero [7c 2d]
+Hero: folds 
+Carol: folds 
+Dave: folds 
+Button: raises $0.20 to $0.30
+Small: raises $0.70 to $1
+Big: folds 
+Button: calls $0.70
+*** FLOP *** [Kh 8d 3c]
+Small: bets $1
+Button: calls $1
+*** TURN *** [Kh 8d 3c] [5s]
+Small: bets $2
+Button: calls $2
+*** RIVER *** [Kh 8d 3c 5s] [Jd]
+Small: bets $3
+Button: folds 
+Uncalled bet ($3) returned to Small
+Small collected $7.70 from pot
+Small: doesn't show hand 
+*** SUMMARY ***
+Total pot $8.10 | Rake $0.40 
+Board [Kh 8d 3c 5s Jd]
+Seat 1: Hero folded before Flop (didn't bet)
+Seat 2: Carol folded before Flop (didn't bet)
+Seat 3: Dave folded before Flop (didn't bet)
+Seat 4: Button (button) folded on the River
+Seat 5: Small (small blind) collected ($7.70)
+Seat 6: Big (big blind) folded before Flop
+
+
+

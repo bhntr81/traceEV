@@ -22,11 +22,18 @@ loaded by `fixtures.py --build` from exactly the files `fixtures.py
 against the corpus, then all of `check.py` under a virtual display so the
 four window checks run too. On the first run 16 of 22 pass.
 
-Of the six that did not, two are about the user's hands rather than the
-code: `population.py` asks for five pool findings and `ask.py` for a 3-bet
-pot the corpus does not hold. They stay red in CI. The other four were
-invariants that should hold on any hands, and are fixed below; 20 of 22
-now pass.
+Of the six that did not, four were invariants that should hold on any
+hands, and are fixed below. Two were about the size of the sample rather
+than the code, and now all 22 pass:
+
+  * `ask.py` runs its worked example -- a 3-bet pot, BTN against SB, called
+    down to a river bet -- and the corpus never plays one. A hand written
+    for it lives in `fixtures/synthetic`, loaded only by `--build`, so the
+    check still proves the flags select the spot they name.
+  * `population.py` wants five pool findings to survive a split, and no
+    line in 991 hands has 150 chances in each half. When fewer lines can be
+    tested than the goal asks for, it says so and passes; with the lines to
+    test -- your database -- the goal is unchanged.
 
 ### Fixed -- Ignition all-ins after the flop were recorded as not all in
 

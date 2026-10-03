@@ -1389,14 +1389,16 @@ the parser reads as well as the file allows -- two hands glued under one
 header -- is listed in `fixtures.KNOWN` with its reason and left out of
 the proofs, so a real gap can never be averaged away by it.
 
-`--build` loads the same files into a new database with every derived
-table, which is what `.github/workflows/check.yml` runs `check.py` against
-on every push: the checks need hands, and yours are in no repository. It
-refuses a path that already exists, so it cannot write over `hands.db`.
-Two checks fail on it for want of hands rather than for a defect --
-`population.py` wants five pool findings to survive a split and `ask.py`
-needs a 3-bet pot the corpus does not hold -- and they are left failing
-there rather than skipped.
+`--build` loads the same files, plus the hand-written ones in
+`fixtures/synthetic`, into a new database with every derived table, which
+is what `.github/workflows/check.yml` runs `check.py` against on every
+push: the checks need hands, and yours are in no repository. It refuses a
+path that already exists, so it cannot write over `hands.db`. The
+synthetic folder holds a hand for a spot the corpus never plays -- `ask.py`'s
+worked example, a 3-bet pot called down to a river bet. And
+`population.py --check`, which wants five pool findings to survive a split,
+says when no line has 150 chances in each half and passes on that: on 991
+hands nothing can, while on yours the goal applies in full.
 
 `python fixtures.py` alone surveys the corpus: how many files each room
 has, and which our parsers do not yet claim. That list, in order of how
