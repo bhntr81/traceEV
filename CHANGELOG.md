@@ -20,6 +20,74 @@ its first step is incremental import.
 
 ---
 
+## The checks run on every push -- 3 Oct 2026
+
+### Added -- `.github/workflows/check.yml`, and `fixtures.py --build`
+
+Nothing ran `check.py` but a person. `build.yml` ran the three checks that
+work without hands, at tag time only, because every other check reads
+`hands.db` and that is the user's own play, in no repository.
+
+FPDB's regression corpus stands in for it: fetched at a pinned commit,
+loaded by `fixtures.py --build` from exactly the files `fixtures.py
+--check` proves, and every derived table built. Two jobs: the parsers
+against the corpus, then all of `check.py` under a virtual display so the
+four window checks run too. On the first run 16 of 22 pass.
+
+Of the six that did not, four were invariants that should hold on any
+hands, and are fixed below. Two were about the size of the sample rather
+than the code, and now all 22 pass:
+
+  * `ask.py` runs its worked example -- a 3-bet pot, BTN against SB, called
+    down to a river bet -- and the corpus never plays one. A hand written
+    for it lives in `fixtures/synthetic`, loaded only by `--build`, so the
+    check still proves the flags select the spot they name.
+  * `population.py` wants five pool findings to survive a split, and no
+    line in 991 hands has 150 chances in each half. When fewer lines can be
+    tested than the goal asks for, it says so and passes; with the lines to
+    test -- your database -- the goal is unchanged.
+
+### Fixed -- Ignition all-ins after the flop were recorded as not all in
+
+`decisions` decides an all-in by subtracting what went in from the stack,
+and for a raise it took what went in as the raise's total minus
+`contributed`. The total is the street's and `contributed` is the whole
+hand's, so preflop, where the two are the same, nothing showed. On the turn
+a player raising all in for 5.43 after 24 went in on the flop had "24
+left". ACR and PokerStars write "and is all-in" and were never asked;
+Ignition writes an all-in raise as a raise, and **every Ignition all-in
+raise after the flop was recorded as not all in**.
+
+And the parser gave a plain `All-in $2` -- the amount added, as the money
+check already treated it -- a street total of $2. A small blind calling
+all in for its last $2 over a $24 raise had "put in $2". An audit of
+every action against the stack arithmetic found 38 all-ins wrong in the
+corpus; it finds none now.
+
+**Your database needs `python importer.py --reread` over the Ignition
+folders**, then the derived tables follow on their own. A refresh skips
+known hands and would leave these as they are.
+
+### Fixed -- two Bovada histories that never dealt the board
+
+Neither file has a board line, so the flop's betting arrived as preflop
+betting and a check-call on the turn counted as a 4-bet pot. A preflop
+"Bets" cannot happen on Ignition, so the parser refuses the hand, and both
+files are in `fixtures.KNOWN`.
+
+### Corrected -- two checks whose expectation was wrong
+
+`sessions.py` expected every hero hand to have a decision stamped with its
+session. A heads-up hand where both blinds were all in on the post has no
+decisions at all, so it compares against the hands that have some.
+
+`stats.py` holds `raise_cbet` against spots' own count, and spots counts a
+raise made after the cbet was already raised, or after calling it, as
+raising the cbet: the fault already recorded for `fold_to_cbet`, one verb
+over. Hand2Note's raise cbet answers the cbet alone, which is what the
+engine counts. It is a `KNOWN` row now, with that reason.
+
+
 ## Three more in the money view — 25 Sep 2026
 
 ### Fixed -- `--results --by` counted a hand once for every value it passed through

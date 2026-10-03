@@ -1120,7 +1120,14 @@ def check(db_path=DB):
         ("fold_to_cbet", "fold_to_cbet", "faced_cbet",
          "spots counts a player who folded to a RAISE of the cbet as having "
          "folded to the cbet -- they never acted against the bet alone (27)"),
-        ("raise_cbet", "raised_cbet", "faced_cbet", None),
+        # The same fault one verb over, and silent on the user's hands until
+        # FPDB's corpus ran: a seat that checked, saw the cbet raised, and
+        # re-raised, or that called the cbet and raised later on the flop,
+        # is "raised the cbet" to spots. Hand2Note's raise cbet is the
+        # answer to the cbet alone, which is what the engine counts.
+        ("raise_cbet", "raised_cbet", "faced_cbet",
+         "spots counts a raise made after the cbet was already raised, or "
+         "after calling it, as raising the cbet"),
     ]
     print(f"{'stat':16} {'engine':>20}   {'spots':>20}   agree")
     fails = []

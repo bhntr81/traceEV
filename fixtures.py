@@ -26,6 +26,7 @@ Two questions, both answered from the fixtures rather than from memory:
 
     python fixtures.py            what is there, by site, ours and not
     python fixtures.py --check    our parsers against every fixture they recognise
+    python fixtures.py --build F  those fixtures, and fixtures/synthetic, as a database at F
 """
 
 import sqlite3
@@ -39,6 +40,10 @@ import sites
 
 SAMPLES = Path.home() / "Desktop" / "hand_samples"
 FPDB = SAMPLES / "fpdb-chaz" / "pyfpdb" / "regression-test-files"
+# Hands written here for a check that needs a spot the corpus does not hold.
+# Each is a real history's format with invented players, and is loaded only
+# into the database `--build` makes -- never claimed as a site's output.
+SYNTHETIC = Path(__file__).parent / "fixtures" / "synthetic"
 
 # Site folders in FPDB's tree that will never need a parser here, and why.
 # A room that is gone writes no new histories; a room that is not a room
@@ -90,6 +95,10 @@ KNOWN = {
         "a player posts with no seat line; refused",
     "NLHE-6max-USD-0.05-0.10-201209.silent.post.both.txt":
         "a returning player's post is not written at all; the money cannot add",
+    "LHE-USD-2-4-201205.Bodog.txt":
+        "the board is never dealt, so the flop's betting is preflop; refused",
+    "LHE-9max-USD - $20-$40 - 201204.limit.blinds.txt":
+        "the board is never dealt, so the flop's betting is preflop; refused",
 }
 
 
@@ -152,6 +161,54 @@ def show():
         print(f"  {folder:16} {n} files")
 
 
+def claim():
+    """
+    The fixtures each parser recognises, by site, and the KNOWN ones set aside.
+
+    One function because two things read it -- the check, and the database
+    built for the continuous-integration run -- and they have to mean the
+    same files: a database built from a file the check refuses would fail
+    the money proof in CI and pass it here.
+    """
+    claimed, known = {}, []
+    for folder, f in fixture_files():
+        key = importer.sniff(f)
+        if key and f.name in KNOWN:
+            known.append((key, f.name))
+        elif key:
+            claimed.setdefault(key, []).append((folder, f))
+    return claimed, known
+
+
+def build(db_path):
+    """
+    The fixtures as a database with every derived table, for `check.py`.
+
+    Most of the checks read `hands.db`, which is the user's own play and is
+    in no repository, so a CI run without it proves nothing beyond imports.
+    The fixtures are the one corpus that is public, so they stand in. It
+    refuses a path that exists: the default target is `hands.db`, and that
+    is the only copy of somebody's hands.
+    """
+    db_path = Path(db_path)
+    if db_path.exists():
+        print(f"{db_path} exists -- refusing to write over it")
+        return False
+    if not FPDB.exists():
+        print(f"no fixtures at {FPDB} -- see `python fixtures.py`")
+        return False
+    claimed, _known = claim()
+    paths = [f for items in claimed.values() for _folder, f in items]
+    # `ask.py`'s worked example is a 3-bet pot, BTN against SB, called down
+    # to a river bet, and 991 hands of the corpus never play one. Run on
+    # nothing, it proves only that the flags parse; with this hand it proves
+    # they select the spot they name.
+    paths += sorted(SYNTHETIC.glob("*.txt"))
+    importer.load(paths, db_path=db_path, progress=None)
+    importer.rebuild(db_path=db_path, progress=print)
+    return True
+
+
 def check():
     """
     Our three parsers against every fixture they claim, in a scratch database.
@@ -169,13 +226,7 @@ def check():
         print("\nPASS (nothing to check)")
         return True
 
-    claimed, known = {}, []
-    for folder, f in fixture_files():
-        key = importer.sniff(f)
-        if key and f.name in KNOWN:
-            known.append((key, f.name))
-        elif key:
-            claimed.setdefault(key, []).append((folder, f))
+    claimed, known = claim()
     print(f"fixtures our parsers claim   "
           + ", ".join(f"{k}:{len(v)}" for k, v in sorted(claimed.items())))
     for key, name in known:
@@ -239,6 +290,9 @@ def check():
 def main(argv):
     if "--check" in argv:
         return 0 if check() else 1
+    if "--build" in argv:
+        at = argv.index("--build") + 1
+        return 0 if build(argv[at] if at < len(argv) else importer.DB) else 1
     if "--help" in argv:
         print(__doc__)
         return 0
