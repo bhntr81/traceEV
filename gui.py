@@ -40,6 +40,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import query
+import stats
 from stats import BY_KEY, STATS
 
 DB = Path(__file__).parent / "hands.db"
@@ -98,8 +99,9 @@ def payload(con, params):
         expr, order = query.DIMENSIONS[dim]
         cols = [c for c in (params.get("show", [""])[0] or "").split(",") if c]
         cols = [c for c in cols if c in BY_KEY] or query.DEFAULT_COLUMNS
-        grid = {c: query.rates_by(con, BY_KEY[c], expr, where) for c in cols}
-        counts = query.rates_by(con, BY_KEY["vpip"], expr, where)
+        grid = stats.rates_grid(con, cols + ["vpip"], expr, where)
+        counts = grid["vpip"]
+        grid = {c: grid[c] for c in cols}
         keys = sorted({k for g in grid.values() for k in g},
                       key=lambda k: order(k) if k is not None else "")
         return {
@@ -580,7 +582,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(PAGE, "text/html; charset=utf-8")
         # One connection per request: sqlite objects belong to the thread
         # that made them, and this server answers on several.
-        con = sqlite3.connect(DB)
+        con = query.connect(DB)
         try:
             if url.path == "/api/options":
                 return self._send(json.dumps(options(con)), "application/json")

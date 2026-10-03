@@ -8,6 +8,59 @@ Newest first.
 
 ---
 
+## The tabs answer faster -- 3 Oct 2026
+
+### Changed -- fewer passes over `decisions` per click
+
+Measured on 49,600 hands (the FPDB corpus copied fifty times, 490,000
+decisions) over 42 filters -- none, hero, and every smart report -- with
+every tab's answer compared against the old code's, cell for cell, before
+any time was believed. Totals across the 42, old to new:
+
+| tab | before | after | worst filter, before -> after |
+|---|---|---|---|
+| range | 37.4s | 7.0s | 2.2s -> 0.4s |
+| report | 55.2s | 16.0s | 4.4s -> 1.0s |
+| chart | 16.3s | 5.8s | 1.0s -> 0.5s |
+| stats | 17.6s | 11.2s | 2.2s -> 1.5s |
+| actions, overfolds, sessions, results, hands | 26.2s | 23.1s | |
+
+The time was not in reading rows -- the whole table scans in a tenth of a
+second -- but in asking the same rows the same question many times, and in
+the planner choosing an index that fetches most of the table one row at a
+time:
+
+  * **Range** was thirteen queries, one per split and per draw row. It is
+    one `GROUP BY made`, and the rows are sums over it.
+  * **Report** was a `rates_by` per column, eight passes. `stats.rates_grid`
+    counts every column in two -- per decision and per hand -- and
+    `stats.py --check` now holds it to `rates_by` cell for cell over four
+    dimensions and three filters, 456 of 456.
+  * **Chart** was three DISTINCT passes; one collapse to a row per
+    player-hand gives the composition, the seen count and the total.
+  * **Stats** counts with `COUNT(*) FILTER` instead of `SUM(CASE ...)`,
+    which is cheaper per row, takes the decision count in the same pass,
+    and lets the per-hand pass skip rows no per-hand stat can count.
+  * **The planner trap.** `rates_by` guarded its dimension with
+    `position IS NOT NULL`, which SQLite answers by walking the position
+    index over the whole table. Under `--allin` a report column took 0.62s
+    that way and 0.009s from the all-in index; the guard is now written
+    `+(position) IS NOT NULL`, which the planner cannot take an index for.
+    The chart's `combo IS NOT NULL` had the same fault and is gone.
+  * **Reading connections map the file** (`query.connect`), so pages come
+    from the operating system's cache rather than through SQLite's two
+    megabytes, which every per-click connection started empty. That is the
+    8-22% on the tabs whose queries did not change.
+
+Not done, and worth knowing. The **actions** tab is still 1.9s unfiltered
+at this size: it joins every decision to `seats`, `spots` and the next
+decision, and those lookups are the cost. And a filter on a column with no
+index of its own (`--matchup`) still sends SQLite down a broad one
+(`position IN (...)` via `dec_vs`) at twice the cost of a plain scan; the
+fix is an index or planner statistics, which belong to `decisions.py`.
+
+---
+
 ## An import derives only what it changed -- 3 Oct 2026
 
 ### Changed -- `importer.update`, and an `update(con)` on every stage of the chain
