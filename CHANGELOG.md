@@ -8,6 +8,55 @@ Newest first.
 
 ---
 
+## An import derives only what it changed -- 3 Oct 2026
+
+### Changed -- `importer.update`, and an `update(con)` on every stage of the chain
+
+Every import rebuilt every derived table: thirty-three seconds at fourteen
+thousand hands, to add one. That is the first thing a HUD cannot live with,
+and it was already the thing that made Import new hands a button people
+put off.
+
+Each stage of `CHAIN` now has an `update(con)` beside its `build`, which
+derives only the hands in a temporary table, `dirty`. Three stages look
+across hands, and each adds to that set what the new hands changed:
+
+  * `spots` works every identity out again over the whole history, which
+    reads only the seats. An Ignition seat's name counts the hands dealt
+    since it was last seen, so an older file imported late renames seats
+    already derived; an alias renames a player everywhere. Every hand
+    whose names came out different is re-derived.
+  * `players` recounts the players in those hands, and the ones that left
+    them, and stamps again every hand of a player whose class moved -- a
+    player who becomes a fish tonight was a fish last month too.
+  * `sessions` works the sittings out in full, which is one pass over your
+    own hands, and writes the four columns only where they changed.
+
+Sittings are now numbered in the order they began, across sites, rather
+than site by site. The old numbering renumbered every sitting of every
+later site whenever a new one began, which a rebuild never noticed and an
+update would pay for on every new sitting. The ids are only ever joined on.
+
+One new hand now takes about one second at 13,888 hands (a replicated
+corpus; your own database was not available to time), against 33 seconds
+for the rebuild. Most of that second is the identity pass and the sittings,
+both of which read the whole history and could be narrowed later. More
+than a fifth of the database at once is still rebuilt, which is faster in
+bulk, and so is a database a rebuild never finished.
+
+**The check.** `importer.py --check` takes the last 1,500 hands, rebuilds
+one database from all of them, and builds a second from three fifths of
+them and then a run of updates -- sixteen on the CI corpus: batches of
+fifty, five single hands, one in nine of the older hands arriving after
+the newer ones, an alias added afterwards, and a hand taken out again.
+Every row of `spots`, `bets`, `decisions`, `players` and `sessions` must
+match. Each of three deliberately planted mistakes --
+sittings written only for the new hands, identities not re-derived,
+classes not restamped -- failed it, by 16,104, 3,580 and 6,418 rows of
+`decisions`.
+
+---
+
 ## The HUD is back in scope — 3 Oct 2026
 
 ### Changed -- "No HUD" is no longer a rule

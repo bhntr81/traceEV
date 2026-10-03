@@ -92,6 +92,15 @@ CREATE TABLE decisions (
   PRIMARY KEY (hand_id, n));
 """
 
+# The columns this module writes, read off its own schema. The table on
+# disk has more -- `lines`, `strength`, `players` and `sessions` add theirs
+# -- so a write that counted the table's columns, as the rebuild can after
+# the DROP, would be a write of the wrong width once those had arrived.
+_mem = sqlite3.connect(":memory:")
+_mem.executescript(SCHEMA)
+SCHEMA_COLUMNS = tuple(r[1] for r in _mem.execute("PRAGMA table_info(decisions)"))
+_mem.close()
+
 # The indexes, kept out of the schema so that an existing database can be
 # given them without being rebuilt -- two minutes of derivation to acquire
 # a B-tree is a bad trade, and one nobody makes, so the indexes quietly
@@ -282,6 +291,53 @@ def build(db_path=DB):
     who = {(r[0], r[1]): r[2]
            for r in con.execute("SELECT hand_id, seat, player FROM spots")}
 
+    rows = derive(hands, seats_by, acts_by, who)
+    n = len(con.execute("SELECT * FROM decisions LIMIT 0").description)
+    con.executemany(
+        "INSERT INTO decisions VALUES ({})".format(",".join("?" * n)), rows)
+    con.commit()
+    index(con=con)
+    con.close()
+    return len(rows)
+
+
+def update(con):
+    """
+    Derive only the hands in the temporary table `dirty`, in place.
+
+    Their rows are deleted and written again whole, which empties the
+    columns the later stages put on them -- the same thing a rebuild does
+    to every row, here done to a few. Those stages run next on the same
+    hands. The indexes are left alone: they are kept up to date row by row,
+    which is the cheap way for a handful of hands and the slow way for a
+    whole table, and that difference is why a rebuild drops them first.
+    """
+    con.execute("DELETE FROM decisions "
+                "WHERE hand_id IN (SELECT hand_id FROM dirty)")
+    hands = con.execute(
+        "SELECT * FROM hands WHERE game='HOLDEM' AND hand_id IN "
+        "(SELECT hand_id FROM dirty) ORDER BY played_at, hand_id").fetchall()
+    seats_by, acts_by = {}, {}
+    for r in con.execute("SELECT * FROM seats WHERE hand_id IN "
+                         "(SELECT hand_id FROM dirty) ORDER BY hand_id, seat"):
+        seats_by.setdefault(r["hand_id"], []).append(dict(r))
+    for r in con.execute("SELECT * FROM actions WHERE hand_id IN "
+                         "(SELECT hand_id FROM dirty) ORDER BY hand_id, n"):
+        acts_by.setdefault(r["hand_id"], []).append(dict(r))
+    who = {(r[0], r[1]): r[2] for r in con.execute(
+        "SELECT hand_id, seat, player FROM spots "
+        "WHERE hand_id IN (SELECT hand_id FROM dirty)")}
+
+    rows = derive(hands, seats_by, acts_by, who)
+    n = len(SCHEMA_COLUMNS)
+    con.executemany(
+        "INSERT INTO decisions ({}) VALUES ({})".format(
+            ",".join(SCHEMA_COLUMNS), ",".join("?" * n)), rows)
+    return len(rows)
+
+
+def derive(hands, seats_by, acts_by, who):
+    """One row per decision in these hands, in the schema's column order."""
     rows = []
     for h in hands:
         hid, bb = h["hand_id"], h["bb"] or 0.0
@@ -524,14 +580,7 @@ def build(db_path=DB):
                                         for x in pair if x != seat_of_row))
             rows.append(r + (matchup, other_is_hero, r_x.get(r[1]),
                              h_in.get(r[1])))
-
-    n = len(con.execute("SELECT * FROM decisions LIMIT 0").description)
-    con.executemany(
-        "INSERT INTO decisions VALUES ({})".format(",".join("?" * n)), rows)
-    con.commit()
-    index(con=con)
-    con.close()
-    return len(rows)
+    return rows
 
 
 def check(db_path=DB):

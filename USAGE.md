@@ -740,7 +740,9 @@ python importer.py --rebuild                           # then this, once
 An alias is applied where identity is decided -- `spots.identify` -- so
 after the rebuild every derived row under the alias carries the player's
 name and every view, note and report sees one person. That is why it
-needs a rebuild, and the command says so. Chains flatten (aliasing C to B
+needs a rebuild, and the command says so. The next import applies it too:
+an update works out every name again and re-derives the hands whose names
+changed. Chains flatten (aliasing C to B
 when B is already A records C as A); loops are refused.
 
 Within a site only. The same name on two sites may be one person, but
@@ -1270,8 +1272,9 @@ python importer.py --refresh
 ```
 
 Looks in the places this machine keeps hand histories, loads anything that
-is not already in the database, and rebuilds the derived tables **only if
-something was added**. In the window it is **Import → Import new hands**,
+is not already in the database, and brings the derived tables up to date
+**only if something was added** -- deriving just the new hands, and
+whatever they change, rather than all of them. In the window it is **Import → Import new hands**,
 and the window says on launch when there is something to fetch:
 
 ```
@@ -1304,6 +1307,16 @@ failure it exists to prevent is a stage being missed out of it: `decisions`
 **drops its table**, and `lines`, `strength` and `players` each add their
 columns back afterwards. A rebuild that stops early does not leave those
 columns stale, it leaves them gone.
+
+**So an import does not rebuild.** Since 3 Oct 2026 `importer.update` walks
+the same list, and each stage derives only the new hands and whatever they
+change: the Ignition seats renamed by an older hand arriving late, every
+row of a player whose class the new hands moved, the sitting the new hands
+made longer. One new hand takes about a second at fourteen thousand,
+against half a minute for a rebuild. More than a fifth of the database at
+once, or a database a rebuild never finished, is rebuilt instead, and so is
+anything an update fails part way through. `python importer.py --check`
+replays a thousand hands both ways and fails on any row that differs.
 
 ---
 

@@ -121,16 +121,21 @@ def split(rows, gap=GAP):
         yield site, current
 
 
-def build(db_path=DB):
-    con = sqlite3.connect(db_path)
-    con.execute("CREATE TABLE IF NOT EXISTS hand_ev ("
-                "hand_id TEXT, seat INT, ev_bb REAL, PRIMARY KEY (hand_id, seat))")
-    con.executescript(SCHEMA)
-    migrate(con)
+def plan(con):
+    """
+    Every sitting, and the four columns each of your hands gets from it.
 
+    Numbered in the order they began, whatever the site. They were numbered
+    site by site until 3 Oct 2026, so a new sitting on one site renumbered
+    every sitting of every site after it in the alphabet -- harmless to a
+    rebuild, which rewrites everything anyway, and the most expensive thing
+    a refresh could be asked to do. Begun-order means a new sitting takes
+    the next number and nothing else moves.
+    """
     rows = hero_hands(con)
+    runs = sorted(split(rows), key=lambda run: (run[1][0][1], run[0]))
     sessions, stamps = [], []
-    for sid, (site, hands) in enumerate(split(rows), start=1):
+    for sid, (site, hands) in enumerate(runs, start=1):
         started, ended = hands[0][1], hands[-1][1]
         minutes = (ended - started).total_seconds() / 60
         # A one-hand sitting has no duration, and a rate over zero minutes
@@ -158,13 +163,19 @@ def build(db_path=DB):
             open_now = len({t for t, _w in recent})
             stamps.append((sid, round((when - started).total_seconds() / 60, 1),
                            round(minutes, 1), open_now, r[0]))
+    return rows, sessions, stamps
 
+
+def write(con, sessions, stamps):
+    """The sittings into their table, and their columns onto `decisions`."""
+    con.execute("DELETE FROM sessions")
     con.executemany("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     sessions)
 
     # Onto every decision in the hand, not only hero's: the sitting is a
     # property of the hand, and "how does the pool play against me in my
     # fourth hour" is a question about the other seats.
+    con.execute("DROP TABLE IF EXISTS temp.staged")
     con.execute("CREATE TEMP TABLE staged (session_id INT, session_min REAL, "
                 "session_len REAL, tables_now INT, hand_id TEXT)")
     con.executemany("INSERT INTO staged VALUES (?,?,?,?,?)", stamps)
@@ -172,6 +183,46 @@ def build(db_path=DB):
     con.execute("UPDATE decisions SET "
                 + ", ".join(f"{c} = staged.{c}" for c in NAMES)
                 + " FROM staged WHERE decisions.hand_id = staged.hand_id")
+    con.execute("DROP TABLE temp.staged")
+
+
+def update(con):
+    """
+    The sittings again, and the columns of only the hands they changed.
+
+    A sitting is not a fact about one hand -- tonight's hand makes the whole
+    of tonight's sitting longer -- so the sittings are always worked out in
+    full. That is cheap: it is one pass over your own hands in time order.
+    What is expensive is writing four columns onto every decision, so only
+    the hands whose four values came out different are written, with the
+    hands in `dirty`, which `decisions` has just written blank.
+    """
+    con.execute("CREATE TABLE IF NOT EXISTS hand_ev ("
+                "hand_id TEXT, seat INT, ev_bb REAL, PRIMARY KEY (hand_id, seat))")
+    _rows, sessions, stamps = plan(con)
+    had = {r[0]: tuple(r[1:]) for r in con.execute(
+        "SELECT hand_id, " + ", ".join(NAMES) + " FROM decisions "
+        "WHERE session_id IS NOT NULL GROUP BY hand_id")}
+    dirty = {r[0] for r in con.execute("SELECT hand_id FROM dirty")}
+    wanted = {s[-1] for s in stamps}
+    changed = [s for s in stamps
+               if s[-1] in dirty or had.get(s[-1]) != tuple(s[:-1])]
+    # A hand that was in a sitting and no longer is -- read again, and its
+    # hero seat with it -- has its stamp taken off rather than left behind.
+    changed += [(None, None, None, None, h) for h in had if h not in wanted]
+    write(con, sessions, changed)
+    return len(sessions)
+
+
+def build(db_path=DB):
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE IF NOT EXISTS hand_ev ("
+                "hand_id TEXT, seat INT, ev_bb REAL, PRIMARY KEY (hand_id, seat))")
+    con.executescript(SCHEMA)
+    migrate(con)
+
+    rows, sessions, stamps = plan(con)
+    write(con, sessions, stamps)
     # Length first, because "sessions of two to five hours" is a range on
     # it and a range can only seek on the leading column; minutes-in and the
     # id ride along so the other two questions read this index end to end
