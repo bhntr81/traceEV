@@ -197,7 +197,7 @@ WEEKDAY_NAME = {v: k for k, v in WEEKDAYS.items()}
 
 # Not filters -- they change what is shown, not what is selected.
 OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
-           "--preset", "--export", "--sort", "--alternative",
+           "--preset", "--export", "--sort", "--alternative", "--range-of",
            # Naming a stat rather than selecting rows: the filter beside
            # these becomes the stat's chance, so they are skipped by `build`
            # exactly as the reporting options are.
@@ -238,6 +238,16 @@ SWITCHES = {
     # heads up, which is 17% of the database; these ask the same question of
     # a pot of any size, which is most of the rest.
     "--with-fish": "n_fish > 0",
+    # Hand2Note's "exclude reg vs fish": a regular's decisions with a fish
+    # still in the pot drop out, and everything else stays -- the fish's
+    # own decisions against regulars, unknowns, regs among regs. A reg
+    # plays a fish on purpose differently, isolating wider and value-
+    # betting thinner, so a reg's 3-bet rate taken over both kinds of
+    # table describes neither. Written with COALESCE because a seat with
+    # no class is NULL, and NOT over a NULL is NULL: the plain form
+    # silently dropped every unclassified decision with it.
+    "--no-reg-vs-fish": "NOT (COALESCE(player_class, '') = 'reg' "
+                        "AND COALESCE(n_fish, 0) > 0)",
     "--regs-only": "n_fish = 0 AND n_reg > 0",
     # Which side the company sits. A fish on your left acts after you and
     # has position on you all hand; on your right you have it on them.
@@ -1451,6 +1461,52 @@ def chart_of(con, where, stat=None, min_n=3, alternative=None):
     return result
 
 
+def stat_range_of(con, where, stat, alternative=None):
+    """
+    The hands a stat was made of: the range that DID it.
+
+    Hand2Note's statistics view is a list of rates and, beside it, the
+    13x13 of whichever one is clicked -- "3-bet 9%" and then the nine
+    percent itself. `chart_of` already draws the two charts nearby and
+    neither is that one: with no stat it is every hand that reached the
+    filter, folds included, and with one it is how OFTEN each combo took
+    the action, so AA 3-betting once in one chance is a full square and
+    says nothing about how much of the 3-bet range is aces. This is the
+    composition of the rows where the stat's chance arose and its action
+    was taken, which is what a reader means by "his 3-bet range".
+
+    With `alternative` it is the hands that took that action instead on
+    the same chances -- the call range beside the 3-bet range -- refused
+    exactly where `chart_of` refuses it, since a hand-counted stat has no
+    single decision to have answered differently.
+
+    The returned chart is `chart_of`'s, so it carries the seen fraction
+    and is drawn by the same code. `took` is (k, n): the stat's own count
+    and chances, every hand included, so the caption can say what share
+    of the chances the drawn range is -- the 9% the chart is of.
+    """
+    stat = BY_KEY.get(stat) if isinstance(stat, str) else stat
+    if stat is None or stat.source != "d":
+        raise ValueError("A range needs a stat counted over decisions, "
+                         "such as threebet or cbet_flop.")
+    action, said = stat.action, stat.label
+    if alternative:
+        if alternative not in CHART_ALTERNATIVES:
+            raise ValueError("Alternative action must be one of: "
+                             + ", ".join(CHART_ALTERNATIVES))
+        if stat.per != "decision":
+            raise ValueError(f"{stat.label} is counted once per hand, so "
+                             "there is no one decision that could have been "
+                             f"a {alternative} instead.")
+        action = stats.ACTIONS[alternative][0]
+        said = f"{alternative} instead of {stat.label}"
+    took = stats.Stat("_took", said, stat.chance, action, per=stat.per)
+    n, k = stats.rate(con, took, where)[:2]
+    chart = chart_of(con, f"({where}) AND ({stat.chance}) AND ({action})")
+    chart.update(stat=said, took=(k, n))
+    return chart
+
+
 def comparison_caption(chart):
     """Both action totals include unseen cards; the coloured grid cannot."""
     n, first, second = chart["totals"]
@@ -1461,11 +1517,20 @@ def comparison_caption(chart):
             "of all matching opportunities, including unseen cards.")
 
 
-def show_chart(con, where, label, stat=None, parts=(), min_n=3, alternative=None):
+def show_chart(con, where, label, stat=None, parts=(), min_n=3, alternative=None,
+               range_of=None):
     """The chart, as 169 numbers, in the shape it is always drawn in."""
     print(f"\nfilter: {label}")
     print("=" * (len(label) + 8))
-    g = chart_of(con, where, stat, min_n, alternative=alternative)
+    if range_of:
+        g = stat_range_of(con, where, range_of, alternative)
+    else:
+        g = chart_of(con, where, stat, min_n, alternative=alternative)
+    if range_of:
+        k, n = g["took"]
+        print(f"{g['stat']}: {k:,} of {n:,} chances"
+              + (f" ({100.0 * k / n:.1f}%)" if n else "")
+              + " -- the chart is those hands")
     if not g["total"]:
         print("  " + why_empty(con, parts))
         return
@@ -2686,6 +2751,10 @@ def usage():
           f"one stat per combo with --show")
     print("    --alternative ACTION  compare that stat with call/raise/fold/check/bet "
           "on its same opportunities (--chart --show KEY)")
+    print("    --range-of KEY  the hands that took that stat's action, as a "
+          "share of that range (--chart);\n"
+          "                    with --alternative, the hands that did that "
+          "instead")
     print("\n  saving the filter as a stat of its own:")
     print(f"    {'--define':14} a key to save this filter under, so it can "
           f"be a column")
@@ -2717,6 +2786,14 @@ SCAN_OK = {
         "the same, for `node_sz`. The per-street sized columns ARE indexed, "
         "because `--flop XBmC` has no wildcard in it at all",
 }
+
+
+# Filters that remove a kind of row rather than choose one, and the rows
+# each removes. On a database with none of those rows such a filter keeps
+# everything and is right to: the corpus CI builds from has three regs and
+# none of them ever sat with a fish. The check asks for these rows before
+# accepting "selects everything", so the excuse holds only while it is true.
+DROPS = {"--no-reg-vs-fish": "player_class = 'reg' AND n_fish > 0"}
 
 
 def check(db_path=DB):
@@ -2815,10 +2892,13 @@ def check(db_path=DB):
         rows = {}
         for pair, g in placed.items():
             rows.setdefault(g, set()).add(pair)
-        total = sum(len(v) for v in rows.values())
+        # Not `total`, which the narrowing test below reads as the size of
+        # the table: reusing the name made it the hero's hand count, and a
+        # filter selecting every decision passed as one that narrowed.
+        placed_n = sum(len(v) for v in rows.values())
         distinct = len(set().union(*rows.values())) if rows else 0
-        if total != distinct:
-            fails.append(f"--by {dim} counts {total - distinct} hands twice")
+        if placed_n != distinct:
+            fails.append(f"--by {dim} counts {placed_n - distinct} hands twice")
     print(f"a split puts each hand in one row  "
           f"{'3 of 3 dimensions' if not any('counts' in f for f in fails) else 'FAIL'}")
 
@@ -2911,8 +2991,38 @@ def check(db_path=DB):
             continue
         if n == 0:
             fails.append(f"{name}: selects nothing")
+        elif n == total and name in DROPS:
+            # Excused only by asking for the rows it exists to drop and
+            # finding none. An always-true predicate fails here regardless,
+            # because the rows it should have dropped are counted by the
+            # definition and not by the predicate.
+            if con.execute(f"SELECT COUNT(*) FROM decisions "
+                           f"WHERE {DROPS[name]}").fetchone()[0]:
+                fails.append(f"{name}: selects everything, and there are "
+                             f"rows it should drop")
+            else:
+                print(f"    {name}: nothing here for it to drop -- "
+                      f"no rows where {DROPS[name]}")
         elif n == total:
             fails.append(f"{name}: selects everything -- it is not filtering")
+
+    # And the switch above is held to what it says on rows that have it,
+    # since the corpus may not. Four seats: a reg with a fish in (dropped),
+    # a reg among regs, a fish with a fish in, and a seat with no class at
+    # all -- the one a plain NOT would have dropped by accident.
+    probe = sqlite3.connect(":memory:")
+    probe.execute("CREATE TABLE decisions (player_class TEXT, n_fish INT)")
+    probe.executemany("INSERT INTO decisions VALUES (?, ?)",
+                      [("reg", 1), ("reg", 0), ("fish", 2), (None, 1)])
+    kept = [r for r in probe.execute(
+        "SELECT player_class, n_fish FROM decisions WHERE "
+        + SWITCHES["--no-reg-vs-fish"])]
+    probe.close()
+    if kept != [("reg", 0), ("fish", 2), (None, 1)]:
+        fails.append(f"--no-reg-vs-fish keeps {kept}, not the three seats "
+                     f"without a reg facing a fish")
+    print(f"reg-vs-fish drops exactly the reg with a fish in  "
+          f"{'yes' if len(kept) == 3 and ('reg', 1) not in kept else 'NO'}")
 
     print(f"filters that run and narrow  {checked - len(fails)}/{checked}")
     for f in fails:
@@ -3392,9 +3502,15 @@ def main(argv):
         # stat the chart is of. Without it the chart is the range itself,
         # which is the question a chart is usually asked.
         try:
-            show_chart(con, where, label, columns[0] if opt("--show") else None,
-                       _parts, min_n=int(opt("--min", "3")),
-                       alternative=opt("--alternative"))
+            if opt("--range-of"):
+                show_chart(con, where, label, parts=_parts,
+                           range_of=opt("--range-of"),
+                           alternative=opt("--alternative"))
+            else:
+                show_chart(con, where, label,
+                           columns[0] if opt("--show") else None,
+                           _parts, min_n=int(opt("--min", "3")),
+                           alternative=opt("--alternative"))
         except ValueError as error:
             raise SystemExit(str(error))
     elif mode == "--results":

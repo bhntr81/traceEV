@@ -8,6 +8,50 @@ Newest first.
 
 ---
 
+## A stat and the hands it was made of -- 3 Oct 2026
+
+### Added -- the stats tab draws the range of the row you click
+
+Hand2Note's statistics view is a list of rates with the 13x13 of whichever
+one is clicked beside it: "3-bet 9%" and then the nine percent itself. The
+stats tab is now that. Click a row and the hands that took the stat's
+action are drawn beside the table, each combo's share of them, under a
+line saying what share of the chances they are. **range of** above the
+table swaps them for the hands that called, folded, raised, checked or bet
+instead on the same chances.
+
+Neither chart the program already drew was this. The chart tab's
+composition is every hand that reached the spot, folds included, and its
+per-stat chart is how often each combo took the action -- aces 3-betting
+once in one chance fill a square there and say nothing about how much of
+the 3-bet range is aces. `query.stat_range_of` is the new one, and on the
+command line it is `--chart --range-of KEY [--alternative ACTION]`. It is
+`chart_of` over the rows where the chance arose and the action was taken,
+so it counts player-hands once and carries the seen fraction like every
+other chart. `app.py --check` holds it to the hands that 3-bet counted
+directly, by both roads it reaches the window.
+
+### Added -- `--no-reg-vs-fish`
+
+Hand2Note's "exclude reg vs fish", as a switch: a reg's decisions with a
+fish in the pot drop out and everything else stays. It is written with
+COALESCE, because a seat with no class is NULL and `NOT` over a NULL is
+NULL -- the plain form dropped every unclassified decision along with the
+ones it meant to. The corpus CI builds from has three regs and none of them
+ever sat with a fish, so there it keeps everything; `query.py --check`
+accepts that only after asking for the rows it should drop and finding
+none, and proves the switch on four hand-made seats instead.
+
+### Fixed -- the check that every filter narrows had stopped checking
+
+`query.py --check` tests that each filter selects something and not
+everything. The second half compared against `total`, which a loop added
+above it on 25 Sep reused for the hero's hand count -- so "selects every
+decision in the table" had not been caught since. Every existing filter
+passes with it restored; the new switch was the first thing it caught.
+
+---
+
 ## The tabs answer faster -- 3 Oct 2026
 
 ### Changed -- fewer passes over `decisions` per click

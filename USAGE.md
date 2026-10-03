@@ -384,6 +384,37 @@ A rate cell is left blank below three occurrences: one hand dealt twice is
 not a frequency. A composition cell is not, because a combo dealt twice
 really is 0.1% of the range.
 
+#### A stat, and the hands it was made of
+
+Neither chart above is "his 3-bet range". The first is every hand that
+reached the spot, folds included; the second is how *often* each combo
+3-bet, so aces 3-betting once in one chance is a full square and says
+nothing about how much of the range is aces. `--range-of` is the third:
+the hands that took the stat's action, each combo's share of them.
+
+```bash
+python query.py --pool --site ignition --chart --range-of threebet
+python query.py --pool --site ignition --chart --range-of threebet --alternative call
+```
+
+The first line printed is what the chart is a range *of*:
+
+```
+3bet: 148 of 1,318 chances (11.2%) -- the chart is those hands
+148 of 148 player-hands showed cards (100.0%)
+```
+
+With `--alternative` it is the hands that did that instead on the same
+chances -- the call range beside the 3-bet range. A stat counted once per
+hand (VPIP, PFR) has no single decision that could have been a call
+instead, and is refused, as it is for `--show`.
+
+In the window this is the **stats** tab: click a row and its range is drawn
+beside the table. **range of** above the table switches between the hands
+that did it and the hands that called, folded, raised, checked or bet
+instead. Hover a square for its count. The seen fraction is printed under
+it for the same reason as above.
+
 ---
 
 ### Expression stats, in Hand2Note's language
@@ -979,6 +1010,18 @@ decisions by construction, which is 17% of the database.
 `--regs-only` and `--with-fish` ask the same thing of a pot of any size —
 everybody still in is a reg, or at least one of them is a fish — and between
 them cover 63%. Use these unless the matchup really has to be heads up.
+
+`--no-reg-vs-fish` is Hand2Note's "exclude reg vs fish": a reg's decisions
+with a fish still in the pot drop out, and everything else stays -- the
+fish's own decisions against regs, the unknowns, the regs among regs. A reg
+isolates wider and value-bets thinner against a fish on purpose, so a reg's
+rates taken over both kinds of table describe neither. It is an ordinary
+switch, so it narrows every tab; the window has it in the filter's player
+page and as **leave out regs against fish** above the stats table.
+
+```bash
+python query.py --pool --site ignition --reg --no-reg-vs-fish --show threebet
+```
 
 Only ACR names people. An Ignition ring identity lasts as long as somebody
 stays in the seat, and Zone names nobody.

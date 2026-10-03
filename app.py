@@ -156,11 +156,18 @@ WHO = [("--reg", "the player is a reg"), ("--fish", "the player is a fish"),
        ("--fish-left", "a fish on my left (acts after me)"),
        ("--fish-right", "a fish on my right (acts before me)"),
        ("--reg-left", "a reg on my left"),
-       ("--reg-right", "a reg on my right")]
+       ("--reg-right", "a reg on my right"),
+       ("--no-reg-vs-fish", "leave out regs' hands against fish")]
 SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
               ("--pfa", "was the raiser"), ("--vs-pfa", "facing the raiser"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
+# What the chart beside the stats table is a range of, by the words in its
+# box: the stat's own action, or one of `query.CHART_ALTERNATIVES` taken
+# instead on the same chances.
+TOOK = {"the hands that did it": None, "call instead": "call",
+        "fold instead": "fold", "raise instead": "raise",
+        "check instead": "check", "bet instead": "bet"}
 # Turning one of these on turns its opposite off, or the filter selects
 # nothing and looks broken rather than contradictory.
 OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
@@ -902,6 +909,22 @@ class App(ImportMixin, ttk.Frame):
         self.expression_label = ttk.Label(bar, text="expression",
                                           style="Dim.TLabel")
 
+        # Which hands the chart beside the stats table draws: the ones that
+        # took the clicked stat's action, or the ones that did something
+        # else on the same chances -- the call range beside the 3-bet range.
+        self.took = ttk.Combobox(bar, state="readonly", width=16,
+                                 values=list(TOOK))
+        self.took.set(next(iter(TOOK)))
+        self.took.bind("<<ComboboxSelected>>", lambda e: self.show_stat_range())
+        self.took_label = ttk.Label(bar, text="range of", style="Dim.TLabel")
+        # Hand2Note keeps this beside its statistics rather than among the
+        # filters, because it is the switch people flip while reading them.
+        # It is an ordinary switch all the same, and the filter dialog
+        # offers it too.
+        self.no_reg_fish = ttk.Checkbutton(
+            bar, text="leave out regs against fish",
+            variable=self.flags["--no-reg-vs-fish"], command=self.refresh)
+
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.refresh())
@@ -917,7 +940,26 @@ class App(ImportMixin, ttk.Frame):
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "actions", "overfolds", "range", "report", "results",
+        # The stats table with the range of whichever row is clicked beside
+        # it: Hand2Note's statistics view, where a rate and the hands it
+        # was made of are one look and not two tabs and a dropdown.
+        split = ttk.Panedwindow(self.tabs["stats"], orient="horizontal")
+        split.pack(fill="both", expand=True)
+        table, side = ttk.Frame(split), ttk.Frame(split)
+        split.add(table, weight=3)
+        split.add(side, weight=2)
+        self.tree["stats"] = self._table(table)
+        self.tree["stats"].bind("<<TreeviewSelect>>", self._picked_stat)
+        self.stat_canvas = tk.Canvas(side, bg=BG, highlightthickness=0)
+        self.stat_canvas.pack(fill="both", expand=True)
+        self.stat_canvas.bind("<Configure>", lambda e: self._draw_chart(
+            self.stat_note, self.stat_canvas))
+        self.stat_canvas.bind("<Motion>", self._chart_hover)
+        self.stat_canvas.bind("<Leave>",
+                              lambda e: self.stat_canvas.delete("hint"))
+        self.stat_chart, self.picked = None, None
+        self.stat_note = "click a stat to see the hands it was made of"
+        for name in ("actions", "overfolds", "range", "report", "results",
                      "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
@@ -1173,9 +1215,13 @@ class App(ImportMixin, ttk.Frame):
         if view == "stats":
             self.expression_label.pack(side="left", padx=(0, 6))
             self.expression.pack(side="left")
+            self.took_label.pack(side="left", padx=(14, 6))
+            self.took.pack(side="left")
+            self.no_reg_fish.pack(side="left", padx=(14, 0))
         else:
-            self.expression_label.pack_forget()
-            self.expression.pack_forget()
+            for w in (self.expression_label, self.expression, self.took_label,
+                      self.took, self.no_reg_fish):
+                w.pack_forget()
         try:
             argv = self.argv()
             cohort_spec, query_argv = players.parse_cohort(argv)
@@ -1204,14 +1250,21 @@ class App(ImportMixin, ttk.Frame):
         stat = self.expression.get() if view == "stats" else self.chart_stat()
         alternative = (self.alternative.get() or None) if view == "chart" else None
         key = (view, where, self.by.get(), stat, alternative, repr(cohort_spec))
+        self.last = (where, label, parts, cohort_spec, query_argv)
         if key in self.cache:
             self.status.configure(text="")
             self._render(self.cache[key])
+            if view == "stats":
+                self.show_stat_range()
             return
         self.status.configure(text="working…")
+        # The clicked stat's range rides on the table's own request rather
+        # than following it as a second one, because the worker runs only
+        # the newest request and would drop the table to answer the chart.
+        pick = self._range_request(where, cohort_spec) if view == "stats" else None
         self.requests.put((token, key, view, where, label, parts,
                            self.by.get(), cohort_spec, stat, alternative,
-                           query_argv))
+                           query_argv, pick))
 
     def _worker(self):
         """The one thread every query runs on; see `_work`."""
@@ -1235,10 +1288,55 @@ class App(ImportMixin, ttk.Frame):
             if token != self.pending:
                 continue
             out = self._work(token, *args)
+            if out is not None and out.get("range_key"):
+                self.cache[out["range_key"]] = {"view": "statrange",
+                                                "range": out["range"]}
             if out is not None and not out.get("error"):
                 self.cache[key] = out
                 if len(self.cache) > 64:
                     self.cache.pop(next(iter(self.cache)))
+
+    def _range_request(self, where, cohort_spec):
+        """(cache key, stat, alternative) for the clicked stat, or None."""
+        if not self.picked:
+            return None
+        took = TOOK.get(self.took.get())
+        return (("statrange", where, self.picked, took, repr(cohort_spec)),
+                self.picked, took)
+
+    def _picked_stat(self, _event=None):
+        chosen = self.tree["stats"].selection()
+        if not chosen or not chosen[0].startswith("stat:"):
+            return
+        key = chosen[0][len("stat:"):]
+        if key != self.picked:
+            self.picked = key
+            self.show_stat_range()
+
+    def show_stat_range(self):
+        """
+        The clicked stat's range, from the cache or from the worker.
+
+        Asked separately from the table only when the table is already
+        drawn -- a click on one of its rows, or the box beside it -- so
+        there is nothing in the queue for this request to displace.
+        """
+        if not getattr(self, "last", None):
+            return
+        where, label, parts, cohort_spec, query_argv = self.last
+        pick = self._range_request(where, cohort_spec)
+        if pick is None:
+            self.stat_chart = None
+            self._draw_chart(self.stat_note, self.stat_canvas)
+            return
+        if pick[0] in self.cache:
+            self._render(self.cache[pick[0]])
+            return
+        self.pending += 1
+        self.status.configure(text="working…")
+        self.requests.put((self.pending, pick[0], "statrange", where, label,
+                           parts, "", cohort_spec, None, None, query_argv,
+                           pick))
 
     def chart_stat(self):
         """Which stat the chart is of, or None for the range itself."""
@@ -1249,7 +1347,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None, alternative=None, filter_argv=()):
+              stat=None, alternative=None, filter_argv=(), pick=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -1283,6 +1381,11 @@ class App(ImportMixin, ttk.Frame):
                     value, n = stats.evaluate(con, expression, where)
                     out["expression"] = (expression.label, value, n)
                     out["formula"] = expression.formula
+                if pick:
+                    out["range"] = self._stat_range(con, where, pick)
+                    out["range_key"] = pick[0]
+            elif view == "statrange":
+                out["range"] = self._stat_range(con, where, pick)
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "sessions":
@@ -1335,7 +1438,7 @@ class App(ImportMixin, ttk.Frame):
                 out["rows"] = query.hands_of(con, where, limit=500)
             elif view == "graph":
                 out["series"] = self._series(con, where)
-            if not self._any(out):
+            if view != "statrange" and not self._any(out):
                 out["why"] = query.why_empty(con, parts)
         except ValueError as e:
             out = {"view": view, "error": str(e)}
@@ -1351,6 +1454,15 @@ class App(ImportMixin, ttk.Frame):
             con.close()
         self.results.put((token, out))
         return out
+
+    @staticmethod
+    def _stat_range(con, where, pick):
+        """The chart for the stats tab's side, or the sentence instead of it."""
+        _key, stat, took = pick
+        try:
+            return query.stat_range_of(con, where, stat, took)
+        except ValueError as e:
+            return {"error": str(e)}
 
     @staticmethod
     def _any(out):
@@ -1397,6 +1509,19 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        # A cached table carries the range of whatever was clicked when it
+        # was computed; `show_stat_range` draws the current one after it.
+        current = self._range_request(self.last[0], self.last[3]) \
+            if getattr(self, "last", None) else None
+        if "range" in out and (view == "statrange" or (
+                current and out.get("range_key") == current[0])):
+            g = out["range"]
+            self.stat_chart = g if g.get("cells") else None
+            self._draw_chart(g.get("error") or (
+                None if g.get("total") else "nobody took it under this filter"),
+                self.stat_canvas)
+        if view == "statrange":
+            return
         if view == "graph":
             self.series = out.get("series")
             self.graph_ran = True
@@ -1465,7 +1590,8 @@ class App(ImportMixin, ttk.Frame):
                 # A stat the pool never had the chance to take gets no
                 # comparison. "0.0%" there would invent a population.
                 extra = (_pct(r.get("pool")), _pct(r.get("shrunk")))
-            tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+            tv.insert("", "end", iid="stat:" + r["key"],
+                      tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
                               # A band under a point still has a size, and
                               # "±0" reads as a number that failed to print.
@@ -1728,7 +1854,7 @@ class App(ImportMixin, ttk.Frame):
         hid, seat = self._hand_ids[sel[0]]
         HandWindow(self, self.con, hid, seat)
 
-    def _draw_chart(self, message=None):
+    def _draw_chart(self, message=None, canvas=None):
         """
         The 13x13 chart, in the shape every range chart is drawn in.
 
@@ -1740,25 +1866,38 @@ class App(ImportMixin, ttk.Frame):
 
         A rate is shaded absolutely, because there 100% means something.
         """
-        c = self.chart_canvas
+        c = canvas or self.chart_canvas
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 80 or h < 80:
             return
-        g = self.chart
+        side = c is getattr(self, "stat_canvas", None)
+        g = self.stat_chart if side else self.chart
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
                           text=message or "no hand in this filter showed its "
                                           "cards, so there is no range to draw")
             return
+        # A stat's own range says first what it is a range OF: the share of
+        # the chances it was taken on, every hand counted, so "3bet 9%" and
+        # the nine percent drawn below it are read together.
+        if "took" in g:
+            k, n = g["took"]
+            c.create_text(14, 4, anchor="nw", fill=INK, font=(UI, 9),
+                          text=f"{g['stat']}: {k:,} of {n:,} chances"
+                               + (f" ({100.0 * k / n:.1f}%)" if n else "")
+                               + " -- these are those hands")
 
         comparison = g["mode"] == "comparison"
         rate = g["mode"] in ("rate", "comparison")
-        top, foot = 16, 112 if comparison else 52
+        top, foot = 16 + (18 if "took" in g else 0), 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
-        self._chart_geometry = (left, top, size)
+        if side:
+            self._stat_geometry = (left, top, size)
+        else:
+            self._chart_geometry = (left, top, size)
         peak = max(1e-9, g["peak"] / max(1, g["seen"]))
         # Below this the two lines of text collide, so the value is
         # dropped and the label kept. It was set by measuring the window:
@@ -1844,11 +1983,14 @@ class App(ImportMixin, ttk.Frame):
 
     def _chart_hover(self, event):
         """A colour's sample is one pointer move away, without another query."""
-        c, g = self.chart_canvas, self.chart
+        c = getattr(event, "widget", self.chart_canvas)
+        side = c is getattr(self, "stat_canvas", None)
+        g = self.stat_chart if side else self.chart
+        geometry = "_stat_geometry" if side else "_chart_geometry"
         c.delete("hint")
-        if not g or not hasattr(self, "_chart_geometry"):
+        if not g or not hasattr(self, geometry):
             return
-        left, top, size = self._chart_geometry
+        left, top, size = getattr(self, geometry)
         if size <= 0:
             return
         i, j = int((event.y - top) // size), int((event.x - left) // size)
@@ -3546,6 +3688,53 @@ def check(db_path=DB):
     for b in broke:
         print(f"    {b}")
     fails += broke
+
+    # The stats table's side chart. A click on a row is the only way it is
+    # asked for, and the table and chart arrive by two roads -- one riding
+    # on the table's own request, one on its own -- so both are driven:
+    # the first must hand back a range under the key the second looks for,
+    # and the chart must draw from it.
+    app.picked = "threebet"
+    app.took.set(next(iter(TOOK)))
+    app.last = ("1=1", "everything", [], None, [])
+    pick = app._range_request("1=1", None)
+    both = app._work(0, "stats", "1=1", "everything", [], "", None, pick=pick)
+    app.results.get_nowait()
+    alone = app._work(0, "statrange", "1=1", "everything", [], "", None,
+                      pick=pick)
+    app.results.get_nowait()
+    g = both.get("range") or {}
+    same = (both.get("range_key") == pick[0] and alone.get("range")
+            and alone["range"].get("cells") == g.get("cells"))
+    direct = con.execute(
+        "SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat FROM decisions "
+        f"WHERE ({BY_KEY['threebet'].chance}) "
+        f"AND ({BY_KEY['threebet'].action}))").fetchone()[0]
+    print(f"a clicked stat's range, both roads  "
+          f"{'the same' if same else 'NO'}, {g.get('total', 0):,} player-hands"
+          f" of {direct:,} that 3-bet")
+    if not same or g.get("total") != direct:
+        fails.append("the stats tab's range is not the hands that took the "
+                     "stat, or differs by the road it came by")
+    # Drawn on the screen, because a canvas nobody can see is one pixel
+    # wide and `_draw_chart` rightly draws nothing on it.
+    root.geometry("1360x880")
+    root.deiconify()
+    app.nb.select(app.tabs["stats"])
+    root.update()
+    app._render({"view": "statrange", "range": g})
+    drew = len(app.stat_canvas.find_all())
+    root.withdraw()
+    refused = app._work(0, "statrange", "1=1", "", [], "", None,
+                        pick=(("k",), "vpip", "call"))
+    app.results.get_nowait()
+    print(f"and draws it   {drew} items; VPIP's call range "
+          f"{'refused' if refused['range'].get('error') else 'NOT refused'}")
+    if g.get("cells") and drew < 169:
+        fails.append("the stats tab's range is computed but not drawn")
+    if not refused["range"].get("error"):
+        fails.append("a hand-counted stat was given an alternative range")
+    app.picked = None
 
     # The dark theme is only dark if `clam` is the theme in use; the others
     # hand their drawing to Windows and ignore every colour set here.
