@@ -8,6 +8,39 @@ Newest first.
 
 ---
 
+## Tonight's sitting, one sitting, and its hands -- 3 Oct 2026
+
+### Added -- `--last-sessions N` and `--session N,M`
+
+Hand2Note's session view has "Today" and opens a session's hands. Here
+the sittings have been in `sessions` since 18 Sep, and nothing could
+select one. `--session` takes the numbers `--sessions` prints.
+`--last-sessions N` is the last N sittings on each site, ranked by that
+site's own clock. "Today" itself is not offered, because whose today it is
+depends on a clock nothing here records. "The last N overall" would rank
+one room's timestamps against another's, which `sessions.py` has never
+done. Both reach the window as boxes on the filter's General page, and a
+double-click on a row of the sessions tab opens that sitting on its own.
+
+`sessions_of` now applies the filter to `decisions` inside its join rather
+than across it. A filter naming `session_id` is the first that names a
+column `sessions` also has, and the outer form raised "ambiguous column
+name" for it.
+
+Both read the `dec_session` index end to end rather than seeking it, since
+`session_id` is its last column. At 490k decisions that is a narrow scan.
+An index led by `session_id` would make it a seek, but it belongs to
+`sessions.py`'s build, so it is left for that code's owner to add.
+
+### Added -- export from the window
+
+**Views ▸ Export the hands it selects…** is `--export` from the window. It
+runs `importer.export` on a worker over the same `hands_of` the command
+line uses, cohort included, and says how many hands were written and how
+many files had moved.
+
+---
+
 ## Saved views -- 3 Oct 2026
 
 ### Added -- save the whole window under a name, and open it again

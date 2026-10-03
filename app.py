@@ -626,7 +626,7 @@ class App(ImportMixin, ttk.Frame):
                       "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
                       "tables", "tag", "size", "size_bb", "raise_x", "depth",
-                      "spr", "high", "format")}
+                      "spr", "high", "format", "session", "last_sessions")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -988,6 +988,8 @@ class App(ImportMixin, ttk.Frame):
         self.chart_canvas.bind("<Motion>", self._chart_hover)
         self.chart_canvas.bind("<Leave>", lambda e: self.chart_canvas.delete("hint"))
         self.chart = None
+        self.tree["sessions"].bind("<Double-1>", self._open_session)
+        self.tree["sessions"].bind("<Return>", self._open_session)
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
 
@@ -1102,7 +1104,9 @@ class App(ImportMixin, ttk.Frame):
                            ("format", "--format"),
                            ("session_len", "--session-len"),
                            ("session_min", "--session-min"),
-                           ("tables", "--tables"), ("tag", "--tag")):
+                           ("tables", "--tables"), ("tag", "--tag"),
+                           ("session", "--session"),
+                           ("last_sessions", "--last-sessions")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1133,7 +1137,8 @@ class App(ImportMixin, ttk.Frame):
               "--session-min": "session_min", "--tables": "tables",
               "--tag": "tag", "--size": "size", "--size-bb": "size_bb",
               "--raise-x": "raise_x", "--depth": "depth", "--spr": "spr",
-              "--high": "high", "--format": "format"}
+              "--high": "high", "--format": "format",
+              "--session": "session", "--last-sessions": "last_sessions"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
               "--actions": "actions", "--overfolds": "overfolds",
@@ -1203,6 +1208,8 @@ class App(ImportMixin, ttk.Frame):
         """The Views menu, read from the file each time it is opened."""
         menu.delete(0, "end")
         menu.add_command(label="Save this view…", command=self.save_view)
+        menu.add_command(label="Export the hands it selects…",
+                         command=self.export_hands)
         known = query.saved_views()
         if known:
             menu.add_separator()
@@ -1808,7 +1815,8 @@ class App(ImportMixin, ttk.Frame):
         for r in rows:
             tag = ("pos",) if r["net_bb"] > 0 else ("neg",) if r["net_bb"] < 0 else ()
             hr = 60.0 * r["hands"] / r["minutes"] if r["minutes"] else 0.0
-            tv.insert("", "end", tags=tag, values=(
+            tv.insert("", "end", iid=f"session:{r['session_id']}", tags=tag,
+                      values=(
                 r["started"][:16], r["site"], f"{r['minutes']:.0f}",
                 f"{r['hands']:,}", f"{hr:.0f}", f"{r['matched']:,}", r["tables"],
                 f"{r['net_bb']:+.1f}", f"{r['ev_bb']:+.1f}",
@@ -1820,7 +1828,8 @@ class App(ImportMixin, ttk.Frame):
             f"{len(rows)} SESSIONS", "", "", f"{n:,}", "", "", "",
             f"{net:+.1f}", "", ""))
         tv.insert("", "end", tags=("note",), values=(
-            "the clock is the site's, not yours",) + ("",) * 9)
+            "the clock is the site's, not yours -- double-click a sitting "
+            "for its hands",) + ("",) * 9)
 
     def _render_range(self, tv, out):
         """
@@ -1955,6 +1964,62 @@ class App(ImportMixin, ttk.Frame):
                       values=("double-click a hand to replay it, and tag it "
                               "there; click a heading to sort, net bb for "
                               "the biggest wins and losses",) + ("",) * 8)
+
+    def _open_session(self, _event=None):
+        """
+        A sitting's hands, from its row: the filter becomes that sitting.
+
+        Everything else in the filter is dropped, because the row was found
+        under it and is about to be read as the whole night -- a sitting
+        opened under "river, facing a bet" would show four hands of it and
+        call that Tuesday.
+        """
+        chosen = self.tree["sessions"].selection()
+        if not chosen or not chosen[0].startswith("session:"):
+            return
+        sid = chosen[0][len("session:"):]
+        self.apply_argv(["--hero", "--session", sid, "--hands"])
+
+    def export_hands(self):
+        """
+        The hands the filter selects, as the sites wrote them, to a file.
+
+        The same hands `query.py --export` writes under the same filter,
+        cohort included: `hands_of` over the same WHERE, so the window and
+        the command line cannot come to disagree about which hands those are.
+        """
+        try:
+            cohort_spec, rest = players.parse_cohort(self.argv())
+            where, label, _parts = query.build(rest)
+        except SystemExit as e:
+            messagebox.showerror("Not exported", str(e), parent=self.master)
+            return
+        out = filedialog.asksaveasfilename(
+            parent=self.master, defaultextension=".txt",
+            initialfile="traceev-hands.txt", title="Export these hands",
+            filetypes=[("hand histories", "*.txt")])
+        if not out:
+            return
+
+        def work(say):
+            con = query.connect(DB)
+            try:
+                chosen = where
+                if cohort_spec is not None:
+                    query.select_cohort(con, cohort_spec)
+                    chosen = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
+                              "WHERE c.site = decisions.site AND "
+                              "c.player = decisions.player)")
+                ids = sorted({r[0] for r in query.hands_of(con, chosen)})
+                say(f"{len(ids):,} hands under: {label}")
+                if not ids:
+                    return "nothing to export -- the filter selects no hands"
+                written, missing = importer.export(con, ids, out, log=say)
+                return (f"done: {written:,} written"
+                        + (f", {len(missing):,} not found" if missing else ""))
+            finally:
+                con.close()
+        self._run_import("Export these hands", work)
 
     def _open_hand(self, _event):
         tv = self.tree["hands"]
@@ -3227,6 +3292,13 @@ class FilterDialog(tk.Toplevel):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
                 side="left", padx=(6, 16))
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(6, 0))
+        for name, text, width in (("last_sessions", "my last N sittings on each site", 5),
+                                  ("session", "sittings by number, e.g. 41,42", 12)):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
+                side="left", padx=(6, 16))
         ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
                   text="18-23 is the evening, mon,tue,wed the weekdays, "
                        "120-300 the sessions of two to five hours, 0-60 the "
@@ -3739,6 +3811,10 @@ def check(db_path=DB):
         # the assistant's answers lost it on the way in.
         ({"flags": ["--pool"], "street": ["river"], "facing": ["bet"]},
          ["--pool", "--street", "river", "--facing", "bet"]),
+        # Sittings, by number and by recency.
+        ({"flags": ["--hero"], "vals": {"last_sessions": "2"}},
+         ["--hero", "--last-sessions", "2"]),
+        ({"flags": [], "vals": {"session": "3,4"}}, ["--session", "3,4"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
@@ -3863,6 +3939,26 @@ def check(db_path=DB):
         fails.append("the weak share beside a stat's range is missing, or "
                      "differs from the range tab's, or drawn preflop")
     app.picked = None
+
+    # A sitting's row opens that sitting's hands and nothing else. The row
+    # is found under a filter, and kept under it the hands tab would show a
+    # few hands of the night and be read as the whole of it.
+    app.clear_filters()
+    app.multi["street"] = {"river"}
+    listed = app._work(0, "sessions", "1=1", "", [], "", None)
+    app.results.get_nowait()
+    app._render(listed)
+    first = listed["rows"][0]["session_id"]
+    app.tree["sessions"].selection_set(f"session:{first}")
+    app._open_session()
+    opened = query.build(app.argv())[0]
+    want = query.build(["--hero", "--session", str(first)])[0]
+    on_hands = app.nb.tab(app.nb.select(), "text") == "hands"
+    print(f"a sitting's row opens its hands  "
+          f"{'yes' if opened == want and on_hands else 'NO -- ' + opened}")
+    if opened != want or not on_hands:
+        fails.append("double-clicking a sitting does not open that sitting")
+    app.clear_filters()
 
     # A saved view has to come back as it was saved: the same rows, the same
     # tab, the same choices on it, and the same players. Saved and opened

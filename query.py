@@ -143,6 +143,18 @@ VALUE_FLAGS = {
     "--session-len": "session_len BETWEEN {lo} AND {hi}",
     "--session-min": "session_min BETWEEN {lo} AND {hi}",
     "--tables": "tables_now BETWEEN {lo} AND {hi}",
+    # One sitting or several, by the number `--sessions` prints: every
+    # decision in their hands, every seat's, since the sitting is stamped
+    # on the whole hand. And the latest N, Hand2Note's "Today" said the
+    # way this database can say it honestly: the last sittings ON EACH
+    # SITE, ranked by that site's own clock, because nothing says two
+    # sites' clocks agree and "the last three overall" would rank one
+    # room's evening against another room's afternoon.
+    "--session": "session_id IN ({ids})",
+    "--last-sessions": "session_id IN (SELECT session_id FROM (SELECT "
+                       "session_id, ROW_NUMBER() OVER (PARTITION BY site "
+                       "ORDER BY started DESC) AS latest FROM sessions) "
+                       "WHERE latest <= {n})",
     # Sizes and depth as ranges, Hand2Note's Sizing & Stack Depth filters:
     # a bet or raise as a share of the pot, in big blinds, or as a multiple
     # of the bet it raised; the effective stack; the stack-to-pot ratio.
@@ -966,6 +978,20 @@ def build(argv):
                              else f"({h} >= {lo} OR {h} <= {hi})")
                 described.append(f"hour {v}")
                 continue
+            if a in ("--session", "--last-sessions"):
+                # Whole numbers, checked here rather than quoted: an id
+                # quoted as text still matches an integer column, but a
+                # typo quoted as text matches nothing and looks like a
+                # sitting with no hands in it.
+                try:
+                    ids = [int(x) for x in v.split(",")]
+                except ValueError:
+                    raise SystemExit(f"{a} wants whole numbers, not {v!r}") from None
+                if a == "--last-sessions" and (len(ids) != 1 or ids[0] < 1):
+                    raise SystemExit("--last-sessions wants one number, 1 or more")
+                parts.append(tpl.format(ids=", ".join(map(str, ids)), n=ids[0]))
+                described.append(f"{a.lstrip('-')} {v}")
+                continue
             if a == "--matchup":
                 parts.append(matchup_sql(v))
                 described.append(f"matchup {v}")
@@ -1702,12 +1728,15 @@ def sessions_of(con, where):
     keys = ("session_id", "site", "started", "minutes", "hands", "tables",
             "net_bb", "ev_bb", "bb100", "ev100", "matched")
     per_hour = lambda r: (60.0 * r["hands"] / r["minutes"]) if r["minutes"] else 0.0
+    # The filter is applied inside, to `decisions` alone, because it may
+    # name `session_id` itself -- `--session`, `--last-sessions` -- and
+    # in a join with `sessions` that column is in both tables.
     return [dict(zip(keys, r)) for r in con.execute(f"""
         SELECT s.session_id, s.site, s.started, s.minutes, s.hands,
                s.tables, s.net_bb, s.ev_bb, s.bb100, s.ev100,
                COUNT(DISTINCT d.hand_id)
-        FROM sessions s JOIN decisions d ON d.session_id = s.session_id
-        WHERE ({where})
+        FROM sessions s JOIN (SELECT session_id, hand_id FROM decisions
+                              WHERE {where}) d ON d.session_id = s.session_id
         GROUP BY s.session_id ORDER BY s.started DESC""")]
 
 
@@ -2934,6 +2963,10 @@ def check(db_path=DB):
         "--stake": "0.1", "--deep": "50", "--short": "200",
         "--hour": "18-23", "--weekday": "sat,sun",
         "--session-len": "60-180", "--session-min": "0-60", "--tables": "1-2",
+        "--last-sessions": "1",
+        "--session": str(con.execute(
+            "SELECT session_id FROM sessions ORDER BY hands DESC "
+            "LIMIT 1").fetchone()[0]),
         "--size": "0.5-0.8", "--size-bb": "2-4", "--raise-x": "2-3",
         "--depth": "80-120", "--spr": "1-4", "--high": "A,K", "--format": "RING",
         "--made": "top pair", "--kicker": "top", "--fd": "nut",

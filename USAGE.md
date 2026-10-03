@@ -730,6 +730,30 @@ Ranges are `a-b`, inclusive: `--hour 18-23`, `--session-len 120-300`,
 `--session-min 0-60` (the first hour of any sitting), `--tables 1-2`.
 Weekdays are names: `--weekday sat,sun`.
 
+#### Tonight, and one sitting
+
+```bash
+python query.py --hero --last-sessions 1 --results       # my last sitting on each site
+python query.py --hero --site acr --last-sessions 1 --stats
+python query.py --session 41 --hands                      # one sitting, by its number
+python query.py --session 41 --export tuesday.txt         # and its hands, as written
+```
+
+`--last-sessions N` is Hand2Note's "Today", said the way this database can
+say it honestly: the last N sittings **on each site**, each ranked by that
+site's own clock. "The last three overall" would rank one room's evening
+against another room's afternoon. Add `--site` for tonight on one room.
+`--session` takes the numbers `--sessions` prints, and selects every seat's
+decisions in those hands, since the sitting is stamped on the whole hand.
+
+In the window both are boxes on the filter's General page, beside the
+session length. On the **sessions** tab a double-click on a sitting opens
+its hands. It drops the rest of the filter, because a sitting opened under
+"river, facing a bet" would show four of its hands and read as the whole
+night. **Views ▸ Export the hands it selects…** writes the hands under the
+filter to a file, as the sites wrote them, which is `--export` from the
+window.
+
 ---
 
 ### Marking hands, and notes on players
