@@ -1291,8 +1291,9 @@ class App(ImportMixin, ttk.Frame):
                 self.of.set(BY_KEY[shown].label)
             if alternative in query.CHART_ALTERNATIVES:
                 self.alternative.set(alternative)
-        self.picked = None
-        self.took.set(next(iter(TOOK)))
+        if tab == "stats":
+            self.picked = None
+            self.took.set(next(iter(TOOK)))
         if tab == "stats" and range_of in BY_KEY:
             self.picked = range_of
             self.took.set(next((w for w, alt in TOOK.items()
