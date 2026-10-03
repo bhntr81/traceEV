@@ -8,6 +8,18 @@ Newest first.
 
 ---
 
+## The HUD is back in scope — 3 Oct 2026
+
+### Changed -- "No HUD" is no longer a rule
+
+The HUD was cut on 5 Sep 2026 together with the solver. The solver was a
+different product; the HUD is not -- it shows what people do, at the table,
+from the same stat engine -- so it comes back. `CLAUDE.md`, `README.md` and
+`ROADMAP.md` now say so. No code changes: the HUD is being designed, and
+its first step is incremental import.
+
+---
+
 ## The checks run on every push -- 3 Oct 2026
 
 ### Added -- `.github/workflows/check.yml`, and `fixtures.py --build`
