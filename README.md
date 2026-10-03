@@ -11,9 +11,12 @@ tells you what people **do**.
 
 ## Scope, decided rather than drifted into
 
-**The tracking and filtering half of a Hand2Note, and nothing else.**
+**The tracking and filtering half of a Hand2Note, and a HUD over it.**
 
-  * **No HUD.** No overlay, no popups, no reading the table while you play.
+  * **A HUD, on the sites that allow one and name their players** -- ACR and
+    PokerStars. It shows what the reports show, at the table, from the same
+    stat engine. Cut on 5 Sep 2026 and brought back on 3 Oct 2026; it is
+    being designed and is not built yet.
   * **No solver.** Hand2Note contains none, and neither does this. A solver
     answers "what is correct"; a tracker answers "what happened". Mixing the
     two is how a tracker turns into a different product.
