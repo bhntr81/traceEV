@@ -1329,6 +1329,11 @@ python hud.py --print      # the numbers for the tables you played last, as text
 python hud.py --windows    # every window title, and which table it matched
 ```
 
+**Close ClubWPT Gold first, completely, if you play there on this PC.**
+Its client looks for HUDs and restricts the account that runs one, coins
+and redemptions included, so `hud.py` will not start while a ClubWPT Gold
+window or process is open.
+
 Open the poker client, start `hud.py`, and sit down. Every second it looks
 at the client's hand history folder; when a hand is written it is imported
 the way **Import new hands** imports it, and every table whose file moved

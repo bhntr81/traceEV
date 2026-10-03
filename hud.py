@@ -516,8 +516,42 @@ def dpi_aware():
             pass
 
 
+# Clients that look for HUDs on the machine and restrict the account that
+# runs one, matched in lower case against window titles and process names.
+# ClubWPT Gold says so in its own help pages, and restricts coins and
+# redemptions with the account, so the HUD will not start beside it.
+HOSTILE = ("clubwpt",)
+
+
+def processes():
+    """Names of the running programs, on Windows; nothing elsewhere."""
+    if sys.platform != "win32":
+        return []
+    import subprocess
+    try:
+        out = subprocess.run(["tasklist", "/fo", "csv", "/nh"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.split('","')[0].strip('"') for line in out.splitlines() if line]
+
+
+def hostile(titles, names):
+    """The first window title or process name of a client that bans HUDs."""
+    for text in list(titles) + list(names):
+        if any(h in text.lower().replace(" ", "") for h in HOSTILE):
+            return text
+    return None
+
+
 def run(source=None, db_path=DB, folders=None, extra=None):
     """The HUD: the watcher on its thread, the boxes on Tk's."""
+    found = hostile([w[0] for w in windows()], processes())
+    if found:
+        print(f"not starting: {found!r} is open, and that client restricts "
+              "accounts that run a HUD. Close it completely, then start the "
+              "HUD again.")
+        return 1
     dpi_aware()
     import tkinter as tk
     root = tk.Tk()
@@ -535,6 +569,7 @@ def run(source=None, db_path=DB, folders=None, extra=None):
     root.after(100, overlay.tick)
     root.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), root.destroy()))
     root.mainloop()
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -605,8 +640,8 @@ def demo(db_path=DB):
                 pass
         return out
 
-    run(source=source, db_path=db_path, folders=[], extra=open_tables)
-    return 0
+    return run(source=source, db_path=db_path, folders=[],
+               extra=open_tables) or 0
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +766,14 @@ def check(db_path=DB):
         fails.append(f"{len(wrong)} window titles matched the wrong table")
     con.close()
 
+    # The refusal to start beside a client that bans HUDs.
+    guard = [hostile(["ClubWPT Gold"], []), hostile([], ["ClubWPTGold.exe"]),
+             hostile(["Halley - $0.01/$0.02", "Inbox"], ["python.exe"])]
+    ok = guard[0] and guard[1] and guard[2] is None
+    print(f"refuses beside ClubWPT Gold   {'yes' if ok else 'NO'}")
+    if not ok:
+        fails.append("the HUD would start beside a client that bans it")
+
     fails += watcher_check()
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
@@ -824,8 +867,7 @@ def main(argv):
             print()
         con.close()
         return 0
-    run()
-    return 0
+    return run()
 
 
 if __name__ == "__main__":

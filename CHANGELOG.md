@@ -33,6 +33,9 @@ every table name in the database to the window titles it should match,
 it is watched to reaching the boxes. A pool that left the player in, and
 a faint line drawn one chance too late, each failed it.
 
+It will not start while ClubWPT Gold is open, by window title or
+process name: that client looks for HUDs and restricts the account.
+
 What it has not been held to is a poker client: the window code runs
 only on Windows, and the seat ellipse is a guess. `hud.py --demo` draws
 the HUD over a pretend table named after the last one played, so the
