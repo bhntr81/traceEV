@@ -233,9 +233,18 @@ def check(db_path=DB):
     stamped = con.execute(
         "SELECT COUNT(DISTINCT hand_id) FROM decisions "
         "WHERE session_id IS NOT NULL").fetchone()[0]
-    print(f"hands stamped on decisions   {stamped:,}/{mine:,}"
-          f"{'' if stamped == mine else '   <-- MISSED'}")
-    if stamped != mine:
+    # Against the hands that HAVE decisions, not all of yours. Both blinds
+    # all in on their posts is a hand nobody decided anything in -- FPDB has
+    # one, heads-up limit, the big blind's whole $15 stack on the post --
+    # and a hand with no rows has nothing to stamp. Counted against every
+    # hand, that read as a missed stamp; this still fails on a real one.
+    decided = con.execute(
+        "SELECT COUNT(DISTINCT d.hand_id) FROM decisions d JOIN hands h "
+        "USING (hand_id) WHERE h.hero_seat IS NOT NULL "
+        "AND h.game = 'HOLDEM'").fetchone()[0]
+    print(f"hands stamped on decisions   {stamped:,}/{decided:,}"
+          f"{'' if stamped == decided else '   <-- MISSED'}")
+    if stamped != decided:
         fails.append("decisions were not all stamped with a session")
 
     # Money. Sessions were summed from the same rows the results view sums,

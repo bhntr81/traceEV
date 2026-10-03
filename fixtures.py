@@ -91,6 +91,10 @@ KNOWN = {
         "a player posts with no seat line; refused",
     "NLHE-6max-USD-0.05-0.10-201209.silent.post.both.txt":
         "a returning player's post is not written at all; the money cannot add",
+    "LHE-USD-2-4-201205.Bodog.txt":
+        "the board is never dealt, so the flop's betting is preflop; refused",
+    "LHE-9max-USD - $20-$40 - 201204.limit.blinds.txt":
+        "the board is never dealt, so the flop's betting is preflop; refused",
 }
 
 
