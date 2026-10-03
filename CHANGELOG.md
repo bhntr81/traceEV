@@ -48,8 +48,9 @@ bulk, and so is a database a rebuild never finished.
 one database from all of them, and builds a second from three fifths of
 them and then a run of updates -- sixteen on the CI corpus: batches of
 fifty, five single hands, one in nine of the older hands arriving after
-the newer ones, an alias added afterwards, and a hand taken out again. Every row of `spots`, `bets`, `decisions`, `players` and
-`sessions` must match. Each of three deliberately planted mistakes --
+the newer ones, an alias added afterwards, and a hand taken out again.
+Every row of `spots`, `bets`, `decisions`, `players` and `sessions` must
+match. Each of three deliberately planted mistakes --
 sittings written only for the new hands, identities not re-derived,
 classes not restamped -- failed it, by 16,104, 3,580 and 6,418 rows of
 `decisions`.
