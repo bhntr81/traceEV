@@ -326,11 +326,12 @@ def migrate(con):
     con.commit()
 
 
-def build(db_path=DB):
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    migrate(con)
+def rows_for(con, where="1=1"):
+    """
+    What the hand is, for every decision matching `where`, keyed to it.
 
+    Returns the rows and how many distinct hand-and-board pairs they took.
+    """
     # The same two cards on the same board always classify the same way, and
     # a player sees the same board on three streets, so the work collapses
     # by about two thirds against a cache.
@@ -338,14 +339,17 @@ def build(db_path=DB):
     rows = []
     for r in con.execute(
             "SELECT hand_id, n, cards, board FROM decisions "
-            "WHERE cards IS NOT NULL AND street <> 'preflop'"):
+            f"WHERE cards IS NOT NULL AND street <> 'preflop' AND ({where})"):
         key = (r["cards"], r["board"])
         if key not in seen:
             seen[key] = classify(r["cards"], r["board"])
         rows.append(seen[key] + (r["hand_id"], r["n"]))
+    return rows, len(seen)
 
-    for name in ("dec_made", "dec_draw", "dec_shown"):
-        con.execute(f"DROP INDEX IF EXISTS {name}")
+
+def stage(con, rows):
+    """Write these rows' columns onto `decisions` in one joined UPDATE."""
+    con.execute("DROP TABLE IF EXISTS temp.hands_at")
     con.execute("CREATE TEMP TABLE hands_at ("
                 + ", ".join(f"{c} TEXT" for c in COLUMNS) + ", hand_id TEXT, n INT)")
     con.executemany("INSERT INTO hands_at VALUES (?,?,?,?,?,?)", rows)
@@ -354,6 +358,25 @@ def build(db_path=DB):
         "UPDATE decisions SET " + ", ".join(f"{c} = hands_at.{c}" for c in COLUMNS)
         + " FROM hands_at WHERE decisions.hand_id = hands_at.hand_id "
           "AND decisions.n = hands_at.n")
+    con.execute("DROP TABLE temp.hands_at")
+
+
+def update(con):
+    """What the hand is, for the hands in the temporary table `dirty` only."""
+    rows, _distinct = rows_for(con, "hand_id IN (SELECT hand_id FROM dirty)")
+    stage(con, rows)
+    return len(rows)
+
+
+def build(db_path=DB):
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    migrate(con)
+    rows, distinct = rows_for(con)
+
+    for name in ("dec_made", "dec_draw", "dec_shown"):
+        con.execute(f"DROP INDEX IF EXISTS {name}")
+    stage(con, rows)
     # `kicker` is in the made-hand index rather than one of its own: it is
     # only ever asked alongside a pair, and on its own it read every row.
     con.execute("CREATE INDEX IF NOT EXISTS dec_made "
@@ -366,7 +389,7 @@ def build(db_path=DB):
     con.execute("ANALYZE")
     con.commit()
     print(f"{len(rows):,} decisions classified, "
-          f"{len(seen):,} distinct hand-and-board combinations")
+          f"{distinct:,} distinct hand-and-board combinations")
     con.close()
     return len(rows)
 

@@ -264,7 +264,7 @@ def refresh(db_path=DB, progress=None):
     got = load([p["path"] for p in found], db_path, progress)
     got["places"] = len(found)
     if got["added"]:
-        rebuild(db_path, progress)
+        update(got["ids"], db_path, progress)
     return got
 
 
@@ -286,7 +286,7 @@ def load(paths, db_path=DB, progress=None):
     """
     got = survey(paths)
     result = {"added": 0, "known": 0, "files": 0, "unknown": len(got["unknown"]),
-              "by_site": {}}
+              "by_site": {}, "ids": []}
     # Recorded here rather than in `refresh`, so that every road into the
     # loader marks how far it has read -- Import a folder and Find hands on
     # this computer read the same files and would otherwise leave the
@@ -320,6 +320,7 @@ def load(paths, db_path=DB, progress=None):
                     skipped += 1
                     continue
                 known.add(h["hand_id"])
+                result["ids"].append(h["hand_id"])
                 con.execute(
                     f"INSERT INTO hands ({', '.join(HAND_COLUMNS)}) "
                     f"VALUES ({', '.join('?' * len(HAND_COLUMNS))})",
@@ -490,6 +491,89 @@ def rebuild(db_path=DB, progress=None):
     if progress:
         progress("indexing...")
     decisions.index(db_path)
+
+
+# Past this share of the database, new hands are derived by a rebuild
+# rather than one at a time. A rebuild drops the indexes, writes every row
+# and builds them again once; an update keeps them up to date row by row,
+# which is far cheaper for a handful of hands and far dearer for thousands.
+# The answer is the same either way -- `check` holds them to that -- so this
+# is only about which is quicker.
+BULK = 0.2
+
+
+def current(con):
+    """
+    Whether the derived tables are all there, with every column the chain
+    puts on `decisions`.
+
+    An update adds to tables it assumes a rebuild made. A database from
+    before a stage existed, or one a rebuild never finished, has to be
+    rebuilt instead: a column `migrate` adds to old rows is a column of
+    NULLs, and every filter on it would silently miss those hands.
+    """
+    import lines
+    import players
+    import sessions
+    import strength
+    have = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"spots", "bets", "decisions", "players", "sessions"} <= have:
+        return False
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    return set(lines.LINE_COLUMNS) | set(strength.COLUMNS) \
+        | set(players.NAMES) | set(sessions.NAMES) <= cols
+
+
+def update(hand_ids, db_path=DB, progress=None):
+    """
+    Bring the derived tables up to date with these hands, and only these.
+
+    `rebuild` derives every hand there is, three quarters of a minute at
+    twelve thousand of them, and a refresh ran it to add one. Here each
+    stage of `CHAIN` derives the hands in a temporary table, `dirty`, and
+    the stages that look across hands -- who a seat is, which class a
+    player is in, which sitting a hand belongs to -- add to it whatever
+    else those hands changed, so the database ends exactly where a rebuild
+    would have put it. `check` holds the two to that, table by table.
+
+    Ids that are no longer in `hands` are welcome: a hand read again, or
+    taken out, is cleared from every table the same way a new one is added.
+
+    It is one transaction, so the window reading the database meanwhile
+    sees it before or after and never half way; that is also why no stage's
+    `update` adds its own columns, since each `migrate` commits, and
+    `current` has made sure they are all there. If anything fails, the
+    transaction is rolled back and the tables are rebuilt from the raw
+    hands, which were committed before any of this began.
+    """
+    import importlib
+    hand_ids = list(dict.fromkeys(hand_ids))
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    total = con.execute("SELECT COUNT(*) FROM hands").fetchone()[0]
+    if not current(con) or len(hand_ids) > BULK * max(total, 1):
+        con.close()
+        rebuild(db_path, progress)
+        return "rebuilt"
+    try:
+        con.execute("CREATE TEMP TABLE dirty (hand_id TEXT PRIMARY KEY)")
+        con.executemany("INSERT OR IGNORE INTO dirty VALUES (?)",
+                        [(h,) for h in hand_ids])
+        for name, _what in CHAIN:
+            if progress:
+                progress(f"deriving {name} for {len(hand_ids)} hands...")
+            importlib.import_module(name).update(con)
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        if progress:
+            progress("the update failed part way; rebuilding instead")
+        rebuild(db_path, progress)
+        raise
+    con.close()
+    return "updated"
 
 
 def source_index():
@@ -711,6 +795,8 @@ def check(db_path=DB):
             fails.append(f"exporting {len(sample)} hands and loading them "
                          f"again gave {len(back)} hands")
 
+    fails += incremental_check(db_path)
+
     places_found = scan()
     print(f"places holding hands          {len(places_found)}")
     for p in places_found:
@@ -719,6 +805,144 @@ def check(db_path=DB):
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
     return not fails
+
+
+# The tables `update` and `rebuild` must agree on, row for row.
+DERIVED = ("spots", "bets", "decisions", "players", "sessions")
+
+# How many of the database's hands the incremental check replays. Two
+# rebuilds and a few dozen updates of these; enough to cross every site and
+# both kinds of identity, few enough that `check.py` stays a command people
+# run.
+SAMPLE = 1500
+
+
+def incremental_check(db_path=DB):
+    """
+    Hands arriving one at a time end where a rebuild would.
+
+    The failure an incremental derivation has is the one this project is
+    built against: a column written for the new hands and not for the ones
+    their arrival changed, which raises nothing and is wrong in a way that
+    looks entirely plausible. So the same hands go into two databases. One
+    is rebuilt from all of them. The other is rebuilt from most and then
+    fed the rest through `update` the ways they really arrive -- in batches,
+    one at a time, older hands after newer ones (which renames Ignition
+    seats that were already derived), an alias added afterwards (which
+    renames a player everywhere), and a hand taken out again -- and every
+    derived table is compared with the first, every row and every column.
+    """
+    import contextlib
+    import io
+    import time
+
+    import notes
+
+    src = sqlite3.connect(db_path)
+    ids = [r[0] for r in src.execute(
+        "SELECT hand_id FROM hands ORDER BY played_at DESC, hand_id DESC "
+        "LIMIT ?", (SAMPLE,))][::-1]
+    src.close()
+    if len(ids) < 50:
+        print(f"{'update agrees with rebuild':30} not enough hands to replay")
+        return []
+
+    def copy(con, chosen):
+        con.execute("ATTACH DATABASE ? AS src", (str(db_path),))
+        for table in ("hands", "seats", "actions"):
+            mine = [r[1] for r in con.execute(f"PRAGMA main.table_info({table})")]
+            theirs = {r[1] for r in con.execute(f"PRAGMA src.table_info({table})")}
+            shared = ",".join(c for c in mine if c in theirs)
+            for i in range(0, len(chosen), 500):
+                chunk = chosen[i:i + 500]
+                con.execute(f"INSERT INTO {table} ({shared}) SELECT {shared} "
+                            f"FROM src.{table} WHERE hand_id IN "
+                            f"({','.join('?' * len(chunk))})", chunk)
+        con.commit()
+        con.execute("DETACH DATABASE src")
+
+    def fresh(path, chosen):
+        con = sqlite3.connect(path)
+        migrate(con)
+        notes.ensure(con)
+        copy(con, chosen)
+        return con
+
+    early = ids[:len(ids) * 3 // 5]
+    late = ids[len(early):]
+    held = early[::9]
+    base = [h for h in early if h not in set(held)]
+    gone = late[len(late) // 2]
+    fails, slowest = [], 0.0
+    quiet = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(quiet):
+        a_path, b_path = Path(tmp) / "rebuilt.db", Path(tmp) / "updated.db"
+
+        b = fresh(b_path, base)
+        b.close()
+        rebuild(b_path)
+
+        # An alias between two named players already derived, so that the
+        # rename has old rows to reach.
+        b = sqlite3.connect(b_path)
+        pair = b.execute(
+            "SELECT site, player FROM spots WHERE is_hero=0 AND player IS NOT "
+            "NULL AND site IN ({}) GROUP BY site, player ORDER BY COUNT(*) DESC "
+            "LIMIT 2".format(",".join("?" * len(sites.named()))),
+            tuple(sites.named())).fetchall()
+        alias = pair if len(pair) == 2 and pair[0][0] == pair[1][0] else None
+        if alias:
+            notes.alias(b, alias[0][0], alias[1][1], alias[0][1])
+            b.commit()
+        b.close()
+        update([], b_path)
+
+        bulk = late[:-5]
+        batches = [bulk[i:i + 50] for i in range(0, len(bulk), 50)]
+        batches += [[h] for h in late[-5:]]
+        b = sqlite3.connect(b_path)
+        for batch in batches:
+            copy(b, batch)
+            start = time.perf_counter()
+            update(batch, b_path)
+            if len(batch) == 1:
+                slowest = max(slowest, time.perf_counter() - start)
+        copy(b, held)
+        update(held, b_path)
+        for table in ("actions", "seats", "hands"):
+            b.execute(f"DELETE FROM {table} WHERE hand_id=?", (gone,))
+        b.commit()
+        b.close()
+        update([gone], b_path)
+
+        a = fresh(a_path, [h for h in ids if h != gone])
+        if alias:
+            notes.alias(a, alias[0][0], alias[1][1], alias[0][1])
+            a.commit()
+        a.close()
+        rebuild(a_path)
+
+        a, b = sqlite3.connect(a_path), sqlite3.connect(b_path)
+        for table in DERIVED:
+            cols = ",".join(r[1] for r in a.execute(f"PRAGMA table_info({table})"))
+            want = a.execute(f"SELECT {cols} FROM {table} ORDER BY {cols}").fetchall()
+            got = b.execute(f"SELECT {cols} FROM {table} ORDER BY {cols}").fetchall()
+            if want != got:
+                differ = len(set(want) ^ set(got))
+                fails.append(f"after {len(batches) + 3} updates, {table} "
+                             f"differs from a rebuild in {differ} rows")
+        a.close()
+        b.close()
+
+    print(f"{'update agrees with rebuild':30} "
+          f"{'yes' if not fails else 'NO'}   {len(ids)} hands, "
+          f"{len(batches) + 3} updates, {len(held)} out of order, "
+          f"{'an alias, ' if alias else ''}one taken out")
+    for f in fails:
+        print(f"    {f}")
+    print(f"{'one new hand takes':30} {slowest * 1000:.0f} ms at "
+          f"{len(ids)} hands")
+    return fails
 
 
 def main(argv):
@@ -770,7 +994,7 @@ def main(argv):
     for site, n in got["by_site"].items():
         print(f"  {site:10} {n}")
     if got["added"]:
-        rebuild(progress=print)
+        update(got["ids"], progress=print)
     return 0
 
 
