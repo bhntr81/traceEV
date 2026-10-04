@@ -567,6 +567,8 @@ python query.py --hero --depth 20-50 --results          # effective stack, in bi
 python query.py --hero --street flop --spr 1-4 --show cbet_flop
 python query.py --pool --site ignition --street flop --high A,K --show cbet_flop
 python query.py --hero --format ZONE --results
+python query.py --pool --site pokerstars --street flop --street-pot 5-7 --show cbet_flop
+python query.py --hero --no-straddle --no-ante --results
 ```
 
 `--size` is the bet or raise as a share of the pot in front of the
@@ -575,6 +577,18 @@ multiple of the bet it raised (3.0 is a 3x); `--depth` and `--spr` are
 ranges on the effective stack and the stack-to-pot ratio; `--high` is
 the flop's high card by rank letter; `--format` is RING, ZONE, BLITZ or
 MTT. All in the filter dialog's General tab.
+
+`--street-pot` is the pot as the street began, in big blinds, where the
+pot a bet is sized against is the pot at that decision: a flop that began
+at 5 to 7 big blinds is a single-raised pot whatever anybody did after.
+
+`--ante`, `--no-ante`, `--straddle` and `--no-straddle` are what was
+posted before the cards. A straddle is read where a site writes one --
+"posts straddle", which no site with sample files here has yet been seen
+to -- and an ante wherever it is posted. Hands imported before 4 Oct 2026
+have neither written down and match none of the four until
+`python importer.py --reread` over their folders; a filter that matches
+nothing for that reason says so.
 
 ### Hero in the pot, or out of it
 
@@ -839,6 +853,8 @@ python query.py --hero --fish-right --results     # a fish acts before me (I hav
 python query.py --hero --fish-left --results      # a fish acts after me (they have it)
 python query.py --hero --regs-only --results      # nobody left but regs
 python query.py --hero --fish-left --pot 3bet --street flop --stats
+python query.py --hero --fish-left-seats 1-2 --results    # a fish one or two seats to my left
+python query.py --hero --pos BTN --fish-blinds any --show rfi
 ```
 
 `n_fish` and `n_reg` count who else is still in the pot; `fish_left`,
@@ -848,6 +864,16 @@ order -- the seats clockwise from the button -- and has position on you
 for the whole hand; right is everybody who acts before you. Every fish
 in the pot is on one side or the other, and `players.py --check` holds
 every row to `fish_left + fish_right = n_fish`.
+
+`--fish-left-seats` and `--fish-right-seats` are Hand2Note's distance to
+fish, and are about the table rather than the pot: how many seats round
+to the nearest fish dealt into the hand, 1 being the next seat, counting
+only seats that were dealt in. A range, so `1-2` is a fish within two
+seats. With no fish at the table there is no distance and neither
+selects the hand. `--fish-blinds` is a fish other than you in the small
+blind (`sb`), the big (`bb`), `both`, either (`any`), or `none`; several
+are alternatives. `players.py --check` holds the distances to going round
+the table and asks the blinds again from `spots`.
 
 The switches are in the window's filter dialog under "who". A class is
 only given to a player there is enough evidence about, so "a fish on my

@@ -163,6 +163,13 @@ VALUE_FLAGS = {
     "--raise-x": "raise_x BETWEEN {lo} AND {hi}",
     "--depth": "eff_bb BETWEEN {lo} AND {hi}",
     "--spr": "spr BETWEEN {lo} AND {hi}",
+    # The pot as the street began, in big blinds -- Hand2Note's "initial
+    # pot", from `lines.py` -- where `pot_bb` is the pot at the decision.
+    "--street-pot": "street_pot BETWEEN {lo} AND {hi}",
+    # Hand2Note's "distance to fish": the nearest fish dealt in, counted in
+    # seats round the table, 1 being the next seat. Left acts after you.
+    "--fish-left-seats": "fish_dist_left BETWEEN {lo} AND {hi}",
+    "--fish-right-seats": "fish_dist_right BETWEEN {lo} AND {hi}",
     # The flop's high card, by rank letter; the game's format.
     "--high": "fl_hi IN ({list})",
     "--format": "fmt IN ({list})",
@@ -178,6 +185,7 @@ VALUE_FLAGS = {
     "--my-line": None, "--my-node": None,
     "--board": None,        # handled separately: named textures
     "--pf-facing": None,    # Hand2Note's preflop ladder, from PF_FACING
+    "--fish-blinds": None,  # which blinds a fish is in, from FISH_BLINDS
     "--turn-card": None,    # what the turn did to the board
     "--river-card": None,   # and the river
     "--quick": None,        # one or more named filters from `quick_filters`
@@ -271,6 +279,17 @@ SWITCHES = {
     "--fish-right": "fish_right > 0",
     "--reg-left": "reg_left > 0",
     "--reg-right": "reg_right > 0",
+    # What was posted before the cards, which `hands` keeps and `decisions`
+    # does not: an ante or a straddle makes a different game of the same
+    # blinds, and a pool's opening ranges taken over both describe neither.
+    # Subqueries, as `--tag` is, because these are facts about the hand and
+    # few hands have either -- the partial indexes on `hands` hold only
+    # those. "No ante" asks for the hands known to have none: a hand read
+    # before the parsers recorded it is NULL, and `why_empty` says so.
+    "--ante": "hand_id IN (SELECT hand_id FROM hands WHERE ante > 0)",
+    "--no-ante": "hand_id IN (SELECT hand_id FROM hands WHERE ante = 0)",
+    "--straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle > 0)",
+    "--no-straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle = 0)",
     "--drawing": "(fd IS NOT NULL OR sd IS NOT NULL)",
     # Both at once, which is the hand that plays like neither: a flush draw
     # with a straight draw beside it is usually a favourite against a pair.
@@ -709,6 +728,16 @@ BOARDS = {
 # counting C before the first R is counting limpers and counting it after
 # is counting callers. `street` comes first so every entry seeks
 # `dec_spot`; the GLOB then reads the few rows it found.
+# Which blinds a fish other than the player is in: `players.py` writes the
+# small blind as 1 and the big as 2, so both is 3 and either is any of them.
+FISH_BLINDS = {
+    "sb": "fish_blinds IN (1, 3)",
+    "bb": "fish_blinds IN (2, 3)",
+    "both": "fish_blinds = 3",
+    "any": "fish_blinds IN (1, 2, 3)",
+    "none": "fish_blinds = 0",
+}
+
 PF_FACING = {
     "unopened": "street = 'preflop' AND facing = 'unopened' "
                 "AND NOT node GLOB '*C*'",
@@ -961,6 +990,18 @@ def build(argv):
                 parts.append("(" + " AND ".join(named) + ")")
                 described.append(f"{a.lstrip('-')} {v}")
                 continue
+            if a == "--fish-blinds":
+                # Alternatives, as the preflop ladder's are: a fish is in
+                # the small blind or the big, and "sb,bb" is either.
+                named = []
+                for name in v.split(","):
+                    if name not in FISH_BLINDS:
+                        raise SystemExit(f"unknown --fish-blinds {name!r} -- "
+                                         f"one of: {', '.join(FISH_BLINDS)}")
+                    named.append("(" + FISH_BLINDS[name] + ")")
+                parts.append("(" + " OR ".join(named) + ")")
+                described.append("fish on blinds " + v)
+                continue
             if a == "--pf-facing":
                 # Several values are alternatives, not a conjunction: a
                 # decision faces one limper or two, never both, so AND-ing
@@ -1143,7 +1184,18 @@ def why_empty(con, parts):
     alone = [(label, sql, count(sql)) for label, sql in parts]
     dead = [f"'{label}'" for label, _sql, n in alone if not n]
     if dead:
-        return f"{', '.join(dead)} matches nothing at all in this database"
+        # Antes and straddles are read from the posts, which the parsers
+        # only began to record on 4 Oct 2026; a hand loaded before that has
+        # neither written down, and is in no answer to either question.
+        unread = 0
+        if any(f"FROM hands WHERE {c}" in sql for c in ("ante", "straddle")
+               for _l, sql, n in alone if not n):
+            unread = con.execute("SELECT COUNT(*) FROM hands "
+                                 "WHERE ante IS NULL").fetchone()[0]
+        return (f"{', '.join(dead)} matches nothing at all in this database"
+                + (f" -- {unread:,} hands were imported before antes and "
+                   f"straddles were recorded; `python importer.py --reread` "
+                   f"over their folders reads them again" if unread else ""))
 
     for i, (l1, s1, _n1) in enumerate(alone):
         for l2, s2, _n2 in alone[i + 1:]:
@@ -3139,6 +3191,8 @@ def check(db_path=DB):
         "--made": "top pair", "--kicker": "top", "--fd": "nut",
         "--sd": "oesd",
         "--players": "6", "--live": "2",
+        "--street-pot": "2-6", "--fish-left-seats": "1-2",
+        "--fish-right-seats": "1-2",
         "--since": midpoint, "--until": midpoint,
         "--vs-player": con.execute(
             "SELECT vs_player FROM decisions WHERE vs_player IS NOT NULL "
@@ -3154,6 +3208,7 @@ def check(db_path=DB):
     cases += [(k, [k, v]) for k, v in samples.items()]
     cases += [("--board " + b, ["--board", b]) for b in BOARDS]
     cases += [("--pf-facing " + f, ["--pf-facing", f]) for f in PF_FACING]
+    cases += [("--fish-blinds " + f, ["--fish-blinds", f]) for f in FISH_BLINDS]
     # The ladder has to cut each facing it refines into pieces that add back
     # up: every unopened preflop decision is unopened, one limp or two, and
     # every open is bare, called once or called twice or more. A rung that

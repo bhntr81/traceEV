@@ -94,12 +94,26 @@ CREATE INDEX players_class ON players(class, hands);
 # the button -- and right is everybody who acts before. Every fish in the
 # pot is on one side or the other, so `fish_left + fish_right = n_fish`
 # on every row, which is what the check holds them to.
+#
+# `fish_dist_left` and `fish_dist_right` are the table, not the pot: how
+# many seats round to the nearest fish dealt in, 1 being the next seat.
+# Hand2Note's "distance to fish", and the question a player choosing a
+# seat is asking, which is about everybody sitting there and not only who
+# is still in at this decision. Seats counted are the ones dealt in, so an
+# empty chair or a player sitting out is not a seat between. NULL when
+# nobody else at the table is a fish -- not zero, which would read as
+# "a fish in my own chair". `fish_blinds` says which blinds a fish other
+# than this player is in, SB as 1 and BB as 2, so both is 3: Hand2Note's
+# preflop "fish on the blinds", the steal it is worth widening for.
 COLUMNS = (("player_class", "TEXT"), ("vs_player", "TEXT"),
             ("vs_class", "TEXT"), ("vs_seat", "INT"),
             ("n_reg", "INT"), ("n_fish", "INT"),
             ("fish_left", "INT"), ("fish_right", "INT"),
-            ("reg_left", "INT"), ("reg_right", "INT"))
+            ("reg_left", "INT"), ("reg_right", "INT"),
+            ("fish_dist_left", "INT"), ("fish_dist_right", "INT"),
+            ("fish_blinds", "INT"))
 NAMES = tuple(c for c, _t in COLUMNS)
+BLIND_BIT = {"SB": 1, "BB": 2}
 
 COHORT_FIELDS = {
     "hands": "hands",
@@ -438,11 +452,13 @@ def stamp(con, where="1=1", analyze=True):
     klass = {(r[0], r[1]): r[2]
              for r in con.execute("SELECT site, player, class FROM players")}
 
-    dealt, who_is, seen_btn, seen_sb = {}, {}, {}, {}
-    for r in con.execute("SELECT hand_id, seat, player, position FROM spots "
+    dealt, who_is, seen_btn, seen_sb, blind_of = {}, {}, {}, {}, {}
+    for r in con.execute("SELECT hand_id, seat, player, position, site FROM spots "
                          f"WHERE {where}"):
         dealt.setdefault(r["hand_id"], set()).add(r["seat"])
         who_is[(r["hand_id"], r["seat"])] = r["player"]
+        if r["position"] in BLIND_BIT and klass.get((r["site"], r["player"])) == "fish":
+            blind_of.setdefault(r["hand_id"], {})[r["seat"]] = BLIND_BIT[r["position"]]
         if r["position"] == "BTN":
             seen_btn[r["hand_id"]] = r["seat"]
         elif r["position"] == "SB":
@@ -478,6 +494,19 @@ def stamp(con, where="1=1", analyze=True):
     for hid, acts in by_hand.items():
         live = dealt.get(hid) or {a["seat"] for a in acts}
         btn = button.get(hid)
+        # Distance round the table needs no button: the next seat on the
+        # left is the next seat number up among those dealt in, wrapping.
+        ring = sorted(live)
+        fishy = {s for s in ring if klass.get((acts[0]["site"],
+                                               who_is.get((hid, s)))) == "fish"}
+        blinds = blind_of.get(hid, {})
+        dist = {}
+        for seat in ring:
+            i, k = ring.index(seat), len(ring)
+            left = next((d for d in range(1, k) if ring[(i + d) % k] in fishy), None)
+            right = next((d for d in range(1, k) if ring[(i - d) % k] in fishy), None)
+            fb = sum(bit for s, bit in blinds.items() if s != seat)
+            dist[seat] = (left, right, fb)
         # A seat's place in the postflop order: 0 for the first to act after
         # the button, counting clockwise, so "after me" is a bigger number.
         # With no button there is no such order, and `sides` says so.
@@ -509,6 +538,7 @@ def stamp(con, where="1=1", analyze=True):
                 sum(c == "fish" and not left for c, left in company) if sides else None,
                 sum(c == "reg" and left for c, left in company) if sides else None,
                 sum(c == "reg" and not left for c, left in company) if sides else None,
+                *dist.get(a["seat"], (None, None, 0)),
                 a["hand_id"], a["n"]))
             if a["action"] == "F":
                 folded.add(a["seat"])
@@ -517,7 +547,8 @@ def stamp(con, where="1=1", analyze=True):
     con.execute("CREATE TEMP TABLE stamped ("
                 + ", ".join(f"{c} {t}" for c, t in COLUMNS)
                 + ", hand_id TEXT, n INT)")
-    con.executemany("INSERT INTO stamped VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", out)
+    con.executemany("INSERT INTO stamped VALUES ("
+                    + ",".join("?" * (len(COLUMNS) + 2)) + ")", out)
     con.execute("CREATE INDEX temp.stamped_key ON stamped(hand_id, n)")
     con.execute(
         "UPDATE decisions SET "
@@ -540,6 +571,15 @@ def stamp(con, where="1=1", analyze=True):
                 "ON decisions(fish_left, reg_left, street)")
     con.execute("CREATE INDEX IF NOT EXISTS dec_right "
                 "ON decisions(fish_right, reg_right, street)")
+    # Where the fish sit at the table. The same reasoning, one index per
+    # question, since "a fish within two seats on my left" never also asks
+    # about the right.
+    con.execute("CREATE INDEX IF NOT EXISTS dec_fish_dl "
+                "ON decisions(fish_dist_left, street)")
+    con.execute("CREATE INDEX IF NOT EXISTS dec_fish_dr "
+                "ON decisions(fish_dist_right, street)")
+    con.execute("CREATE INDEX IF NOT EXISTS dec_fish_blinds "
+                "ON decisions(fish_blinds, street)")
     con.execute("DROP TABLE temp.stamped")
     if analyze:
         con.execute("ANALYZE")
@@ -804,6 +844,67 @@ def check(db_path=DB):
           f"{'yes' if not wrong_side else f'NO, {wrong_side} rows'}")
     if wrong_side:
         fails.append(f"{wrong_side} button decisions with somebody on the left")
+
+    # Where the fish sit, asked again in SQL from `spots` and `players`
+    # rather than from the walk that wrote it. With exactly one fish at the
+    # table besides this player, the way round to it on the left and the
+    # way round on the right add up to everybody dealt in -- which fails if
+    # a sitting-out chair is counted or the player's own seat is taken for a
+    # fish's. That sum cannot see left and right swapped, so the side is
+    # asked separately: a fish one seat to the left is in the next seat
+    # number up that was dealt in, wrapping round, and one to the right is
+    # in the next one down.
+    con.execute("DROP TABLE IF EXISTS temp.fish_seat")
+    con.execute("CREATE TEMP TABLE fish_seat AS SELECT s.hand_id, s.seat, "
+                "s.position FROM spots s JOIN players p "
+                "ON p.site = s.site AND p.player = s.player WHERE p.class = 'fish'")
+    con.execute("CREATE INDEX temp.fish_seat_hand ON fish_seat(hand_id)")
+    ring = con.execute(
+        "SELECT COUNT(*), SUM(d.fish_dist_left + d.fish_dist_right <> "
+        "(SELECT COUNT(*) FROM spots s WHERE s.hand_id = d.hand_id)) "
+        "FROM decisions d WHERE (SELECT COUNT(*) FROM fish_seat f "
+        "WHERE f.hand_id = d.hand_id AND f.seat <> d.seat) = 1").fetchone()
+    alone = con.execute(
+        "SELECT COUNT(*) FROM decisions d WHERE (fish_dist_left IS NOT NULL "
+        "OR fish_dist_right IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM "
+        "fish_seat f WHERE f.hand_id = d.hand_id AND f.seat <> d.seat)"
+        ).fetchone()[0]
+    nxt = ("COALESCE((SELECT {f}(s.seat) FROM spots s WHERE s.hand_id = "
+           "d.hand_id AND s.seat {op} d.seat), (SELECT {g}(s.seat) FROM spots s "
+           "WHERE s.hand_id = d.hand_id))")
+    beside = con.execute(
+        "SELECT COUNT(*), SUM(NOT EXISTS (SELECT 1 FROM fish_seat f WHERE "
+        "f.hand_id = d.hand_id AND f.seat = CASE WHEN d.fish_dist_left = 1 "
+        f"THEN {nxt.format(f='MIN', op='>', g='MIN')} "
+        f"ELSE {nxt.format(f='MAX', op='<', g='MAX')} END)) "
+        "FROM decisions d WHERE d.fish_dist_left = 1 OR "
+        "(d.fish_dist_right = 1 AND d.fish_dist_left <> 1)").fetchone()
+    blinds = con.execute(
+        "SELECT COUNT(*) FROM decisions d WHERE fish_blinds <> COALESCE(("
+        "SELECT SUM(CASE f.position WHEN 'SB' THEN 1 ELSE 2 END) FROM "
+        "fish_seat f WHERE f.hand_id = d.hand_id AND f.seat <> d.seat "
+        "AND f.position IN ('SB', 'BB')), 0)").fetchone()[0]
+    con.execute("DROP TABLE temp.fish_seat")
+    print(f"one fish: left + right = the table   "
+          f"{ring[0] - (ring[1] or 0):,}/{ring[0]:,}"
+          f"{'' if not ring[1] else '   <-- DISAGREE'}")
+    print(f"a fish one seat away is beside you   "
+          f"{beside[0] - (beside[1] or 0):,}/{beside[0]:,}"
+          f"{'' if not beside[1] else '   <-- WRONG SIDE'}")
+    print(f"no fish, no distance                 "
+          f"{'yes' if not alone else f'NO, {alone} rows'}")
+    print(f"fish on the blinds, asked twice      "
+          f"{'agree' if not blinds else f'{blinds} rows DISAGREE'}")
+    if ring[1]:
+        fails.append(f"{ring[1]} decisions whose distances to the one fish "
+                     f"do not go round the table")
+    if beside[1]:
+        fails.append(f"{beside[1]} decisions with a fish one seat away on the "
+                     f"wrong side")
+    if alone:
+        fails.append(f"{alone} decisions with a distance to a fish nobody is")
+    if blinds:
+        fails.append(f"{blinds} decisions whose fish on the blinds disagree")
 
     # ---- the cohort, which nothing used to check ----------------------
     #

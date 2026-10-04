@@ -1458,9 +1458,11 @@ where:
 Still missing, and each verified absent from the code on 24 Sep rather than
 assumed from this table (**pair + draw was on this list and was built the same
 day, Run 31**): distance to fish as a number
-rather than a side, straddle, "all folded to BB" as a facing (built 4 Oct
+rather than a side (built 4 Oct, `--fish-left-seats`/`--fish-right-seats`),
+straddle (built 4 Oct, `--straddle`), "all folded to BB" as a facing (built 4 Oct
 as `--pf-facing walk`, with the limper and caller counts), the initial pot
-on a street, fish on the blinds, antes, out-of-queue posts, note templates, a
+on a street (built 4 Oct, `--street-pot`), fish on the blinds (built 4 Oct,
+`--fish-blinds`), antes (built 4 Oct, `--ante`), out-of-queue posts, note templates, a
 hand inserted into a note, notes on a stat, an anonymised one-hand share
 (built 4 Oct, `--hand ID --share` and a button in the hand window),
 sorting showdown hands by strength (built 4 Oct, `--sort strength`), and a stat-expression string in the
@@ -1473,7 +1475,7 @@ cohort picker.
 | Results by game type (stake, table size, fast-fold), with Net Won, EV, bb/100, EV bb/100, **rake paid** | have the split (`--by stake`, `--by site`); **rake paid is not a column anywhere** — a report of what the house took, by stake and month, is a query away |
 | Report list: Positions, Positions Full Ring, Rooms, Number of Tables, Number of Fishes, Stack sizes | have position, site, tables, `n_fish`, `--by stack` |
 | Date range picker; Hero picker with aliases | have `--since/--until`, aliases |
-| Filter dialog, General tab: room, blind size, players on hand start, table size, initial stack, session length, time of day, fish count, max fish VPIP, **distance to fish**, straddle, game type | have all but **distance to fish** as a number (we have left/right, not how many seats) and straddle |
+| Filter dialog, General tab: room, blind size, players on hand start, table size, initial stack, session length, time of day, fish count, max fish VPIP, **distance to fish**, straddle, game type | have all; distance to fish and straddle since 4 Oct (`--fish-left-seats`, `--straddle`) |
 | Filter dialog, Action tab: "preflop action facing" (unopened, 1 limp, 2+ limps, 1 raise, 2 raises, raise+call, raise+2 calls, blind posters, all folded to BB) and per-street **click buttons** Raise / Raise-Fold / Raise-Call / Call / Call-Fold / Call-Call / Call-Raise, with "selected action is the last action on street" | have the facing ladder and, since today, the click builder; the two-action combos (Raise then Fold on the same street) are one press each here; **"all folded to BB" and "limpers count" are not facings** |
 | Filter dialog, Hole Cards tab: a 13x13 grid to pick hands | have `--combo` typed; **no grid to click** |
 | Positions report shows Net Won, EV, bb/100, EV bb/100, Rake per position | have net and EV per position; rake missing |
@@ -1530,8 +1532,8 @@ cohort picker.
 
 | Hand2Note | here |
 |---|---|
-| Plain stat editor: simulate a sequence of actions (Player raises, Villain calls…), with per-action parameters: first/last action on street, first non-fold, stack size, eff stack, eff stack / pot, bet size, bet size / pot, bet size / previous bet, all-in, position postflop, reg or fish, is hero, hero still in hand, same-player id, stat intervals of the actor, initial pot, players on street | have most as filters (`--facing`, `--pfa`, `--ip`, `--deep`, `--node`, sizes in lines, `--reg`, `--vs-hero`); **missing: bet size relative to the previous bet; initial pot on street; "hero still in hand"; stat intervals of the actor as a filter (needs the cohort as a row property)** |
-| Preflop tab: range, BB size, ante, players dealt, hero on blinds, fish on blinds, zoom, out-of-queue posts, position | have most; **fish on blinds, ante, out-of-queue posts missing** |
+| Plain stat editor: simulate a sequence of actions (Player raises, Villain calls…), with per-action parameters: first/last action on street, first non-fold, stack size, eff stack, eff stack / pot, bet size, bet size / pot, bet size / previous bet, all-in, position postflop, reg or fish, is hero, hero still in hand, same-player id, stat intervals of the actor, initial pot, players on street | have most as filters (`--facing`, `--pfa`, `--ip`, `--deep`, `--node`, sizes in lines, `--reg`, `--vs-hero`); **missing: bet size relative to the previous bet; "hero still in hand"; stat intervals of the actor as a filter (needs the cohort as a row property)** |
+| Preflop tab: range, BB size, ante, players dealt, hero on blinds, fish on blinds, zoom, out-of-queue posts, position | have most, and fish on blinds and ante since 4 Oct; **out-of-queue posts missing** |
 | Expression stats: Value, Cases, Opps, VsHeroCases, WonHandCases, WentToSDCases, WonHandAtSDCases, AmountWon, ActionProfit over any plain stat, with arithmetic | **missing as a language**; `--define` makes plain stats only. AF, WWSF, WTSD-after-cbet exist as built-ins |
 | Reg-vs-fish exclusion when computing a reg's stats | have `--regs-only`, `--vs-reg`; not a global switch |
 | Game types (NL cash 3–10max etc.) as named configurations | have `fmt` + `--site` + stake |

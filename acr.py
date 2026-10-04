@@ -169,6 +169,7 @@ def parse_hand(text, source=""):
     # "caps" line names the street total and nothing else, so the amount
     # added has to be worked out from what was already there.
     street_in = {}
+    ante = 0.0
 
     for raw in text.splitlines():
         sm = STREET_RE.match(raw)
@@ -220,8 +221,18 @@ def parse_hand(text, source=""):
 
         pm = POST_RE.match(rest)
         if pm:
-            s["posted"] += _money(pm.group(1)) or 0.0
-            street_in[s["seat"]] = street_in.get(s["seat"], 0.0) + (_money(pm.group(1)) or 0.0)
+            put = _money(pm.group(1)) or 0.0
+            s["posted"] += put
+            # An ante is in the pot and not in front of the player, so it never
+            # stands toward a raise "to": counted on the street, a raise to
+            # 600 from a seat that anted 50 came out as 550 put in. The
+            # Stars parser had this bug and lost it in Run 19; this one
+            # kept it, unseen, because only tournaments ante and the money
+            # test leaves them out.
+            if rest.startswith("posts ante"):
+                ante = max(ante, put)
+                continue
+            street_in[s["seat"]] = street_in.get(s["seat"], 0.0) + put
             continue
         if rest.startswith(("shows", "mucks", "does not show")):
             cm = CARDS_RE.search(rest)
@@ -341,6 +352,9 @@ def parse_hand(text, source=""):
                  "board": " ".join(board),
                  "pot": _money(pot_m.group(1)) if pot_m else None,
                  "rake": rake, "jp_fee": jp,
+                 # WPN has no straddle, and no history in FPDB's corpus of
+                 # its current format writes one.
+                 "ante": ante, "straddle": 0.0,
                  "hero_seat": hero["seat"] if hero else None,
                  "standard": standard, "source": source,
                  "max_seats": max_seats},
