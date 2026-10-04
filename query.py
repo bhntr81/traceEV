@@ -60,6 +60,23 @@ from stats import (BY_KEY, STATS, detectable, difference, fmt, holm,
 
 DB = Path(__file__).parent / "hands.db"
 
+# How much of the database a reading connection may map into memory rather
+# than copy through SQLite's own page cache, which is two megabytes and
+# starts empty on every connection the window opens. Mapped, the pages come
+# from the operating system's file cache with no read call per page:
+# measured over forty filters at 50,000 hands, the stats table took 13% less
+# time, the range 28% and the report 31%; the chart, no less. Address space,
+# not memory -- nothing is read that a query does not touch.
+MMAP_BYTES = 1 << 31
+
+
+def connect(path=None):
+    """A connection for reading hands, mapped; see `MMAP_BYTES`."""
+    con = sqlite3.connect(str(path or DB))
+    con.execute(f"PRAGMA mmap_size = {MMAP_BYTES}")
+    return con
+
+
 STREETS = ("preflop", "flop", "turn", "river")
 POSITIONS = ("UTG", "HJ", "CO", "BTN", "SB", "BB")
 POT_TYPES = ("unopened", "limped", "raised", "3bet", "4bet", "5bet+")
@@ -1045,11 +1062,10 @@ def stats_of(con, where, pool_where=None, pool_params=()):
     here mislead most: a filter naming one player turns thirty rates into
     thirty small samples at once, and a 0% on two chances is read as a never.
     """
-    n_dec = con.execute(
-        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
-    # All of them in one pass. Asking each stat its own question meant
-    # thirty scans of the same rows to fill one table.
-    counted = stat_rates(con, where)
+    # All of them in one pass, and the count of decisions with them. Asking
+    # each stat its own question meant thirty scans of the same rows to fill
+    # one table.
+    n_dec, counted = stat_rates(con, where, rows=True)
     pooled = stat_rates(con, pool_where, pool_params) if pool_where else {}
     rows = []
     for s in STATS:
@@ -1182,6 +1198,17 @@ def _is_value_of(argv, token):
     return i > 0 and argv[i - 1] in OPTIONS
 
 
+# The two splits Hand2Note's range diagram draws under a made hand, and the
+# draws counted beside the made hands; see `range_of`.
+RANGE_SPLITS = {"top pair": (("good kicker", "kicker IN ('top', 'good')"),
+                             ("weak kicker", "kicker = 'weak'")),
+                "high card": (("ace high", "combo LIKE 'A%'"),
+                              ("lower", "combo NOT LIKE 'A%'"))}
+RANGE_DRAWS = (("a flush draw", "fd IS NOT NULL"),
+               ("a straight draw", "sd IS NOT NULL"),
+               ("both at once", "fd IS NOT NULL AND sd IS NOT NULL"))
+
+
 def range_of(con, where):
     """
     What the range that got here actually holds, and how much of it is air.
@@ -1199,14 +1226,27 @@ def range_of(con, where):
     beside the breakdown and is not optional: a diagram of a quarter of a
     range, presented as the range, is worse than no diagram.
     """
-    total = con.execute(
-        f"SELECT COUNT(*) FROM decisions WHERE {where}").fetchone()[0]
-    seen = con.execute(
-        f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
-        f"AND made IS NOT NULL").fetchone()[0]
-    counts = dict(con.execute(
-        f"SELECT made, COUNT(*) FROM decisions WHERE ({where}) "
-        f"AND made IS NOT NULL GROUP BY made").fetchall())
+    # Every count below is a count of the rows under this filter with some
+    # made hand and some condition, so all of them are columns of a single
+    # GROUP BY made. They were a query each -- thirteen passes over the same
+    # rows, two seconds a click at 50,000 hands -- and the sums below are
+    # the same sums, taken in Python over one answer.
+    conditions = sorted({sql for splits in RANGE_SPLITS.values()
+                         for _label, sql in splits}
+                        | {strength.DRAWING}
+                        | {sql for _label, sql in RANGE_DRAWS})
+    by_made = {}
+    for made, n, *ks in con.execute(
+            f"SELECT made, COUNT(*), "
+            + ", ".join(f"COUNT(*) FILTER (WHERE {c})" for c in conditions)
+            + f" FROM decisions WHERE {where} GROUP BY made"):
+        by_made[made] = (n, dict(zip(conditions, ks)))
+    total = sum(n for n, _ks in by_made.values())
+    seen = sum(n for made, (n, _ks) in by_made.items() if made is not None)
+    counts = {made: n for made, (n, _ks) in by_made.items() if made is not None}
+
+    def among(names, sql):
+        return sum(by_made[m][1][sql] for m in names if m in by_made)
 
     rows = []
     for name in strength.ORDER:
@@ -1222,10 +1262,7 @@ def range_of(con, where):
         # top pair by its kicker (TPGK and TPWK in its labels), and a high
         # card by whether it is an ace -- a bluff-catcher and nothing are
         # different holdings and were one row.
-        splits = list({"top pair": (("good kicker", "kicker IN ('top', 'good')"),
-                                    ("weak kicker", "kicker = 'weak'")),
-                       "high card": (("ace high", "combo LIKE 'A%'"),
-                                     ("lower", "combo NOT LIKE 'A%'"))}.get(name) or ())
+        splits = list(RANGE_SPLITS.get(name) or ())
         # The third split Hand2Note's diagram draws, and the one Run 23
         # recorded as done without doing it. A pair that is also drawing plays
         # differently from a pair that is not -- it can call a raise on the
@@ -1236,8 +1273,7 @@ def range_of(con, where):
         if name in strength.OWN_PAIR:
             splits.append(("+ a draw", strength.DRAWING))
         for label, sql in splits or ():
-            k = con.execute(f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
-                            f"AND made = ? AND ({sql})", (name,)).fetchone()[0]
+            k = among((name,), sql)
             if k:
                 rows.append({"made": "  " + label, "n": k,
                              "pct": 100.0 * k / seen if seen else 0.0,
@@ -1263,17 +1299,12 @@ def range_of(con, where):
     #
     # The first three rows are unchanged and deliberately loose: "a flush
     # draw" is a count of flush draws, backdoors included, and says so.
-    own = ", ".join(q(c) for c in strength.OWN_PAIR)
-    for label, sql in (("a flush draw", "fd IS NOT NULL"),
-                       ("a straight draw", "sd IS NOT NULL"),
-                       ("both at once", "fd IS NOT NULL AND sd IS NOT NULL"),
-                       ("a pair and a draw",
-                        f"made IN ({own}) AND {strength.DRAWING}"),
-                       ("weak, but drawing",
-                        f"made IN ({', '.join(q(w) for w in strength.WEAK)}) "
-                        f"AND {strength.DRAWING}")):
-        n = con.execute(f"SELECT COUNT(*) FROM decisions WHERE ({where}) "
-                        f"AND made IS NOT NULL AND ({sql})").fetchone()[0]
+    made = [m for m in by_made if m is not None]
+    for label, n in ([(label, among(made, sql)) for label, sql in RANGE_DRAWS]
+                     + [("a pair and a draw",
+                         among(strength.OWN_PAIR, strength.DRAWING)),
+                        ("weak, but drawing",
+                         among(strength.WEAK, strength.DRAWING))]):
         if n:
             draws.append({"label": label, "n": n,
                           "pct": 100.0 * n / seen if seen else 0.0})
@@ -1385,19 +1416,22 @@ def chart_of(con, where, stat=None, min_n=3, alternative=None):
         # Visibility belongs to the shared chance too, not to unrelated
         # streets that happen to pass the surrounding report filter.
         where = f"({where}) AND ({stat.chance})"
-    total = con.execute(
-        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
-        f"FROM decisions WHERE {where})").fetchone()[0]
-    seen = con.execute(
-        f"SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat "
-        f"FROM decisions WHERE ({where}) AND combo IS NOT NULL)").fetchone()[0]
+    # One pass for all three counts. A seat's combo is its hole cards, the
+    # same on every row it has in a hand, so collapsing to one row per
+    # player-hand and grouping those by combo gives the composition, the
+    # seen ones (combo not NULL) and the total at once. These were three
+    # DISTINCT passes, and the second asked `combo IS NOT NULL` in a form
+    # the planner answered from the combo index -- every shown row fetched
+    # one at a time, half a second at 50,000 hands even under `--allin`,
+    # whose own index finds its 5,000 rows in a hundredth of that.
+    composition = {c: n for c, n in con.execute(
+        f"SELECT combo, COUNT(*) FROM (SELECT MAX(combo) combo FROM decisions "
+        f"WHERE {where} GROUP BY hand_id, seat) GROUP BY combo")}
+    total = sum(composition.values())
+    seen = total - composition.pop(None, 0)
 
     if stat is None:
-        rows = con.execute(
-            f"SELECT combo, COUNT(*) FROM (SELECT DISTINCT hand_id, seat, "
-            f"combo FROM decisions WHERE ({where}) AND combo IS NOT NULL) "
-            f"GROUP BY combo").fetchall()
-        cells = {c: (n, None) for c, n in rows}
+        cells = {c: (n, None) for c, n in composition.items()}
     else:
         stat = BY_KEY[stat] if isinstance(stat, str) else stat
         grouped = rates_by(con, stat, "combo", where, skip_null=other is None)
@@ -2183,7 +2217,7 @@ def show_report(con, where, label, dim, columns, min_n=30, argv=()):
     if not plain:
         raise SystemExit("--by needs at least one plain stat in --show, for the row's n")
     stats = [BY_KEY[c] for c in plain]
-    grid = {s.key: rates_by(con, s, expr, where) for s in stats}
+    grid = stats_module.rates_grid(con, stats, expr, where)
     # A cell's pool is the pool's own cell at the SAME dimension value -- a
     # button 3bet read against the pool's button 3bet, never against its 3bet
     # everywhere. The dimension is part of the situation, which makes this the
@@ -2195,8 +2229,8 @@ def show_report(con, where, label, dim, columns, min_n=30, argv=()):
     # table would have, and every cell would come back empty.
     pool_where, pool_params = ((None, ()) if dim == "player"
                                else pool_beside(con, list(argv)))
-    pool_grid = ({s.key: rates_by(con, s, expr, pool_where, pool_params)
-                  for s in stats} if pool_where else {})
+    pool_grid = (stats_module.rates_grid(con, stats, expr, pool_where, pool_params)
+                 if pool_where else {})
     # An expression column is a formula evaluated once per row: the group
     # is added to the filter and the terms run again. Slower than the
     # plain columns' single pass, and asked for by name, so it is paid.
@@ -3309,14 +3343,14 @@ def main(argv):
     min_n = int(opt("--min", "30"))
 
     if opt("--hand"):
-        con = sqlite3.connect(DB)
+        con = connect()
         show_hand(con, opt("--hand"))
         con.close()
         return 0
 
     other = opt("--versus")
     if other is not None:
-        con = sqlite3.connect(DB)
+        con = connect()
         show_versus(con, argv, shlex.split(other), min_n,
                      only=set(columns) if opt("--show") else None)
         con.close()
@@ -3325,7 +3359,7 @@ def main(argv):
     where, label, _parts = build(argv)
     if preset:
         label = f"{preset}: {label}"
-    con = sqlite3.connect(DB)
+    con = connect()
     if cohort_spec is not None:
         count = select_cohort(con, cohort_spec)
         label += (f", cohort: {players.describe_cohort(cohort_spec)} "

@@ -1259,7 +1259,7 @@ class App(ImportMixin, ttk.Frame):
         through a queue, with a token so that a slow answer to a filter the
         user has already changed is discarded rather than drawn.
         """
-        con = sqlite3.connect(DB)
+        con = query.connect(DB)
         try:
             if cohort_spec is not None:
                 count = query.select_cohort(con, cohort_spec)
@@ -1300,8 +1300,7 @@ class App(ImportMixin, ttk.Frame):
             elif view == "report":
                 expr, order = query.DIMENSIONS[dim or "position"]
                 cols = query.DEFAULT_COLUMNS
-                grid = {c: query.rates_by(con, BY_KEY[c], expr, where)
-                        for c in cols}
+                grid = stats.rates_grid(con, cols, expr, where)
                 # The row's n has to be a denominator this table actually has.
                 # It was always VPIP's, and VPIP counts preflop decisions --
                 # so a filter starting at the flop printed every row over
@@ -1328,9 +1327,7 @@ class App(ImportMixin, ttk.Frame):
                 pw, pp = ((None, ()) if (dim or "position") == "player"
                           else query.pool_beside(con, list(filter_argv)))
                 if pw:
-                    out["pool_grid"] = {
-                        c: query.rates_by(con, BY_KEY[c], expr, pw, pp)
-                        for c in cols}
+                    out["pool_grid"] = stats.rates_grid(con, cols, expr, pw, pp)
             elif view == "results":
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None

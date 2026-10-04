@@ -825,7 +825,40 @@ def rate(con, stat, where="1=1", params=()):
     return n, k, p, lo, hi
 
 
-def rates(con, where="1=1", params=(), stats=None):
+def counted(stats):
+    """
+    The two counts of each stat as aggregate columns: chances, then actions.
+
+    `COUNT(*) FILTER (WHERE ...)` rather than `SUM(CASE WHEN ...)`, because
+    it is measurably the cheaper of the two and these are evaluated once per
+    stat per row: seventy of them over half a million decisions is where
+    the stats table's time goes, not in reading the rows, which is a tenth
+    of a second. It was 1.6 seconds as CASEs and 1.1 as FILTERs on 50,000
+    hands. A bare `SUM((chance) AND (action))` is three times slower than
+    either, since an AND that is a value has to evaluate both sides to know
+    whether it is NULL, and the two forms here stop at the first false term.
+    """
+    cols = []
+    for s in stats:
+        cols.append(f"COUNT(*) FILTER (WHERE {s.chance})")
+        cols.append(f"COUNT(*) FILTER (WHERE ({s.chance}) AND ({s.action}))")
+    return cols
+
+
+def any_chance(stats):
+    """
+    A condition only the rows some stat could count pass, for a per-hand pass.
+
+    A player-hand with no chance row adds nothing to any per-hand sum, so
+    there is no reason to sort its rows into groups: VPIP and PFR are both
+    preflop, and the other streets are more than half the table. It took a
+    quarter off that pass on 50,000 hands. The unary plus keeps the condition away from
+    the street indexes, which would fetch half the table a row at a time.
+    """
+    return "+(" + " OR ".join(f"({s.chance})" for s in stats) + ")"
+
+
+def rates(con, where="1=1", params=(), stats=None, rows=False):
     """
     Every stat under one filter, in one pass over the table instead of thirty.
 
@@ -833,7 +866,7 @@ def rates(con, where="1=1", params=(), stats=None):
     table of them: thirty stats meant thirty full passes over the same rows,
     and drawing the unfiltered stats table took five and a half seconds. They
     all read the same rows and differ only in what they count, so they can be
-    counted together -- one `SUM(CASE WHEN ...)` per stat, one scan.
+    counted together -- two counts per stat, one scan.
 
     This is the same lesson `rates_by` already learned for groups; it had not
     been applied to the table the window opens on.
@@ -846,20 +879,20 @@ def rates(con, where="1=1", params=(), stats=None):
     problem.
 
     Returns {key: (n, k)}. Spots-sourced stats are not here: their situation
-    lives in a per-hand table and cannot be counted in the same pass.
+    lives in a per-hand table and cannot be counted in the same pass. With
+    `rows`, returns (decisions under the filter, that dict): the stats table
+    prints the count above itself, and asking for it separately was another
+    pass, a quarter of a second whenever the planner takes an index for it.
     """
     stats = [s for s in (stats if stats is not None else STATS) if s.source == "d"]
     out = {}
 
     per_dec = [s for s in stats if s.per == "decision"]
-    if per_dec:
-        cols = []
-        for s in per_dec:
-            cols.append(f"SUM(CASE WHEN ({s.chance}) THEN 1 ELSE 0 END)")
-            cols.append(f"SUM(CASE WHEN ({s.chance}) AND ({s.action}) "
-                        f"THEN 1 ELSE 0 END)")
-        row = con.execute(f"SELECT {', '.join(cols)} FROM decisions "
-                          f"WHERE {where}", params).fetchone()
+    n_rows = None
+    if per_dec or rows:
+        row = con.execute(f"SELECT {', '.join(['COUNT(*)'] + counted(per_dec))} "
+                          f"FROM decisions WHERE {where}", params).fetchone()
+        n_rows, row = row[0], row[1:]
         for i, s in enumerate(per_dec):
             out[s.key] = (row[2 * i] or 0, row[2 * i + 1] or 0)
 
@@ -877,12 +910,13 @@ def rates(con, where="1=1", params=(), stats=None):
             outer += [f"SUM(c{i})", f"SUM(k{i})"]
         row = con.execute(
             f"SELECT {', '.join(outer)} FROM (SELECT {', '.join(inner)} "
-            f"FROM decisions WHERE {where} GROUP BY hand_id, seat)",
+            f"FROM decisions WHERE ({where}) AND {any_chance(per_hand)} "
+            f"GROUP BY hand_id, seat)",
             params).fetchone()
         for i, s in enumerate(per_hand):
             out[s.key] = (row[2 * i] or 0, row[2 * i + 1] or 0)
 
-    return out
+    return (n_rows, out) if rows else out
 
 
 def rates_by(con, stat, group, where="1=1", params=(), skip_null=True):
@@ -901,7 +935,7 @@ def rates_by(con, stat, group, where="1=1", params=(), skip_null=True):
     if isinstance(stat, str):
         stat = BY_KEY[stat]
     table = "decisions" if stat.source == "d" else "spots"
-    guard = f" AND ({group}) IS NOT NULL" if skip_null else ""
+    guard = f" AND +({group}) IS NOT NULL" if skip_null else ""
     if stat.source == "s":
         sql = (f"SELECT {group}, SUM({stat.chance}), "
                f"SUM({stat.chance} AND {stat.action}) FROM spots "
@@ -939,6 +973,65 @@ def rates_by(con, stat, group, where="1=1", params=(), skip_null=True):
                f"FROM {table} WHERE ({stat.chance}) AND ({where}){guard} "
                f"GROUP BY 1")
     return {g: (n or 0, k or 0) for g, n, k in con.execute(sql, params)}
+
+
+def rates_grid(con, stats, group, where="1=1", params=(), skip_null=True):
+    """
+    Several stats split by one expression, in two passes rather than one each.
+
+    A report is eight columns of `rates_by`, and eight passes over the table
+    took four seconds unfiltered at 50,000 hands -- the same shape of waste
+    `rates` removed from the stats table, one dimension further in. The
+    answer is the same: the per-decision columns are counted together in one
+    GROUP BY, the per-hand ones together in another.
+
+    Returns {key: {group value: (n, k)}}, exactly what `rates_by` returns per
+    stat, including its omissions: a group with no chance for a stat is
+    absent from that stat's dict rather than present as (0, 0), so a cell
+    reads the same whichever function filled it. `stats.py --check` holds
+    the two to the same answers.
+    """
+    stats = [BY_KEY[s] if isinstance(s, str) else s for s in stats]
+    out = {}
+    guard = f" AND +({group}) IS NOT NULL" if skip_null else ""
+    for s in stats:
+        if s.source == "s":
+            out[s.key] = rates_by(con, s, group, where, params, skip_null)
+
+    def keep(group_stats, rows):
+        for s in group_stats:
+            out[s.key] = {}
+        for g, *counts in rows:
+            for i, s in enumerate(group_stats):
+                n, k = counts[2 * i] or 0, counts[2 * i + 1] or 0
+                if n:
+                    out[s.key][g] = (n, k)
+
+    per_dec = [s for s in stats if s.source == "d" and s.per == "decision"]
+    if per_dec:
+        keep(per_dec, con.execute(
+            f"SELECT ({group}), {', '.join(counted(per_dec))} FROM decisions "
+            f"WHERE ({where}){guard} GROUP BY 1", params))
+
+    # Per hand, the collapse to one row per player-hand is by the dimension
+    # too, for the reason `rates_by` gives at length; a player-hand counts as
+    # a chance in a bucket if any of its rows there was one, and as the
+    # action if any row there was both.
+    per_hand = [s for s in stats if s.source == "d" and s.per == "hand"]
+    if per_hand:
+        inner, outer = [], []
+        for i, s in enumerate(per_hand):
+            inner.append(f"MAX(CASE WHEN ({s.chance}) THEN 1 ELSE 0 END) c{i}")
+            inner.append(f"MAX(CASE WHEN ({s.chance}) AND ({s.action}) "
+                         f"THEN 1 ELSE 0 END) k{i}")
+            outer += [f"SUM(c{i})", f"SUM(k{i})"]
+        keep(per_hand, con.execute(
+            f"SELECT g, {', '.join(outer)} FROM ("
+            f"  SELECT ({group}) g, {', '.join(inner)} FROM decisions"
+            f"  WHERE ({where}) AND {any_chance(per_hand)}{guard}"
+            f"  GROUP BY hand_id, seat, ({group}))"
+            f" GROUP BY g", params))
+    return out
 
 
 def rates_by_player(con, stat, where="1=1", params=()):
@@ -1181,6 +1274,29 @@ def check(db_path=DB):
     print(f"one pass agrees with thirty   {counted - off}/{counted}")
     if off:
         fails.append("the batched and per-stat counts disagree")
+
+    # And the same for a report: `rates_grid` counts every column of a split
+    # in two passes, and has to give each cell exactly what `rates_by` gives
+    # it alone -- the same buckets, the same omissions -- over dimensions
+    # that are fixed in a hand (position), that vary in it (facing, the one
+    # the per-hand collapse got wrong once), and that are mostly NULL
+    # (vs_pos, where the guard decides what is left out).
+    off, cells = 0, 0
+    deck = [st for st in STATS if st.source == "d"]
+    for group in ("position", "facing", "vs_pos", "street"):
+        for where in ("1=1", "is_hero = 1", "allin = 1"):
+            grid = rates_grid(con, deck, group, where)
+            for st in deck:
+                cells += 1
+                one = rates_by(con, st, group, where)
+                if one != grid[st.key]:
+                    off += 1
+                    if off <= 3:
+                        print(f"    {st.key} by {group} under {where}: "
+                              f"alone {one}, in a grid {grid[st.key]}")
+    print(f"a report's grid agrees with its columns  {cells - off}/{cells}")
+    if off:
+        fails.append("rates_grid and rates_by disagree")
 
     # A per-hand stat split by a dimension that CHANGES INSIDE a hand. The
     # collapse to one row per (hand, seat) has to group by the dimension as
