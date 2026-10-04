@@ -1458,7 +1458,8 @@ where:
 Still missing, and each verified absent from the code on 24 Sep rather than
 assumed from this table (**pair + draw was on this list and was built the same
 day, Run 31**): distance to fish as a number
-rather than a side, straddle, "all folded to BB" as a facing, the initial pot
+rather than a side, straddle, "all folded to BB" as a facing (built 4 Oct
+as `--pf-facing walk`, with the limper and caller counts), the initial pot
 on a street, fish on the blinds, antes, out-of-queue posts, note templates, a
 hand inserted into a note, notes on a stat, an anonymised one-hand share,
 sorting showdown hands by strength, and a stat-expression string in the

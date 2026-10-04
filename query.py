@@ -177,6 +177,7 @@ VALUE_FLAGS = {
     # `--my-node "*/X"` is "checked, and now has to act again".
     "--my-line": None, "--my-node": None,
     "--board": None,        # handled separately: named textures
+    "--pf-facing": None,    # Hand2Note's preflop ladder, from PF_FACING
     "--turn-card": None,    # what the turn did to the board
     "--river-card": None,   # and the river
     "--quick": None,        # one or more named filters from `quick_filters`
@@ -696,6 +697,38 @@ BOARDS = {
     "low": "fl_hi IN ('2','3','4','5','6','7','8','9')",
 }
 
+# What was in front of a player preflop, in Hand2Note's own ladder. The
+# `facing` column counts raises -- unopened, open, 3bet -- and so cannot
+# tell a pot with two limpers from an empty one, or an open somebody has
+# already called (the squeeze) from a bare open. Those are different
+# spots, played differently, and Hand2Note's filter separates them.
+#
+# Read from `node`, the table's preflop action up to this decision, one
+# letter per action in acting order. A limp and a call are both C, and
+# `lines.letter` writes an all-in call as C and an all-in raise as R, so
+# counting C before the first R is counting limpers and counting it after
+# is counting callers. `street` comes first so every entry seeks
+# `dec_spot`; the GLOB then reads the few rows it found.
+PF_FACING = {
+    "unopened": "street = 'preflop' AND facing = 'unopened' "
+                "AND NOT node GLOB '*C*'",
+    "1-limp": "street = 'preflop' AND facing = 'unopened' "
+              "AND node GLOB '*C*' AND NOT node GLOB '*C*C*'",
+    "2-limps": "street = 'preflop' AND facing = 'unopened' "
+               "AND node GLOB '*C*C*'",
+    "1-raise": "street = 'preflop' AND facing = 'open' "
+               "AND NOT node GLOB '*R*C*'",
+    "raise-call": "street = 'preflop' AND facing = 'open' "
+                  "AND node GLOB '*R*C*' AND NOT node GLOB '*R*C*C*'",
+    "raise-2-calls": "street = 'preflop' AND facing = 'open' "
+                     "AND node GLOB '*R*C*C*'",
+    "2-raises": "street = 'preflop' AND facing = '3bet'",
+    # Hand2Note's "all folded to BB". The big blind makes no decision in a
+    # walk, so what this selects is everybody else's: the folds in hands
+    # where nobody but the big blind put money in.
+    "walk": "street = 'preflop' AND NOT pre GLOB '*[^F]*'",
+}
+
 # What a later card did. `--board` describes the flop, which arrives all at
 # once; these describe a single card arriving on a board that was already
 # there, which is a different kind of fact and needs its own words.
@@ -927,6 +960,20 @@ def build(argv):
                 # the pairs loses a clause off the end.
                 parts.append("(" + " AND ".join(named) + ")")
                 described.append(f"{a.lstrip('-')} {v}")
+                continue
+            if a == "--pf-facing":
+                # Several values are alternatives, not a conjunction: a
+                # decision faces one limper or two, never both, so AND-ing
+                # them as `--board` does would select nothing every time.
+                named = []
+                for name in v.split(","):
+                    if name not in PF_FACING:
+                        raise SystemExit(
+                            f"unknown preflop facing {name!r} -- one of: "
+                            f"{', '.join(PF_FACING)}")
+                    named.append("(" + PF_FACING[name] + ")")
+                parts.append("(" + " OR ".join(named) + ")")
+                described.append("pf-facing " + v)
                 continue
             if a == "--board":
                 named = []
@@ -2857,6 +2904,8 @@ def usage():
         if v:
             print(f"    {k:14} {v}")
     print(f"    {'--board':14} one of: {', '.join(BOARDS)}")
+    print(f"    {'--pf-facing':14} preflop, what is in front: "
+          f"{', '.join(PF_FACING)}")
     print(f"    {'--quick':14} named filters: "
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
     print(f"    {'--where':14} raw SQL over `decisions`, for anything above")
@@ -2985,6 +3034,27 @@ def check(db_path=DB):
     cases = [(k, [k]) for k in SWITCHES]
     cases += [(k, [k, v]) for k, v in samples.items()]
     cases += [("--board " + b, ["--board", b]) for b in BOARDS]
+    cases += [("--pf-facing " + f, ["--pf-facing", f]) for f in PF_FACING]
+    # The ladder has to cut each facing it refines into pieces that add back
+    # up: every unopened preflop decision is unopened, one limp or two, and
+    # every open is bare, called once or called twice or more. A rung that
+    # overlapped another or dropped a case would print plausible rates over
+    # the wrong decisions -- a limp written as some letter other than C is
+    # exactly that, and it would leave the sum short.
+    def count(sql):
+        return con.execute(f"SELECT COUNT(*) FROM decisions WHERE {sql}").fetchone()[0]
+    ladder = []
+    for facing, rungs in (("unopened", ("unopened", "1-limp", "2-limps")),
+                          ("open", ("1-raise", "raise-call", "raise-2-calls"))):
+        whole = count(f"street = 'preflop' AND facing = '{facing}'")
+        pieces = [count(PF_FACING[r]) for r in rungs]
+        if sum(pieces) != whole:
+            ladder.append(f"facing {facing}: {' + '.join(map(str, pieces))} "
+                          f"= {sum(pieces)}, not {whole}")
+        print(f"the preflop ladder splits {facing:8} {whole:,} = "
+              f"{' + '.join(f'{p:,}' for p in pieces)}"
+              f"{'' if sum(pieces) == whole else '  NO'}")
+    fails += ladder
     cases += [(f"{flag} {name}", [flag, name])
               for flag in RUNOUT_FLAG for name in RUNOUT]
     cases.append(("--where", ["--where", "eff_bb > 100"]))

@@ -8,6 +8,25 @@ Newest first.
 
 ---
 
+## Limpers and callers, preflop -- 4 Oct 2026
+
+### Added -- `--pf-facing`, Hand2Note's preflop ladder
+
+Two of the gaps the 24 Sep audit verified as missing: "limpers count" and
+"all folded to BB" as preflop facings. `facing` counts raises, so an empty
+pot and a pot with two limpers were the same spot, and so were a bare
+open and an open already called -- the squeeze, which is played nothing
+like it. `--pf-facing` adds unopened, 1-limp, 2-limps, 1-raise,
+raise-call, raise-2-calls, 2-raises and walk, OR-ed when several are
+named.
+
+Built without a column. `node` already holds the table's preflop action up
+to the decision, one letter each, and `lines.letter` writes every limp and
+call as C, all-in or not -- so the count of C before the first R is the
+limpers and after it the callers. Each rung seeks `dec_spot` on street and
+facing first. `query.py --check` holds the ladder to adding back up: on
+the corpus, 3,117 unopened decisions are 2,442 + 450 + 225, and 1,860
+opens are 1,556 + 250 + 54.
 ## Tonight's sitting, one sitting, and its hands -- 3 Oct 2026
 
 ### Added -- `--last-sessions N` and `--session N,M`

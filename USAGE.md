@@ -291,6 +291,32 @@ split beneath it; the split's frequencies are within the action. `size`
 is also a dimension for any table: `--by size --show cbet_flop` is the
 c-bet rate by how big it was.
 
+### Limpers and callers, preflop
+
+```bash
+python query.py --pool --site ignition --pos BTN --pf-facing 1-limp,2-limps --show iso
+python query.py --hero --pf-facing raise-call --show threebet     # squeeze spots
+python query.py --pool --site ignition --pf-facing walk --by position
+```
+
+`--facing` counts raises -- unopened, open, 3bet -- so it cannot tell an
+empty pot from one with two limpers in it, or a bare open from one somebody
+has already called. `--pf-facing` is Hand2Note's preflop ladder, which can:
+
+| value | in front of the player |
+|---|---|
+| `unopened` | nobody in yet but the blinds |
+| `1-limp`, `2-limps` | one limper; two or more |
+| `1-raise` | an open nobody has called yet (limpers before it allowed) |
+| `raise-call`, `raise-2-calls` | an open and one caller; two or more |
+| `2-raises` | a 3-bet, which is `--facing 3bet` |
+| `walk` | Hand2Note's "all folded to BB": the folds in hands the big blind won without acting, since the big blind makes no decision there |
+
+Several values are alternatives, so `1-limp,2-limps` is any limped pot.
+They are read from the preflop action string, where a limp and a call are
+both `C`; `query.py --check` holds the rungs to adding back up to the
+facing they split. In the window it is a row of the filter's Actions page.
+
 ### The matchup
 
 "BTN vs BB" means the button raised and the big blind did not fold: an

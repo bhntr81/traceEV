@@ -615,7 +615,7 @@ class App(ImportMixin, ttk.Frame):
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
                       "sd": set(), "turn_card": set(), "river_card": set(),
-                      "facing": set(), "combo": set()}
+                      "facing": set(), "combo": set(), "pf_facing": set()}
         # The filter's values live here rather than on the widgets, because
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
@@ -1086,7 +1086,8 @@ class App(ImportMixin, ttk.Frame):
                             ("fd", "--fd"), ("sd", "--sd"),
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card"),
-                            ("facing", "--facing")):
+                            ("facing", "--facing"),
+                            ("pf_facing", "--pf-facing")):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
         for name, flag in (("site", "--site"), ("stake", "--stake"),
@@ -1126,7 +1127,8 @@ class App(ImportMixin, ttk.Frame):
                 "--made": "made", "--kicker": "kicker", "--fd": "fd",
                 "--combo": "combo",
                 "--sd": "sd", "--turn-card": "turn_card",
-                "--river-card": "river_card", "--facing": "facing"}
+                "--river-card": "river_card", "--facing": "facing",
+                "--pf-facing": "pf_facing"}
     VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
               "--deep": "deep", "--short": "short", "--since": "since",
               "--until": "until", "--where": "where", "--line": "line",
@@ -2987,6 +2989,12 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "facing  (what is in front of the player when they act)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("facing", v))) for v in query.FACINGS])
+        # Hand2Note's preflop ladder: the facing above, with the limpers and
+        # the callers counted. Two chosen are either one, not both.
+        self._heading(page, "preflop, in more detail  (limpers and callers counted)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v.replace("-", " "), *self._set_item("pf_facing", v)))
+            for v in query.PF_FACING])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -3815,6 +3823,9 @@ def check(db_path=DB):
         ({"flags": ["--hero"], "vals": {"last_sessions": "2"}},
          ["--hero", "--last-sessions", "2"]),
         ({"flags": [], "vals": {"session": "3,4"}}, ["--session", "3,4"]),
+        # The preflop ladder, two rungs at once, which is an OR.
+        ({"flags": ["--pool"], "pf_facing": ["1-limp", "2-limps"]},
+         ["--pool", "--pf-facing", "1-limp,2-limps"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
