@@ -933,6 +933,15 @@ class App(ImportMixin, ttk.Frame):
             bar, text="leave out regs against fish",
             variable=self.flags["--no-reg-vs-fish"], command=self.refresh)
 
+        # The order of the hands tab. A heading click sorts what is shown;
+        # this decides which 500 are shown, and the strongest hands of a
+        # filter are rarely among its latest.
+        self.hand_sort = ttk.Combobox(bar, state="readonly", width=10,
+                                      values=list(query.SORTS))
+        self.hand_sort.set("date")
+        self.hand_sort.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.hand_sort_label = ttk.Label(bar, text="first by", style="Dim.TLabel")
+
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.refresh())
@@ -1331,6 +1340,12 @@ class App(ImportMixin, ttk.Frame):
             self.of.pack_forget()
             self.alternative_label.pack_forget()
             self.alternative.pack_forget()
+        if view == "hands":
+            self.hand_sort_label.pack(side="left", padx=(0, 6))
+            self.hand_sort.pack(side="left")
+        else:
+            self.hand_sort_label.pack_forget()
+            self.hand_sort.pack_forget()
         if view == "stats":
             self.expression_label.pack(side="left", padx=(0, 6))
             self.expression.pack(side="left")
@@ -1366,7 +1381,11 @@ class App(ImportMixin, ttk.Frame):
             self.clear_btn.pack_forget()
         self.pending += 1
         token = self.pending
-        stat = self.expression.get() if view == "stats" else self.chart_stat()
+        # `stat` is what the view is OF, which for the hands tab is the
+        # order -- it chooses which hands are shown, so it is part of the
+        # answer and of the key it is cached under.
+        stat = (self.expression.get() if view == "stats" else
+                self.hand_sort.get() if view == "hands" else self.chart_stat())
         alternative = (self.alternative.get() or None) if view == "chart" else None
         key = (view, where, self.by.get(), stat, alternative, repr(cohort_spec))
         self.last = (where, label, parts, cohort_spec, query_argv)
@@ -1554,7 +1573,8 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = query.hands_of(con, where, limit=500)
+                out["rows"] = query.hands_of(con, where, limit=500,
+                                             sort=stat or "date")
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if view != "statrange" and not self._any(out):

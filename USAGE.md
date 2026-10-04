@@ -620,6 +620,20 @@ a hands-per-hour column. `--hands --sort won` and `--sort lost` are the
 biggest wins and losses; in the window, click any column heading to sort
 by it and again to flip, on any tab.
 
+`--sort strength` lists the hands strongest first, by what each seat held
+on the final board -- Hand2Note's showdown list under its range diagram:
+
+```bash
+python query.py --pool --site ignition --street river --facing bet --aggressive --hands --sort strength
+```
+
+The categories go in `strength.ORDER`, so a hand the board made sits under
+a real pair as it does in the range view, and the evaluator breaks ties
+inside one, so aces up comes before nines up. Hands whose cards were never
+shown go last in date order rather than being left out. In the window,
+**first by** above the hands tab chooses it, which decides which 500 hands
+are listed; a heading click only re-sorts the ones already there.
+
 The filter dialog's Cards tab has the 13x13 grid: click the combos you
 mean and they become `--combo`. The hands list shows your own line
 beside the cards.

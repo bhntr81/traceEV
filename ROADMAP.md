@@ -1462,7 +1462,7 @@ rather than a side, straddle, "all folded to BB" as a facing (built 4 Oct
 as `--pf-facing walk`, with the limper and caller counts), the initial pot
 on a street, fish on the blinds, antes, out-of-queue posts, note templates, a
 hand inserted into a note, notes on a stat, an anonymised one-hand share,
-sorting showdown hands by strength, and a stat-expression string in the
+sorting showdown hands by strength (built 4 Oct, `--sort strength`), and a stat-expression string in the
 cohort picker.
 
 ### Reports and Sessions

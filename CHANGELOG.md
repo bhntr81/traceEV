@@ -8,7 +8,7 @@ Newest first.
 
 ---
 
-## Limpers and callers, preflop -- 4 Oct 2026
+## Gaps from the 24 Sep audit: preflop ladder, hands by strength -- 4 Oct 2026
 
 ### Added -- `--pf-facing`, Hand2Note's preflop ladder
 
@@ -140,6 +140,18 @@ everything. The second half compared against `total`, which a loop added
 above it on 25 Sep reused for the hero's hand count -- so "selects every
 decision in the table" had not been caught since. Every existing filter
 passes with it restored; the new switch was the first thing it caught.
+
+### Added -- hands strongest first
+
+Another of the 24 Sep gaps: Hand2Note lists the showdown hands under its
+range diagram sorted by strength. `--hands --sort strength`, and **first
+by** above the window's hands tab, order them by `strength.classify` on
+the seat's cards and the whole board, in `strength.ORDER`'s categories with
+the evaluator's tuple breaking ties. The ordering is done in Python after
+the query, over every matching hand rather than the latest 500, since the
+strongest hands of a filter are rarely its newest. `query.py --check`
+holds the order to the categories, the unshown hands to the end (93 of 730
+river hands on the corpus), and the count to the unsorted list's.
 
 ---
 

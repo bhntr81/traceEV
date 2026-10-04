@@ -2835,7 +2835,49 @@ def show_results(con, where, label, parts=()):
 # biggest-losses list would open with a page of nothing.
 SORTS = {"date": "d.played_at DESC",
          "won": "s.net_bb IS NULL, s.net_bb DESC",
-         "lost": "s.net_bb IS NULL, s.net_bb ASC"}
+         "lost": "s.net_bb IS NULL, s.net_bb ASC",
+         # Ordered in Python, after the query: see `by_strength`.
+         "strength": "d.played_at DESC"}
+
+
+def by_strength(con, rows):
+    """
+    The hands strongest first, by what each seat held on the final board.
+
+    Hand2Note lists the showdown hands under its range diagram in this
+    order. Strength is `strength.classify` on the seat's cards and the
+    whole board -- the hand it finished with, not the hand at some earlier
+    decision, which for a seat that bet the flop and checked the river is
+    a different answer. The categories go in `strength.ORDER`, so a hand
+    the board made sits under a real pair exactly as it does in the range
+    view; within one category the evaluator's own tuple breaks the tie,
+    so aces up comes before nines up. Hands whose cards were never shown,
+    or that ended before a flop, have no strength and go last in date
+    order, rather than being dropped from a list someone is reading
+    as the whole of what the filter selected.
+    """
+    import strength
+    from equity import best5
+    pairs = {(r[0], r[1]) for r in rows}
+    cards = {}
+    for hid, seat, c in con.execute(
+            "SELECT hand_id, seat, cards FROM seats WHERE hand_id IN (%s)"
+            % ",".join("?" * len({h for h, _s in pairs}) or "NULL"),
+            sorted({h for h, _s in pairs})):
+        if (hid, seat) in pairs:
+            cards[(hid, seat)] = c
+    known, unknown = [], []
+    for r in rows:
+        c, board = cards.get((r[0], r[1])), r[7]
+        made = strength.classify(c, board)[0] if c and board else None
+        if made is None:
+            unknown.append(r + (None,))
+            continue
+        shape = best5(strength.parse(c) + strength.parse(board))
+        known.append((strength.ORDER.index(made), shape, r + (made,)))
+    known.sort(key=lambda k: k[1], reverse=True)
+    known.sort(key=lambda k: k[0])
+    return [k[2] for k in known] + unknown
 
 
 def hands_of(con, where, limit=None, sort="date"):
@@ -2866,9 +2908,16 @@ def hands_of(con, where, limit=None, sort="date"):
            f"ORDER BY {SORTS.get(sort, SORTS['date'])}")
     if limit:
         sql += f" LIMIT {int(limit)}"
+    if limit and sort == "strength":
+        # The strongest of all of them, not of the latest few hundred.
+        sql = sql[:sql.rindex(" LIMIT ")]
     rows = con.execute(sql).fetchall()
     tagged = notes.tags_for(con, {r[0] for r in rows})
-    return [tuple(r) + (tagged.get(r[0], []),) for r in rows]
+    rows = [tuple(r) + (tagged.get(r[0], []),) for r in rows]
+    if sort == "strength":
+        rows = [r[:-1] for r in by_strength(con, rows)]
+        rows = rows[:int(limit)] if limit else rows
+    return rows
 
 
 def show_hands(con, where, label, limit=40, parts=(), sort="date"):
@@ -3055,6 +3104,20 @@ def check(db_path=DB):
               f"{' + '.join(f'{p:,}' for p in pieces)}"
               f"{'' if sum(pieces) == whole else '  NO'}")
     fails += ladder
+
+    # Strongest first has to mean it: the categories in `strength.ORDER`'s
+    # order, the unclassifiable last, and nothing gained or lost on the way.
+    import strength as _strength
+    plain = hands_of(con, "street = 'river'")
+    ranked = by_strength(con, plain)
+    places = [_strength.ORDER.index(r[-1]) for r in ranked if r[-1]]
+    tail = [r[-1] for r in ranked[len(places):]]
+    wrong = (len(ranked) != len(plain) or places != sorted(places)
+             or any(t is not None for t in tail))
+    print(f"hands strongest first   {len(places):,} ranked, {len(tail):,} "
+          f"without cards last{'' if not wrong else '  NO'}")
+    if wrong:
+        fails.append("--sort strength is out of order or changes the hands")
     cases += [(f"{flag} {name}", [flag, name])
               for flag in RUNOUT_FLAG for name in RUNOUT]
     cases.append(("--where", ["--where", "eff_bb > 100"]))
