@@ -1461,7 +1461,8 @@ day, Run 31**): distance to fish as a number
 rather than a side, straddle, "all folded to BB" as a facing (built 4 Oct
 as `--pf-facing walk`, with the limper and caller counts), the initial pot
 on a street, fish on the blinds, antes, out-of-queue posts, note templates, a
-hand inserted into a note, notes on a stat, an anonymised one-hand share,
+hand inserted into a note, notes on a stat, an anonymised one-hand share
+(built 4 Oct, `--hand ID --share` and a button in the hand window),
 sorting showdown hands by strength (built 4 Oct, `--sort strength`), and a stat-expression string in the
 cohort picker.
 
@@ -1522,7 +1523,7 @@ cohort picker.
 |---|---|
 | Notes per player, **note templates**, inserting a hand into a note, **notes on a stat**, badges (rule-based icons) | have player notes and hand marks; templates, hand-in-note, stat notes, badges missing (badges are HUD) |
 | Marked hands with **labels** (named, coloured) and per-hand notes | have marks (`--tag`), which are labels; per-hand notes exist in `notes.py` |
-| Share a hand as a link or image, hiding names and showdown | **missing** — `--export` writes text; an anonymised one-hand export is close |
+| Share a hand as a link or image, hiding names and showdown | have it as text (`--hand ID --share`, **copy for sharing**): no names, hand number, table, date or site, amounts in bb. Showdown cards are kept; no link or image |
 | Showdowns indicator (count of new showdowns per opponent since sitting down) | HUD; in scope since 3 Oct 2026, not built |
 
 ### Statistics engine

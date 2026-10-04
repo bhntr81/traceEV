@@ -1273,6 +1273,20 @@ are there including the folded ones, because the site shows them. On ACR a
 seat reads `--` when the hand was never shown, which is different from
 having been dealt nothing.
 
+To post a hand somewhere public, add `--share`, or press **copy for
+sharing** in the hand's window, which puts the same text on the clipboard:
+
+```bash
+python query.py --hand 5331315698 --share
+```
+
+It has nobody in it. The names, the hand number, the table, the date and
+the site are gone, since any one of them finds the hand in somebody's
+database and every name with it; the players are their positions, the
+seat the hand was opened for is Hero, and every amount is in big blinds.
+Your tags and notes are never in it. The cards are as the site showed
+them, so an Ignition hand still shows the folds.
+
 ### When nothing matches
 
 Some perfectly reasonable filters cannot match anything, and rather than a

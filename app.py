@@ -3678,6 +3678,13 @@ class HandWindow(tk.Toplevel):
         self.tag_entry.pack(side="left")
         self.tag_entry.bind("<Return>", lambda e: self._add_tag())
         ttk.Button(top, text="tag", command=self._add_tag).pack(side="left", padx=4)
+        # The hand as text for a forum or a coach, with every name, the
+        # hand number, the table and the date taken out -- `share_text`
+        # says what is kept. Told from the seat the hand was opened for,
+        # so a hand opened on an opponent shares it as that opponent's.
+        self.seat = seat
+        ttk.Button(top, text="copy for sharing",
+                   command=self._copy_share).pack(side="right")
         self._draw_tags()
 
         # The note on the seat this hand was opened for, when that seat is
@@ -3760,6 +3767,12 @@ class HandWindow(tk.Toplevel):
             b = ttk.Button(self.tag_row, text=f"{t} ×", style="Tag.TButton",
                            command=lambda t=t: self._drop_tag(t))
             b.pack(side="left", padx=2)
+
+    def _copy_share(self):
+        text = query.share_text(self.con, self.hand_id, self.seat)
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
 
     def _add_tag(self):
         import notes

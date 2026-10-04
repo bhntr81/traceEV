@@ -2445,6 +2445,75 @@ def show_hand(con, hand_id, seat=None):
         print(f"\nTOTAL POT {d['pot']:.2f}{rake}")
 
 
+def share_text(con, hand_id, seat=None):
+    """
+    One hand as text to paste somewhere public, with nobody in it.
+
+    Hand2Note's anonymised share. What identifies anybody is left out: the
+    screen names, the hand number, the table, the date and the site, any
+    one of which finds the hand in somebody's database and every name with
+    it. The players are their positions and the seat the hand is about is
+    "Hero". Amounts are in big blinds so the stake does not travel either,
+    and because a hand posted for advice is read in big blinds anyway.
+    Notes and tags are the user's own and are never in it. Cards are as the
+    site showed them -- Ignition shows the folded ones, ACR only showdowns
+    -- since a hand with the villain's cards removed is a different
+    question from the one being asked.
+    """
+    d = hand_detail(con, hand_id, seat)
+    if d is None:
+        return None
+    bb = d["bb"] or 1.0
+    me = seat if seat is not None else next(
+        (s["seat"] for s in d["seats"] if s["is_hero"]), None)
+    # Eight- and nine-handed tables are recorded against six position
+    # names, so three seats can all be UTG, and in a hand with nothing
+    # else to tell them apart "UTG calls" would not say which. Repeats are
+    # numbered in the order the seats first act -- not the order they are
+    # listed, which is by seat number and put "UTG+3" before UTG -- so they
+    # read UTG, UTG+1, UTG+2 as the seats are called at a full table.
+    acted = [a["seat"] for st in d["streets"] for a in st["actions"]]
+    order = sorted(d["seats"], key=lambda s: acted.index(s["seat"])
+                   if s["seat"] in acted else len(acted))
+    pos, seen = {}, {}
+    for s in order:
+        label = s["position"] or "?"
+        k = seen[label] = seen.get(label, -1) + 1
+        pos[s["seat"]] = label + (f"+{k}" if k else "")
+
+    def who(n):
+        return "Hero" if n == me else pos.get(n, "?")
+
+    def bbs(x):
+        return f"{x / bb:.1f} bb"
+    out = [f"No-limit hold'em, {len(d['seats'])} players"
+           + ("" if d["bb"] else ", chips")]
+    for s in d["seats"]:
+        name = f"Hero ({pos[s['seat']]})" if s["seat"] == me else pos[s["seat"]]
+        out.append(f"  {name:10} {bbs(s['stack'] or 0):>9}"
+                   + (f"   {s['cards']}" if s["cards"] else ""))
+    for st in d["streets"]:
+        first = st["actions"][0] if st["actions"] else None
+        head = st["street"].capitalize()
+        if st["board"]:
+            head += f" [{st['board']}]"
+        if first and first["pot_before"] is not None:
+            head += f"  pot {bbs(first['pot_before'])}"
+        out.append("")
+        out.append(head)
+        for a in st["actions"]:
+            amt = f" {bbs(a['amount'])}" if a["amount"] else ""
+            out.append(f"  {who(a['seat'])} {a['verb']}{amt}")
+    if d["pot"]:
+        out.append("")
+        out.append(f"Final pot {bbs(d['pot'])}")
+        mine = next((s for s in d["seats"] if s["seat"] == me), None)
+        net = (mine["won"] or 0) - mine["put_in"] if mine else 0
+        if abs(net) > 1e-9:
+            out.append(f"Hero {'won' if net > 0 else 'lost'} {bbs(abs(net))}")
+    return "\n".join(out)
+
+
 def show_report(con, where, label, dim, columns, min_n=30, argv=()):
     """
     One row per value of the dimension, one column per stat.
@@ -2978,7 +3047,8 @@ def usage():
     print(f"    {'--show':14} which stats are the columns "
           f"(default: {','.join(DEFAULT_COLUMNS)})")
     print(f"    {'--min':14} mark cells below this many chances (default 30)")
-    print(f"    {'--hand':14} replay one hand by id, ignoring every filter")
+    print(f"    {'--hand':14} replay one hand by id, ignoring every filter;"
+          f" add --share for it with nobody in it")
     print(f"    {'--chart':14} the 13x13 chart: what the range holds, or "
           f"one stat per combo with --show")
     print("    --alternative ACTION  compare that stat with call/raise/fold/check/bet "
@@ -3118,6 +3188,30 @@ def check(db_path=DB):
           f"without cards last{'' if not wrong else '  NO'}")
     if wrong:
         fails.append("--sort strength is out of order or changes the hands")
+
+    # A shared hand carries nobody. Checked on hands from every site,
+    # against everything that could find the hand or a player again: each
+    # seat's label and identity, the hand number, the table and the date.
+    leaked = []
+    sample = con.execute("SELECT hand_id, site, table_id, played_at FROM hands "
+                         "WHERE hand_id IN (SELECT MIN(hand_id) FROM hands "
+                         "GROUP BY site)").fetchall()
+    for hid, site, table, when in sample:
+        text = share_text(con, hid)
+        names = [r[0] for r in con.execute(
+            "SELECT label FROM seats WHERE hand_id = ? UNION "
+            "SELECT player FROM spots WHERE hand_id = ?", (hid, hid)) if r[0]]
+        # Labels that are only a position ("Small Blind", "UTG+1" on
+        # Ignition) say nothing about anybody and may appear as words.
+        found = [x for x in names + [hid, str(table), (when or "")[:10]]
+                 if x and len(str(x)) > 3 and str(x) in text
+                 and not str(x).replace(" ", "").replace("+", "").isalpha()]
+        if found:
+            leaked.append(f"{site} {hid}: {found[:3]}")
+    print(f"a shared hand names nobody   {len(sample) - len(leaked)}/{len(sample)} sites")
+    for l in leaked:
+        print(f"    {l}")
+    fails += leaked
     cases += [(f"{flag} {name}", [flag, name])
               for flag in RUNOUT_FLAG for name in RUNOUT]
     cases.append(("--where", ["--where", "eff_bb > 100"]))
@@ -3759,6 +3853,11 @@ def main(argv):
             raise SystemExit(f"unknown stat {c!r} -- see `stats.py --list`")
     min_n = int(opt("--min", "30"))
 
+    if opt("--hand") and "--share" in argv:
+        con = connect()
+        text = share_text(con, opt("--hand"))
+        print(text if text is not None else f"no hand {opt('--hand')!r}")
+        return 0 if text is not None else 1
     if opt("--hand"):
         con = connect()
         show_hand(con, opt("--hand"))

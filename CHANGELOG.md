@@ -8,7 +8,7 @@ Newest first.
 
 ---
 
-## Gaps from the 24 Sep audit: preflop ladder, hands by strength -- 4 Oct 2026
+## Gaps from the 24 Sep audit: preflop ladder, hands by strength, sharing a hand -- 4 Oct 2026
 
 ### Added -- `--pf-facing`, Hand2Note's preflop ladder
 
@@ -27,6 +27,36 @@ limpers and after it the callers. Each rung seeks `dec_spot` on street and
 facing first. `query.py --check` holds the ladder to adding back up: on
 the corpus, 3,117 unopened decisions are 2,442 + 450 + 225, and 1,860
 opens are 1,556 + 250 + 54.
+
+### Added -- hands strongest first
+
+Another of the 24 Sep gaps: Hand2Note lists the showdown hands under its
+range diagram sorted by strength. `--hands --sort strength`, and **first
+by** above the window's hands tab, order them by `strength.classify` on
+the seat's cards and the whole board, in `strength.ORDER`'s categories with
+the evaluator's tuple breaking ties. The ordering is done in Python after
+the query, over every matching hand rather than the latest 500, since the
+strongest hands of a filter are rarely its newest. `query.py --check`
+holds the order to the categories, the unshown hands to the end (93 of 730
+river hands on the corpus), and the count to the unsorted list's.
+
+### Added -- a hand to share, with nobody in it
+
+The third of the 24 Sep gaps. `--hand ID --share`, and **copy for
+sharing** in the hand window, write the hand as text with the names, the
+hand number, the table, the date and the site left out -- any one of them
+finds the hand again, and every player in it. Seats are positions, the
+seat the hand was opened for is Hero, amounts are big blinds. A full
+table records three seats as UTG, so repeats are numbered in the order
+they first act, UTG to UTG+3, or "UTG calls" would not say who. Hand2Note
+can also hide the showdown; this keeps the cards the site showed, since a
+hand posted for advice without the villain's cards asks a different
+question. `query.py --check` shares the first hand of every site and
+looks for every seat's label and identity, the hand number, the table and
+the day in the text: none on any of six.
+
+---
+
 ## Tonight's sitting, one sitting, and its hands -- 3 Oct 2026
 
 ### Added -- `--last-sessions N` and `--session N,M`
@@ -140,18 +170,6 @@ everything. The second half compared against `total`, which a loop added
 above it on 25 Sep reused for the hero's hand count -- so "selects every
 decision in the table" had not been caught since. Every existing filter
 passes with it restored; the new switch was the first thing it caught.
-
-### Added -- hands strongest first
-
-Another of the 24 Sep gaps: Hand2Note lists the showdown hands under its
-range diagram sorted by strength. `--hands --sort strength`, and **first
-by** above the window's hands tab, order them by `strength.classify` on
-the seat's cards and the whole board, in `strength.ORDER`'s categories with
-the evaluator's tuple breaking ties. The ordering is done in Python after
-the query, over every matching hand rather than the latest 500, since the
-strongest hands of a filter are rarely its newest. `query.py --check`
-holds the order to the categories, the unshown hands to the end (93 of 730
-river hands on the corpus), and the count to the unsorted list's.
 
 ---
 
