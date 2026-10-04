@@ -8,6 +8,33 @@ Newest first.
 
 ---
 
+## The HUD's popups -- 4 Oct 2026
+
+### Added -- a click on a box opens the player in full
+
+A table per street, every row the stat as the box shows it, its count,
+the 95% interval on the player's own count, and the pool figure it is
+pulled towards; then opening and VPIP by position, and the player's note.
+The pool is the box's own -- the table's site and stake without the
+player -- and by position it is the pool at that position, because a
+button open read against opens everywhere is pulled down by every early
+seat in the pool. The numbers are worked out on a thread of their own,
+so the boxes keep following their tables while a popup is coming.
+
+`hud.py --check` holds every popup row to `stats.rate` and `stats.wilson`
+and every position cell to a pool written out longhand; a popup shrunk
+towards the whole pool, and an interval at 90% instead of 95%, each
+failed it. It now also runs the window itself where there is Tk and a
+display, as CI has: the boxes drawn, a box following its table when it
+moves, and a click on a number opening the popup and a second closing
+it. Taking the click off the numbers failed that.
+
+A name is a person on one site only, and the corpus has a "Player4" on
+both: the check's first version opened the PokerStars one for the ACR
+seat. `popup_for` takes the site.
+
+---
+
 ## A HUD, on ACR and PokerStars -- 3 Oct 2026
 
 ### Added -- `hud.py`, and `Site.hud`

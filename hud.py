@@ -29,6 +29,8 @@ the HUD design left open for the user, and each of them is a setting in
     python hud.py              run it: watch the hand histories, draw the boxes
     python hud.py --demo       a pretend table from your database, with the HUD on it
     python hud.py --print      the numbers for the tables you played last, as text
+    python hud.py --popup NAME [SITE]
+                               what a click on that player's box opens, as text
     python hud.py --windows    every window title, and which table each one matched
     python hud.py --check      the numbers against the stat engine, the layout,
                                the title matching and the watcher
@@ -76,6 +78,23 @@ DEFAULTS = {
     # A first guess that has not been measured against either client; the
     # right numbers are whatever puts the boxes beside the names.
     "ellipse": [0.5, 0.47, 0.40, 0.36],
+    # What a click on a box opens: sections of stats, street by street, in
+    # the order a hand is played. Any registry key goes in any section.
+    "popup": [
+        ["Preflop", ["vpip", "pfr", "rfi", "limp", "threebet", "fold_to_3bet",
+                     "fourbet", "steal", "fold_to_steal", "bb_defend"]],
+        ["Flop", ["cbet_flop", "fold_to_cbet", "raise_cbet", "checkraise_flop",
+                  "donk_flop", "flop_agg"]],
+        ["Turn", ["double_barrel", "fold_to_double_barrel", "delayed_cbet",
+                  "probe_turn", "fold_to_turn_bet"]],
+        ["River", ["triple_barrel", "fold_to_triple_barrel",
+                   "fold_to_river_bet", "river_agg"]],
+        ["Showdown", ["wtsd", "wsd", "wwsf"]],
+    ],
+    # The stats the popup also splits by position. Opening is the one a
+    # position changes most: a 15% opener and a 45% opener are the same
+    # player, under the gun and on the button.
+    "by_position": ["rfi", "vpip"],
 }
 
 
@@ -222,6 +241,125 @@ def as_text(v):
             rows.append(" / ".join(f"({text})" if faint else text
                                    for text, faint in line))
         out.append(f"  seat {seat:<2} " + "\n           ".join(rows))
+    return "\n".join(out)
+
+
+def cell(n, k, prior, mode, faint_below):
+    """
+    One figure as the HUD prints it: (text, faint, raw, lo, hi, shown).
+
+    `shown` is the shrunk rate, or the raw one in raw mode; the interval is
+    always the raw count's, because that is the count it belongs to. No
+    chance at all is a dash, never a zero.
+    """
+    if not n:
+        return "-", True, None, None, None, None
+    raw = k / n
+    _p, lo, hi = stats.wilson(k, n)
+    shown = raw if mode == "raw" else stats.shrunk(k, n, prior)
+    shown = raw if shown is None else shown
+    return f"{round(100 * shown)}", n < faint_below, raw, lo, hi, shown
+
+
+def popup_view(con, site, fmt, bb, player, conf=None):
+    """
+    Everything one player's popup holds, worked out away from the window.
+
+    The sections of `conf["popup"]`, each row a stat with its count, its
+    interval and the pool it is read against, then the stats of
+    `conf["by_position"]` split by position, then the note the user wrote
+    on this player, if any. The pool is the table's game with the player
+    taken out, the same as the box beside the seat; a popup that read
+    against a different pool would show the same stat as two numbers.
+    """
+    conf = conf or settings()
+    mode, faint = conf["rates"], conf["faint_below"]
+    sections = []
+    for title, keys in conf["popup"]:
+        keys = [k for k in keys if k in stats.BY_KEY]
+        got = numbers(con, site, fmt, bb, player, keys, mode)
+        rows = []
+        for key in keys:
+            n, k, _raw, prior, _shown = got[key]
+            text, dim, raw, lo, hi, shown = cell(n, k, prior, mode, faint)
+            rows.append({"key": key, "label": stats.BY_KEY[key].label,
+                         "n": n, "k": k, "text": text, "faint": dim,
+                         "raw": raw, "lo": lo, "hi": hi, "prior": prior,
+                         "shown": shown})
+        sections.append((title, rows))
+
+    # By position. The pool is split the same way: a button open is read
+    # against the pool's button opens, never its opens everywhere, which
+    # would pull every late-position number down and every early one up.
+    from query import POSITIONS
+    gw, gp = game_where(site, fmt, bb)
+    positions = []
+    for key in conf["by_position"]:
+        if key not in stats.BY_KEY:
+            continue
+        s = stats.BY_KEY[key]
+        mine = stats.rates_by(con, s, "position", "player=? AND site=?",
+                              (player, site))
+        pool = stats.rates_by(con, s, "position", gw + " AND player<>?",
+                              gp + (player,))
+        cells = []
+        for pos in POSITIONS:
+            n, k = mine.get(pos, (0, 0))
+            pn, pk = pool.get(pos, (0, 0))
+            text, dim, *_rest = cell(n, k, pk / pn if pn else None, mode, faint)
+            cells.append((pos, n, k, text, dim))
+        positions.append((s.label, cells))
+
+    import notes
+    hands = con.execute("SELECT COUNT(*) FROM spots WHERE site=? AND player=?",
+                        (site, player)).fetchone()[0]
+    klass = con.execute("SELECT class FROM players WHERE site=? AND player=?",
+                        (site, player)).fetchone()
+    return {"player": player, "site": site, "fmt": fmt, "bb": bb,
+            "hands": hands, "class": klass[0] if klass else None,
+            "note": notes.note_of(con, site, player),
+            "sections": sections, "positions": positions, "mode": mode}
+
+
+def popup_for(con, player, site=None):
+    """
+    A player's popup at the game they have played most, for `--popup`.
+
+    A name is a person on one site only -- the corpus has a "Player4" on
+    both -- so a site narrows it, and without one the busier is taken.
+    """
+    hud_sites = (site,) if site else sites.with_hud()
+    row = con.execute(
+        "SELECT site, fmt, bb FROM spots WHERE player=? AND site IN "
+        f"({','.join('?' * len(hud_sites))}) GROUP BY site, fmt, bb "
+        "ORDER BY COUNT(*) DESC LIMIT 1", (player,) + hud_sites).fetchone()
+    return popup_view(con, *row, player) if row else None
+
+
+def interval(lo, hi):
+    return f"{round(100 * lo)}-{round(100 * hi)}" if lo is not None else ""
+
+
+def popup_text(p):
+    """A popup as text, for `--popup` and for reading a check."""
+    out = [f"{p['player']}  {p['site']}  {p['hands']} hands"
+           + (f"  {p['class'].upper()}" if p["class"] in ("reg", "fish") else ""),
+           f"  rates {'shrunk towards' if p['mode'] != 'raw' else 'raw; pool is'}"
+           f" the {p['fmt']} bb={p['bb']} game without them; "
+           "(brackets) under ten chances"]
+    if p["note"]:
+        out.append(f"  note: {p['note']}")
+    for title, rows in p["sections"]:
+        out.append(f"  {title}")
+        for r in rows:
+            text = f"({r['text']})" if r["faint"] else r["text"]
+            pool = f"{round(100 * r['prior'])}" if r["prior"] is not None else "-"
+            out.append(f"    {r['label']:24} {text:>5}  n={r['n']:<5} "
+                       f"{interval(r['lo'], r['hi']):>7}  pool {pool}")
+    for label, cells in p["positions"]:
+        out.append(f"  {label} by position  "
+                   + "  ".join(f"{pos} {f'({t})' if dim else t}"
+                               for pos, _n, _k, t, dim in cells))
     return "\n".join(out)
 
 
@@ -431,18 +569,59 @@ class Overlay:
     through a queue; Tk is only ever touched from its own thread.
     """
 
-    def __init__(self, root, source, conf=None):
+    def __init__(self, root, source, conf=None, db_path=DB):
         self.root = root
         self.source = source            # () -> [(title, x, y, w, h)]
         self.conf = conf or settings()
+        self.db_path = db_path
         self.views = {}
-        self.boxes = {}                 # (site, table_id, seat) -> (Toplevel, Label)
+        self.boxes = {}                 # (site, table_id, seat) -> (Toplevel, Frame)
+        self.who = {}                   # the same key -> (site, fmt, bb, player)
         self.inbox = queue.Queue()
+        # A popup's numbers are a few passes over the player's game, too slow
+        # to ask on Tk's thread without the boxes stopping while they come.
+        # Asked on a thread of their own, with their own connection, and
+        # drawn when they arrive -- unless the click has been taken back.
+        self.asks = queue.Queue()
+        self.answers = queue.Queue()
+        self.popup = None               # (key, Toplevel) of the one open
+        threading.Thread(target=self.answer, daemon=True).start()
+
+    def answer(self):
+        con = None
+        while True:
+            key, who = self.asks.get()
+            try:
+                con = con or sqlite3.connect(self.db_path)
+                self.answers.put((key, popup_view(con, *who, conf=self.conf)))
+            except Exception as e:      # a popup that fails must not stop the HUD
+                import diag
+                diag.event("hud popup failed", error=repr(e))
+
+    def toggle(self, key):
+        """A click on a box opens its popup; a second click, or another box's, closes it."""
+        was = self.popup[0] if self.popup else None
+        self.close()
+        if key != was and key in self.who:
+            self.popup = (key, None)
+            self.asks.put((key, self.who[key]))
+
+    def close(self, _event=None):
+        if self.popup and self.popup[1] is not None:
+            self.popup[1].destroy()
+        self.popup = None
 
     def tick(self):
         try:
             while True:
                 self.views = self.inbox.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                key, p = self.answers.get_nowait()
+                if self.popup == (key, None) and key in self.boxes:
+                    self.popup = (key, self.show_popup(key, p))
         except queue.Empty:
             pass
         placed = set()
@@ -457,10 +636,13 @@ class Overlay:
                 fx, fy = place(slot(seat, hero, t["max_seats"]), t["max_seats"],
                                self.conf["ellipse"])
                 key = hit + (seat,)
+                self.who[key] = (t["site"], t["fmt"], t["bb"], box["player"])
                 self.draw(key, box, int(x + fx * w), int(y + fy * h))
                 placed.add(key)
         for key in [k for k in self.boxes if k not in placed]:
             self.boxes.pop(key)[0].destroy()
+            if self.popup and self.popup[0] == key:
+                self.close()
         self.root.after(100, self.tick)
 
     def draw(self, key, box, x, y):
@@ -473,8 +655,9 @@ class Overlay:
                 top.attributes("-alpha", 0.88)
             except tk.TclError:
                 pass
-            frame = tk.Frame(top, bg=BG, padx=4, pady=2)
+            frame = tk.Frame(top, bg=BG, padx=4, pady=2, cursor="hand2")
             frame.pack()
+            frame.bind("<Button-1>", lambda _e, k=key: self.toggle(k))
             self.boxes[key] = (top, frame)
         top, frame = self.boxes[key]
         shape = [[(text, faint) for text, faint in line] for line in box["lines"]]
@@ -490,9 +673,71 @@ class Overlay:
                                  font=("Consolas", 9)).pack(side="left")
                     tk.Label(row, text=text, bg=BG, fg=FAINT if faint else INK,
                              font=("Consolas", 9)).pack(side="left")
+            # Every label takes the click too, or only the box's thin border
+            # would open it.
+            for row in frame.winfo_children():
+                row.bind("<Button-1>", lambda _e, k=key: self.toggle(k))
+                for label in row.winfo_children():
+                    label.bind("<Button-1>", lambda _e, k=key: self.toggle(k))
             frame.shape = shape
         top.update_idletasks()
         top.geometry(f"+{x - top.winfo_width() // 2}+{y - top.winfo_height() // 2}")
+
+    def show_popup(self, key, p):
+        """The popup beside its box: a table per street, then by position."""
+        import tkinter as tk
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        frame = tk.Frame(top, bg=BG, padx=8, pady=6, cursor="hand2")
+        frame.pack()
+        font, bold = ("Consolas", 9), ("Consolas", 9, "bold")
+
+        def line(r, *cells):
+            for c, (text, fg, f) in enumerate(cells):
+                tk.Label(frame, text=text, bg=BG, fg=fg, font=f,
+                         anchor="e" if c else "w").grid(row=r, column=c,
+                                                        sticky="e" if c else "w",
+                                                        padx=(0, 8))
+        r = 0
+        head = f"{p['player']}   {p['hands']} hands"
+        if p["class"] in ("reg", "fish"):
+            head += "   " + p["class"].upper()
+        line(r, (head, INK, bold)); r += 1
+        line(r, ("raw rates" if p["mode"] == "raw" else
+                 "shrunk towards the pool", FAINT, font),
+             ("%", FAINT, font), ("n", FAINT, font), ("95%", FAINT, font),
+             ("pool", FAINT, font)); r += 1
+        if p["note"]:
+            line(r, ("note: " + p["note"][:60], INK, font)); r += 1
+        for title, rows in p["sections"]:
+            line(r, (title, INK, bold)); r += 1
+            for row in rows:
+                fg = FAINT if row["faint"] else INK
+                pool = f"{round(100 * row['prior'])}" if row["prior"] is not None else "-"
+                line(r, ("  " + row["label"], fg, font), (row["text"], fg, bold),
+                     (str(row["n"]), FAINT, font),
+                     (interval(row["lo"], row["hi"]), FAINT, font),
+                     (pool, FAINT, font)); r += 1
+        for label, cells in p["positions"]:
+            text = "  ".join(f"{pos} {t}" for pos, _n, _k, t, _dim in cells)
+            line(r, (label + " by position", INK, bold)); r += 1
+            tk.Label(frame, text="  " + text, bg=BG, fg=INK, font=font).grid(
+                row=r, column=0, columnspan=5, sticky="w"); r += 1
+        for w in [frame] + frame.winfo_children():
+            w.bind("<Button-1>", self.close)
+        top.bind("<Escape>", self.close)
+
+        # Beside the box, on whichever side of it the screen has room.
+        box = self.boxes[key][0]
+        top.update_idletasks()
+        x = box.winfo_rootx() + box.winfo_width() + 6
+        if x + top.winfo_width() > top.winfo_screenwidth():
+            x = box.winfo_rootx() - top.winfo_width() - 6
+        y = min(box.winfo_rooty(),
+                top.winfo_screenheight() - top.winfo_height() - 40)
+        top.geometry(f"+{max(0, x)}+{max(0, y)}")
+        return top
 
 
 def dpi_aware():
@@ -560,7 +805,7 @@ def run(source=None, db_path=DB, folders=None, extra=None):
     tk.Label(root, text="TraceEV HUD is running.\nClose this window to stop it.",
              justify="left").pack(padx=10, pady=8)
     conf = settings()
-    overlay = Overlay(root, source or windows, conf)
+    overlay = Overlay(root, source or windows, conf, db_path)
     watcher = Watcher(db_path, folders, overlay.inbox, conf)
     stop = threading.Event()
     threading.Thread(target=watcher.run, args=(stop,), daemon=True).start()
@@ -614,7 +859,8 @@ def demo(db_path=DB):
             views[(site, table_id)] = v
             win = tk.Toplevel(root)
             win.title(f"{table_id} - demo of the TraceEV HUD ({site})")
-            win.geometry(f"800x560+{80 + 60 * i}+{80 + 60 * i}")
+            # Side by side, so that neither table's boxes sit on the other's.
+            win.geometry(f"640x460+{40 + 680 * i}+80")
             canvas = tk.Canvas(win, bg="#0b3d1f", highlightthickness=0)
             canvas.pack(fill="both", expand=True)
             canvas.bind("<Configure>", lambda e, c=canvas: (
@@ -722,6 +968,56 @@ def check(db_path=DB):
     if tables:
         print(as_text(view(con, *tables[0], conf)))
 
+    # The popup: every row the engine's count, interval and pool, the
+    # positions each the engine's count at that position, shrunk towards
+    # the pool's figure at that same position.
+    from query import POSITIONS
+    unknown = [k for _t, keys in conf["popup"] for k in keys if k not in stats.BY_KEY]
+    unknown += [k for k in conf["by_position"] if k not in stats.BY_KEY]
+    if unknown:
+        fails.append(f"the popup names stats the registry does not have: {unknown}")
+    rows = cells = 0
+    before = len(fails)
+    for site in sites.with_hud():
+        for (player,) in con.execute(
+                "SELECT player FROM spots WHERE site=? AND is_hero=0 AND player "
+                "IS NOT NULL GROUP BY player ORDER BY COUNT(*) DESC LIMIT 2",
+                (site,)).fetchall():
+            p = popup_for(con, player, site)
+            gw = "site=? AND fmt=? AND bb=? AND is_hero=0 AND player<>?"
+            gp = (p["site"], p["fmt"], p["bb"], player)
+            for _title, section in p["sections"]:
+                for r in section:
+                    rows += 1
+                    n, k, _p, lo, hi = stats.rate(con, r["key"],
+                                                  "player=? AND site=?",
+                                                  (player, site))
+                    pn, pk = stats.rate(con, r["key"], gw, gp)[:2]
+                    if (r["n"], r["k"]) != (n, k) or \
+                            (n and (abs(r["lo"] - lo) > 1e-12
+                                    or abs(r["hi"] - hi) > 1e-12)) or \
+                            (r["prior"] is None) != (pn == 0) or \
+                            (pn and abs(r["prior"] - pk / pn) > 1e-12) or \
+                            (n == 0) != (r["text"] == "-") or \
+                            (n and r["faint"] != (n < conf["faint_below"])):
+                        fails.append(f"popup {player} {r['key']}: {r}")
+            for label, row in p["positions"]:
+                key = next(k for k in conf["by_position"]
+                           if stats.BY_KEY[k].label == label)
+                for pos, n_, k_, text, _dim in row:
+                    cells += 1
+                    n, k = stats.rate(con, key, "player=? AND site=? AND position=?",
+                                      (player, site, pos))[:2]
+                    pn, pk = stats.rate(con, key, gw + " AND position=?",
+                                        gp + (pos,))[:2]
+                    want = stats.shrunk(k, n, pk / pn if pn else None)
+                    want = "-" if not n else f"{round(100 * (want if want is not None else k / n))}"
+                    if (n_, k_) != (n, k) or text != want:
+                        fails.append(f"popup {player} {key} at {pos}: "
+                                     f"({n_}, {k_}, {text}) against ({n}, {k}, {want})")
+    print(f"popups agree with the engine   {'yes' if len(fails) == before else 'NO'}   "
+          f"{rows} rows, {cells} position cells")
+
     # The layout.
     bad = 0
     for max_seats in (2, 3, 4, 5, 6, 8, 9, 10):
@@ -775,6 +1071,7 @@ def check(db_path=DB):
         fails.append("the HUD would start beside a client that bans it")
 
     fails += watcher_check()
+    fails += window_check(db_path)
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
     return not fails
@@ -841,6 +1138,80 @@ def watcher_check():
     return fails
 
 
+def window_check(db_path=DB):
+    """
+    The boxes are drawn, follow their table, and open and close a popup.
+
+    The real window code, over a pretend table window that this function
+    moves: Tk, the overlay, the popup's own thread. It needs Tk and a
+    display, which CI has under a virtual one; without them it says so
+    and passes, as the four window modules of `check.py` cannot.
+    """
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:
+        print(f"the window draws and pops up  not run here ({type(e).__name__})")
+        return []
+    root.withdraw()
+    con = sqlite3.connect(db_path)
+    tables = last_tables(con, 1)
+    views = {t: view(con, *t, DEFAULTS) for t in tables}
+    con.close()
+    if not tables:
+        root.destroy()
+        print("the window draws and pops up  no table to draw")
+        return []
+    table = tables[0]
+    where = [200, 150]
+    overlay = Overlay(root, lambda: [(f"{table[1]} - check", where[0], where[1],
+                                      800, 560)], dict(DEFAULTS), db_path)
+    overlay.inbox.put(views)
+    root.after = lambda *_a: None           # ticked by hand below
+
+    def settle(seconds=0.3):
+        end = time.time() + seconds
+        while time.time() < end:
+            root.update()
+            time.sleep(0.02)
+
+    fails = []
+    overlay.tick()
+    settle()
+    want = len(views[table]["boxes"])
+    if len(overlay.boxes) != want:
+        fails.append(f"{len(overlay.boxes)} boxes drawn for {want} opponents")
+    first = sorted(overlay.boxes)[0] if overlay.boxes else None
+    moved = False
+    if first:
+        before = overlay.boxes[first][0].winfo_rootx()
+        where[0] += 120
+        overlay.tick()
+        settle()
+        moved = overlay.boxes[first][0].winfo_rootx() - before == 120
+        if not moved:
+            fails.append("a box did not follow its table")
+        # A click on a number inside the box, as a person would click.
+        label = overlay.boxes[first][1].winfo_children()[1].winfo_children()[0]
+        label.event_generate("<Button-1>")
+        end = time.time() + 20
+        while time.time() < end and not (overlay.popup and overlay.popup[1]):
+            overlay.tick()
+            settle(0.1)
+        opened = bool(overlay.popup and overlay.popup[1])
+        label.event_generate("<Button-1>")
+        overlay.tick()
+        settle(0.1)
+        if not opened:
+            fails.append("a click on a box opened no popup")
+        elif overlay.popup is not None:
+            fails.append("a second click left the popup open")
+    root.destroy()
+    print(f"the window draws and pops up  {'yes' if not fails else 'NO'}   "
+          f"{len(overlay.boxes)} boxes")
+    return fails
+
+
 def main(argv):
     if "--check" in argv:
         return 0 if check() else 1
@@ -859,6 +1230,20 @@ def main(argv):
             hit = match(title, tables)
             print(f"{'-> ' + hit[0] + ' ' + hit[1] if hit else '':40} "
                   f"{w}x{h}+{x}+{y}  {title}")
+        return 0
+    if "--popup" in argv:
+        at = argv.index("--popup") + 1
+        if at >= len(argv):
+            print("--popup needs a player's name")
+            return 1
+        con = sqlite3.connect(DB)
+        p = popup_for(con, argv[at],
+                      argv[at + 1] if at + 1 < len(argv) else None)
+        con.close()
+        if p is None:
+            print(f"no hands of {argv[at]!r} on ACR or PokerStars")
+            return 1
+        print(popup_text(p))
         return 0
     if "--print" in argv:
         con = sqlite3.connect(DB)

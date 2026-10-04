@@ -1327,6 +1327,7 @@ python hud.py              # watch the hand history folders, draw a box beside e
 python hud.py --demo       # a pretend table named after your last one, with the HUD over it
 python hud.py --print      # the numbers for the tables you played last, as text
 python hud.py --windows    # every window title, and which table it matched
+python hud.py --popup NAME # what a click on that player's box opens, as text
 ```
 
 **Close ClubWPT Gold first, completely, if you play there on this PC.**
@@ -1368,7 +1369,17 @@ program -- yours, and not in the repository:
  "ellipse": [0.5, 0.45, 0.42, 0.38]}
 ```
 
-`lines` takes any stat key, including one you saved in `stats.json`.
+**Click a box for the popup**; click it again, or press Escape, to close
+it. It is a table per street -- preflop, flop, turn, river, showdown --
+each row the stat as the box prints it, its `n`, the 95% interval on the
+player's own count, and the pool's figure it is pulled towards. Below that,
+opening and VPIP split by position, each read against the pool's figure
+at the same position, and the note you wrote on the player, if any.
+`--popup NAME` prints the same thing, and a site after the name picks
+between two players of that name on different sites.
+
+`lines` takes any stat key, including one you saved in `stats.json`, and
+so do `"popup"` (a list of `[section, [keys]]`) and `"by_position"`.
 `ellipse` is where the seats lie on a table window -- centre and half-size
 as fractions of the window -- and is a first guess: if the boxes sit off
 the names, that is the number to change. Hero is put at the bottom, as
