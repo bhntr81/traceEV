@@ -1409,6 +1409,22 @@ and gets no badge until the interval clears the line, the same test
 `players.classify` uses. Rules are yours to change in the editor, one per
 line: `LOOSE vpip above 40`.
 
+**The last line is the next hand.** Between hands every player's next
+position is known -- the button moves one seat -- so the box ends with
+that position and the stats that matter there: open-raise and steal for
+the coming cutoff and button, steal and fold to a steal for the small
+blind, fold to a steal and BB defence for the big blind. Each is the
+player's rate at that position only, pulled towards the pool's rate at
+that position. Change which stats per position in the editor
+(`BTN: rfi steal`), or empty the field to drop the line.
+
+That is as far as "stats that change with the hand" can go here. Both
+clients write a hand to the history only when it is over, so while it is
+being played the HUD does not know who bet; showing the bettor's c-bet as
+you face it would mean reading the live table, which this does not do.
+A player sitting down or leaving between hands can move the blinds in a
+way the rule cannot see.
+
 **Seat layouts.** The seats start on an ellipse, which is a guess. To put
 them where your clients draw the names, open a table and run
 

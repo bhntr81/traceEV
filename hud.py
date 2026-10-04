@@ -126,6 +126,17 @@ DEFAULTS = {
                    "fold_to_river_bet", "river_agg"]],
         ["Showdown", ["wtsd", "wsd", "wwsf"]],
     ],
+    # A line on the box for the seat each player will have in the NEXT hand:
+    # the button moves one seat, so between hands every position is known,
+    # and the stats that matter for it are shown at that position -- the
+    # coming button's steal rate, the coming blinds' fold to a steal. This
+    # is as far as a hand history can take "stats that change with the
+    # hand": both clients write a hand only once it is over, and knowing
+    # who bet in the hand being played would mean reading the live table.
+    # Empty turns the line off.
+    "next_hand": {"UTG": ["rfi"], "HJ": ["rfi"], "CO": ["rfi", "steal"],
+                  "BTN": ["rfi", "steal"], "SB": ["steal", "fold_to_steal"],
+                  "BB": ["fold_to_steal", "bb_defend"]},
     # The stats the popup also splits by position. Opening is the one a
     # position changes most: a 15% opener and a 45% opener are the same
     # player, under the gun and on the button.
@@ -179,6 +190,13 @@ def problems(conf):
             known(key, f"popup {title}")
     for key in conf.get("by_position") or ():
         known(key, "by position")
+    from query import POSITIONS
+    for pos, keys in (conf.get("next_hand") or {}).items():
+        if pos not in POSITIONS:
+            out.append(f"next hand: {pos!r} is not a position "
+                       f"({', '.join(POSITIONS)})")
+        for key in keys:
+            known(key, f"next hand {pos}")
     if conf.get("rates") not in ("pooled", "raw"):
         out.append(f"rates: {conf.get('rates')!r} is neither 'pooled' nor 'raw'")
     if not isinstance(conf.get("faint_below"), int) or conf["faint_below"] < 0:
@@ -259,7 +277,11 @@ def badges_of(con, site, player, conf, got):
         out.append((b["note"], "you have a note on this player"))
     for rule in b.get("rules") or ():
         n, k = got.get(rule["stat"], (0, 0))[:2]
-        if not n:
+        # Under the faint line no badge, whatever the interval says: one
+        # 3-bet in one chance has a Wilson floor of 21%, which clears a 10%
+        # line, and a badge on one hand is the colour-on-a-faint-number
+        # mistake again. The first version gave exactly that badge.
+        if n < conf["faint_below"]:
             continue
         _p, lo, hi = stats.wilson(k, n)
         label = stats.BY_KEY[rule["stat"]].label
@@ -279,6 +301,56 @@ def badges_of(con, site, player, conf, got):
                         f"{r['size']} bet: {r['fold']:.0f}% of {r['n']} against "
                         f"a bar of {r['bar']:.0f}%"))
     return out
+
+
+def next_positions(con, hand_id):
+    """
+    The position each seat of this hand will have in the next one.
+
+    The button moves one seat clockwise, and seat numbers rise clockwise in
+    both clients, so each seat takes the position the seat before it had --
+    the old small blind deals, the old button posts nothing and acts last
+    but one. Rotating the labels rather than recomputing them keeps the
+    tables where eight seats share six names exactly as the next history
+    will write them. A player who sits down or stands up between hands
+    moves the blinds in ways the rule cannot know; measured on the corpus,
+    the rule is right on 177 of 178 consecutive hands with the same seats.
+    """
+    seats = dict(con.execute("SELECT seat, position FROM spots WHERE hand_id=?",
+                             (hand_id,)).fetchall())
+    order = sorted(seats)
+    return {seat: seats[order[i - 1]] for i, seat in enumerate(order)}
+
+
+def next_hand_cells(con, t, player, conf, pool_by_pos):
+    """
+    The next-hand line of one player's box: [(text, faint, colour)], led
+    by the position, and the numbers behind it for the check.
+
+    Each stat at that position only, shrunk towards the game's figure at
+    that position with the player taken out -- as the popup's positions
+    are, and for the same reason.
+    """
+    pos = t["next"].get(t["seat_of"][player])
+    keys = [k for k in (conf.get("next_hand") or {}).get(pos, ())
+            if k in stats.BY_KEY]
+    if not keys:
+        return None, {}
+    gw, gp = game_where(t["site"], t["fmt"], t["bb"])
+    cells, got = [(pos, False, BADGE)], {}
+    for key in keys:
+        s = stats.BY_KEY[key]
+        n, k = stats.rates_by(con, s, "position", "player=? AND site=?",
+                              (player, t["site"])).get(pos, (0, 0))
+        at = stats.rates_by(con, s, "position", gw + " AND player=?",
+                            gp + (player,)).get(pos, (0, 0))
+        pn = pool_by_pos[key].get(pos, (0, 0))[0] - at[0]
+        pk = pool_by_pos[key].get(pos, (0, 0))[1] - at[1]
+        text, faint, _raw, _lo, _hi, shown = cell(
+            n, k, pk / pn if pn else None, conf["rates"], conf["faint_below"])
+        cells.append((text, faint, colour_of(conf, key, shown, n)))
+        got[key] = (n, k, pk / pn if pn else None, shown)
+    return cells, got
 
 
 def rule_keys(conf):
@@ -384,6 +456,13 @@ def view(con, site, table_id, conf=None):
         f"({','.join('?' * len(t['seats']))}) GROUP BY player",
         (site,) + tuple(s["player"] for s in t["seats"]))}
 
+    t["next"] = next_positions(con, t["hand_id"])
+    t["seat_of"] = {s["player"]: s["seat"] for s in t["seats"]}
+    nh_keys = {k for keys in (conf.get("next_hand") or {}).values()
+               for k in keys if k in stats.BY_KEY}
+    pool_by_pos = {k: stats.rates_by(con, stats.BY_KEY[k], "position", gw, gp)
+                   for k in nh_keys}
+
     boxes = {}
     for s in t["seats"]:
         if s["is_hero"] or not s["player"]:
@@ -409,8 +488,12 @@ def view(con, site, table_id, conf=None):
                 cells.append((text, n < conf["faint_below"],
                               colour_of(conf, key, shown, n)))
             lines.append(cells)
+        nxt, nxt_got = next_hand_cells(con, t, s["player"], conf, pool_by_pos)
+        if nxt:
+            lines.append(nxt)
         boxes[s["seat"]] = {"player": s["player"], "lines": lines,
-                            "numbers": got, "badges": badges}
+                            "numbers": got, "badges": badges,
+                            "next": nxt_got}
     return {"table": t, "boxes": boxes}
 
 
@@ -425,7 +508,8 @@ def as_text(v):
             # Coloured numbers are marked with a star; on the screen they
             # are the colour, and here there is none to show.
             rows.append((" " if i == 0 else " / ").join(
-                f"({text})" if faint else text + ("*" if colour else "")
+                f"({text})" if faint else
+                text + ("*" if colour and text[:1].isdigit() else "")
                 for text, faint, colour in line))
         out.append(f"  seat {seat:<2} " + "\n           ".join(rows))
     return "\n".join(out)
@@ -919,13 +1003,16 @@ class Overlay:
                 for i, (text, faint, colour) in enumerate(line):
                     # The name and its badges are spaced; numbers are
                     # slashed, as every HUD writes them.
-                    if i and n:
+                    # ...except after the next hand's position, which
+                    # leads its line as a name leads the first.
+                    if i and n and not (i == 1 and line[0][2] == BADGE):
                         tk.Label(row, text="/", bg=BG, fg=FAINT,
                                  font=("Consolas", 9)).pack(side="left")
                     tk.Label(row, text=text, bg=BG,
                              fg=FAINT if faint else colour or INK,
                              font=("Consolas", 9, "bold") if colour else ("Consolas", 9)
-                             ).pack(side="left", padx=(4, 0) if i and not n else 0)
+                             ).pack(side="left", padx=(4, 0) if i and (
+                                 not n or (i == 1 and line[0][2] == BADGE)) else 0)
             # Every label takes the click too, or only the box's thin border
             # would open it.
             for w in [frame] + frame.winfo_children() + [
@@ -1122,6 +1209,8 @@ def form_of(conf):
         "popup": "\n".join(f"{title}: {' '.join(keys)}"
                            for title, keys in conf["popup"]),
         "by_position": " ".join(conf["by_position"]),
+        "next_hand": "\n".join(f"{pos}: {' '.join(keys)}" for pos, keys
+                               in (conf.get("next_hand") or {}).items()),
         "colours": "\n".join(colours),
         "note": badges.get("note") or "",
         "overfold": badges.get("overfold") or "",
@@ -1155,6 +1244,12 @@ def conf_of(form, base):
             popup.append([title.strip(), keys.split()])
     conf["popup"] = popup
     conf["by_position"] = form["by_position"].split()
+    nxt = {}
+    for l in form.get("next_hand", "").splitlines():
+        if l.strip():
+            pos, _colon, keys = l.partition(":")
+            nxt[pos.strip()] = keys.split()
+    conf["next_hand"] = nxt
     colours = {}
     for l in form["colours"].splitlines():
         words = l.split()
@@ -1193,6 +1288,8 @@ class Editor:
         "lines": "One line of the box per line, stat keys separated by spaces.",
         "popup": "One section per line:  Title: key key key",
         "by_position": "Stats the popup also splits by position.",
+        "next_hand": "The box's last line, for the seat each player has in the "
+                     "next hand:  BTN: rfi steal",
         "colours": "One stat per line:  vpip below 15 #7fb2ff above 40 #ff9b73",
         "rules": "One badge per line, shown only when the 95% interval is past "
                  "the line:  LOOSE vpip above 40",
@@ -1225,6 +1322,7 @@ class Editor:
         for name, label, height in (("lines", "The box", 3),
                                     ("popup", "The popup", 6),
                                     ("by_position", "By position", 1),
+                                    ("next_hand", "Next hand", 6),
                                     ("colours", "Colours", 4),
                                     ("rules", "Badges", 4)):
             tk.Label(left, text=label, font=("TkDefaultFont", 9, "bold"),
@@ -1589,6 +1687,7 @@ def check(db_path=DB):
     if wrong:
         fails.append(f"{len(wrong)} window titles matched the wrong table")
     fails += badge_check(con)
+    fails += next_hand_check(con)
     con.close()
 
     # The refusal to start beside a client that bans HUDs.
@@ -1690,7 +1789,8 @@ def badge_check(con):
                 n, k = stats.rate(con, rule["stat"], "player=? AND site=?",
                                   (player, site))[:2]
                 _p, lo, hi = stats.wilson(k, n) if n else (0, 0, 1)
-                want = n > 0 and (100 * lo > rule["above"] if "above" in rule
+                want = n >= conf["faint_below"] and (
+                    100 * lo > rule["above"] if "above" in rule
                                   else 100 * hi < rule["below"])
                 if want != (rule["badge"] in have):
                     fails.append(f"{player} {rule['badge']}: {k}/{n}, "
@@ -1721,6 +1821,68 @@ def badge_check(con):
             fails.append("the note mark does not follow the note")
     print(f"badges given as the rules say  {'yes' if not fails else 'NO'}   "
           f"{given} of {asked} rule badges given")
+    return fails
+
+
+def next_hand_check(con):
+    """
+    The next hand's positions are the ones the next history writes, and the
+    line's numbers are the engine's at that position, written out by hand.
+    """
+    import query
+    fails = []
+    hands = con.execute(
+        "SELECT site, table_id, hand_id FROM hands WHERE game='HOLDEM' AND site IN "
+        f"({','.join('?' * len(sites.with_hud()))}) "
+        "ORDER BY site, table_id, played_at, hand_id", sites.with_hud()).fetchall()
+    right = same = 0
+    for a, b in zip(hands, hands[1:]):
+        if a[:2] != b[:2]:
+            continue
+        now = dict(con.execute("SELECT seat, position FROM spots WHERE hand_id=?",
+                               (b[2],)).fetchall())
+        guess = next_positions(con, a[2])
+        if set(guess) != set(now):
+            continue                # somebody sat down or stood up
+        same += 1
+        right += guess == now
+    # The corpus is files of hands, not whole sessions, so a pair of
+    # "consecutive" hands can have hands missing between them; the rule is
+    # held to nearly all, not all.
+    if same and right < 0.95 * same:
+        fails.append(f"next-hand positions right on only {right} of {same} hands")
+
+    conf = json.loads(json.dumps(DEFAULTS))
+    cells = 0
+    for site, table_id in last_tables(con, 5):
+        v = view(con, site, table_id, conf)
+        t = v["table"]
+        for seat, box in v["boxes"].items():
+            pos = t["next"][seat]
+            want_keys = conf["next_hand"].get(pos, [])
+            if list(box["next"]) != want_keys:
+                fails.append(f"{table_id} seat {seat}: next-hand stats "
+                             f"{list(box['next'])}, not {want_keys} for {pos}")
+                continue
+            if want_keys and box["lines"][-1][0][0] != pos:
+                fails.append(f"{table_id} seat {seat}: the line is not led by {pos}")
+            for key in want_keys:
+                cells += 1
+                player = box["player"]
+                n, k = stats.rate(con, key, "player=? AND site=? AND position=?",
+                                  (player, site, pos))[:2]
+                pn, pk = stats.rate(
+                    con, key, "site=? AND fmt=? AND bb=? AND is_hero=0 AND "
+                    "player<>? AND position=?",
+                    (site, t["fmt"], t["bb"], player, pos))[:2]
+                prior = pk / pn if pn else None
+                gn, gk, gprior, _shown = box["next"][key]
+                if (gn, gk) != (n, k) or (prior is None) != (gprior is None) or \
+                        (prior is not None and abs(prior - gprior) > 1e-12):
+                    fails.append(f"{table_id} {player} {key} at {pos}: "
+                                 f"({gn}, {gk}, {gprior}) against ({n}, {k}, {prior})")
+    print(f"next hand's seats and numbers  {'yes' if not fails else 'NO'}   "
+          f"positions right on {right} of {same} hands, {cells} numbers")
     return fails
 
 

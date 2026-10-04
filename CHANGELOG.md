@@ -8,6 +8,35 @@ Newest first.
 
 ---
 
+## The HUD's next-hand line -- 4 Oct 2026
+
+### Added -- each box ends with the player's position next hand, and its stats
+
+The button moves one seat, so between hands each seat's next position is
+the one the seat before it had. The box's last line names it and shows
+the stats that matter there, each at that position and pulled towards the
+pool at that position: the coming button's steal, the coming blinds' fold
+to a steal. Measured on the corpus, the rotation is right on 177 of 178
+consecutive hands with the same seats; the one miss has hands missing
+between the two, as the corpus is files and not sessions.
+
+The design's phase 4 asked for more -- the bettor's c-bet while you face
+it -- and that cannot be had from a hand history: both clients write the
+hand when it is over. It would mean reading the live table, and that is
+left out, not deferred. Ignition's session HUD is out for the same kind
+of reason: it writes no history while you play.
+
+### Fixed -- a badge on one hand
+
+`3B+` was given to a player who had 3-bet once in one chance: the Wilson
+floor of 1/1 is 21%, which clears a 10% line. A badge now needs as many
+chances as a number needs not to be faint -- the colour rule's reasoning,
+which the badge rule had not been given. Caught looking at the demo, not
+by the check, which had been written to the same rule as the code; the
+check now holds the threshold too.
+
+---
+
 ## The HUD's editor, colours, badges and seat layouts -- 4 Oct 2026
 
 ### Added -- `hud.py --edit`, `--layout`, and badges that have to be earned

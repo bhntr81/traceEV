@@ -155,7 +155,10 @@ Facts that stay true, and that have each been got wrong at least once:
   `Site.hud` is ACR and PokerStars. PartyPoker has banned them since 2019,
   and an Ignition seat is a different person after they stand up; a box
   beside it would be the last occupant's numbers. `hud.py` computes
-  nothing of its own -- every figure on it is `stats.py`'s.
+  nothing of its own -- every figure on it is `stats.py`'s. And it knows
+  only finished hands: both clients write a hand when it is over, so a
+  HUD that changed with the hand being played would have to read the
+  live table. It reads hand histories and window titles and nothing else.
 - **Only sites with names have people.** ACR writes the screen name and it
   is the same player next week at another stake. An Ignition ring identity
   is `table:seat:segment` -- one person for as long as they stay sat
