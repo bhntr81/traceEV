@@ -1328,6 +1328,8 @@ python hud.py --demo       # a pretend table named after your last one, with the
 python hud.py --print      # the numbers for the tables you played last, as text
 python hud.py --windows    # every window title, and which table it matched
 python hud.py --popup NAME # what a click on that player's box opens, as text
+python hud.py --edit       # what the boxes, popups, colours and badges show
+python hud.py --layout     # drag each box onto its seat at a real table
 ```
 
 **Close ClubWPT Gold first, completely, if you play there on this PC.**
@@ -1378,12 +1380,47 @@ at the same position, and the note you wrote on the player, if any.
 `--popup NAME` prints the same thing, and a site after the name picks
 between two players of that name on different sites.
 
-`lines` takes any stat key, including one you saved in `stats.json`, and
-so do `"popup"` (a list of `[section, [keys]]`) and `"by_position"`.
-`ellipse` is where the seats lie on a table window -- centre and half-size
-as fractions of the window -- and is a first guess: if the boxes sit off
-the names, that is the number to change. Hero is put at the bottom, as
-both clients do with a preferred seat.
+**Edit the HUD** -- the button on the HUD's small window, or `python hud.py
+--edit` -- changes what the boxes and popups show, the colours and the
+badges, and saves them to `hud.json`. The running HUD redraws with them at
+once. A stat key it does not know, a colour that is not one, a badge with
+no line: each is refused with the reason, and nothing is saved, because a
+misspelled key would otherwise be a number that is silently never drawn.
+Any stat key works, including one you saved in `stats.json`; the list of
+every key is beside the fields, and a double-click puts one in.
+
+**Colours** mark a number past a line -- by default VPIP under 15 in blue
+and over 40 in orange, 3-bet over 12 and fold to c-bet over 60. Never on
+a faint number: a colour reads as a finding, and four chances are not one.
+
+**Badges** go after the name, and each has to be earned:
+
+```
+*        you have a note on this player
+OF       query.py --overfolds finds a REAL overfold for them (Holm-corrected,
+         30 decisions or more); the popup says at which street and bet size
+LOOSE    VPIP surely above 40 -- the whole 95% interval past the line
+NIT      VPIP surely below 14
+3B+      3-bet surely above 10
+```
+
+"Surely" is the point: a player seen enter two pots of two is not LOOSE,
+and gets no badge until the interval clears the line, the same test
+`players.classify` uses. Rules are yours to change in the editor, one per
+line: `LOOSE vpip above 40`.
+
+**Seat layouts.** The seats start on an ellipse, which is a guess. To put
+them where your clients draw the names, open a table and run
+
+```bash
+python hud.py --layout          # or --layout --demo, over the pretend table
+```
+
+and drag each box onto its seat. Where you drop it is saved for every
+table of that size (6-max, 9-max, heads-up are separate), counted from
+your own seat, so it holds whichever seat the client gives you and however
+big the window is. The editor shows which sizes you have placed and can
+forget them.
 
 If a table gets no boxes, run `--windows` with it open and look at its
 title: the table is found by its name from the hand history at the start

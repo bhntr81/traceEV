@@ -8,6 +8,38 @@ Newest first.
 
 ---
 
+## The HUD's editor, colours, badges and seat layouts -- 4 Oct 2026
+
+### Added -- `hud.py --edit`, `--layout`, and badges that have to be earned
+
+The editor sets what the boxes and popups show, the colour ranges and the
+badge rules, and the running HUD redraws with them. It refuses what it
+cannot draw -- a misspelled key, a colour that is not one, a badge with
+no line -- naming each, because a key nobody recognises is otherwise a
+number silently never drawn. `hud.json` keeps only what differs from the
+defaults.
+
+A colour is never put on a faint number, and a badge rule fires only when
+the 95% interval on the player's own count lies wholly past its line --
+an interval, as `players.classify` uses, never the rate itself. The
+overfold badge is `query.overfolds_of` on the player's decisions and only
+its REAL rows, as the design promised. The note mark follows `notes.py`.
+
+`--layout` makes the boxes draggable; a box dropped is saved for its
+table size and its slot counted from hero, so the measured layout holds
+whatever seat the client deals and however big the window is.
+
+`hud.py --check` holds the colours to the rule written out by hand, the
+badges to `stats.wilson` and `--overfolds` asked by hand, the note mark to
+a note written into a copy of the database, nine wrong settings to being
+refused, a saved layout to being used for its size alone; and, with Tk
+and a display, a box dragged 50 by 30 to being saved and drawn there, and
+the editor to refusing a bad key and applying a good one. A colour on a
+faint number, a badge from the rate instead of its interval, and a drop
+saved to the wrong slot each failed it.
+
+---
+
 ## The HUD's popups -- 4 Oct 2026
 
 ### Added -- a click on a box opens the player in full

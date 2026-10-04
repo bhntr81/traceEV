@@ -28,6 +28,9 @@ the HUD design left open for the user, and each of them is a setting in
 
     python hud.py              run it: watch the hand histories, draw the boxes
     python hud.py --demo       a pretend table from your database, with the HUD on it
+    python hud.py --edit       what the boxes, popups, colours and badges show
+    python hud.py --layout     drag each box onto its seat, at a real table
+    python hud.py --layout --demo   the same, over the pretend table
     python hud.py --print      the numbers for the tables you played last, as text
     python hud.py --popup NAME [SITE]
                                what a click on that player's box opens, as text
@@ -76,8 +79,40 @@ DEFAULTS = {
     # Where the seats lie on a table window, as an ellipse in fractions of
     # its width and height: centre x, centre y, half-width, half-height.
     # A first guess that has not been measured against either client; the
-    # right numbers are whatever puts the boxes beside the names.
+    # right numbers are whatever puts the boxes beside the names. Either one
+    # ellipse for every table, or {"6": [...], "9": [...], "default": [...]}
+    # by table size.
     "ellipse": [0.5, 0.47, 0.40, 0.36],
+    # Where each box goes, by table size, as fractions of the window, slot
+    # by slot clockwise from hero at the bottom: {"9": [[x, y], ...]}. Set by
+    # dragging the boxes in `--layout`; a table size not here uses the
+    # ellipse. Measured on the user's own clients, which is the only way
+    # these numbers can be right.
+    "seats": {},
+    # Colour ranges: a number below "below" or above "above" is drawn in
+    # that colour, in percent. Opinion, like `strength.WEAK`, and kept in
+    # one place so disagreeing is a number changed. Never on a faint
+    # number: a colour says "this is a finding", and four chances are not.
+    "colours": {
+        "vpip": {"below": [15, "#7fb2ff"], "above": [40, "#ff9b73"]},
+        "threebet": {"above": [12, "#ff9b73"]},
+        "fold_to_cbet": {"above": [60, "#ffd36e"]},
+    },
+    # Badges after the name. "note" marks a player you have written a note
+    # on; "overfold" a player `query.py --overfolds` finds a REAL overfold
+    # for, at some street and bet size; each rule a stat whose 95% interval
+    # lies wholly above or below a line, in percent -- an interval, as
+    # `players.classify` uses, so a badge is refused far more often than
+    # given, and a player seen fold twice is not "folds to everything".
+    "badges": {
+        "note": "*",
+        "overfold": "OF",
+        "rules": [
+            {"badge": "LOOSE", "stat": "vpip", "above": 40},
+            {"badge": "NIT", "stat": "vpip", "below": 14},
+            {"badge": "3B+", "stat": "threebet", "above": 10},
+        ],
+    },
     # What a click on a box opens: sections of stats, street by street, in
     # the order a hand is played. Any registry key goes in any section.
     "popup": [
@@ -98,14 +133,158 @@ DEFAULTS = {
 }
 
 
-def settings():
+def settings(path=None):
     """`DEFAULTS` with whatever `hud.json` overrides."""
-    got = dict(DEFAULTS)
+    got = json.loads(json.dumps(DEFAULTS))
     try:
-        got.update(json.loads(SETTINGS.read_text(encoding="utf-8")))
+        got.update(json.loads(Path(path or SETTINGS).read_text(encoding="utf-8")))
     except (OSError, ValueError):
         pass
     return got
+
+
+def problems(conf):
+    """
+    What is wrong with a set of HUD settings, in words; empty when nothing is.
+
+    `hud.json` is written by hand as well as by the editor, and a stat key
+    misspelled there would otherwise be a column that is silently never
+    drawn -- the failure this project is built against, one file over.
+    """
+    out = []
+
+    def known(key, where):
+        if key in stats.EXPR_BY_KEY:
+            out.append(f"{where}: {key} is an expression stat, which the HUD "
+                       "does not draw yet")
+        elif key not in stats.BY_KEY:
+            out.append(f"{where}: no stat called {key!r}")
+
+    def colour(c, where):
+        if not (isinstance(c, str) and len(c) == 7 and c[0] == "#"
+                and all(ch in "0123456789abcdefABCDEF" for ch in c[1:])):
+            out.append(f"{where}: {c!r} is not a colour like #ff9b73")
+
+    def percent(x, where):
+        if not isinstance(x, (int, float)) or not 0 <= x <= 100:
+            out.append(f"{where}: {x!r} is not a percentage")
+
+    if not conf.get("lines") or not all(conf["lines"]):
+        out.append("lines: a box needs at least one line, and no line empty")
+    for i, line in enumerate(conf.get("lines") or ()):
+        for key in line:
+            known(key, f"line {i + 1}")
+    for title, keys in conf.get("popup") or ():
+        for key in keys:
+            known(key, f"popup {title}")
+    for key in conf.get("by_position") or ():
+        known(key, "by position")
+    if conf.get("rates") not in ("pooled", "raw"):
+        out.append(f"rates: {conf.get('rates')!r} is neither 'pooled' nor 'raw'")
+    if not isinstance(conf.get("faint_below"), int) or conf["faint_below"] < 0:
+        out.append(f"faint_below: {conf.get('faint_below')!r} is not a count")
+    for key, rule in (conf.get("colours") or {}).items():
+        known(key, "colours")
+        for side, pair in rule.items():
+            if side not in ("below", "above") or len(pair) != 2:
+                out.append(f"colours {key}: {side!r} must be below or above, "
+                           "with a percentage and a colour")
+                continue
+            percent(pair[0], f"colours {key} {side}")
+            colour(pair[1], f"colours {key} {side}")
+    badges = conf.get("badges") or {}
+    for i, rule in enumerate(badges.get("rules") or ()):
+        where = f"badge {rule.get('badge', i + 1)}"
+        known(rule.get("stat"), where)
+        sides = [k for k in ("above", "below") if k in rule]
+        if len(sides) != 1:
+            out.append(f"{where}: needs exactly one of above or below")
+        for k in sides:
+            percent(rule[k], where)
+        if not rule.get("badge"):
+            out.append(f"{where}: has no text to show")
+    for size, spots in (conf.get("seats") or {}).items():
+        if not str(size).isdigit() or len(spots) != int(size) or not all(
+                len(p) == 2 and all(isinstance(v, (int, float)) and -0.5 <= v <= 1.5
+                                    for v in p) for p in spots):
+            out.append(f"seats {size}: needs one [x, y] per seat, as fractions "
+                       "of the window")
+    ell = conf.get("ellipse")
+    for size, e in (ell.items() if isinstance(ell, dict) else [("", ell)]):
+        if not (isinstance(e, (list, tuple)) and len(e) == 4):
+            out.append(f"ellipse {size}".strip() + ": needs four numbers")
+    return out
+
+
+def save(conf, path=None):
+    """Write the settings that differ from `DEFAULTS` to `hud.json`."""
+    bad = problems(conf)
+    if bad:
+        raise ValueError("; ".join(bad))
+    mine = {k: v for k, v in conf.items() if DEFAULTS.get(k) != v}
+    Path(path or SETTINGS).write_text(json.dumps(mine, indent=2) + "\n",
+                                      encoding="utf-8")
+    return mine
+
+
+def colour_of(conf, key, shown, n):
+    """The colour a figure is drawn in under `conf["colours"]`, or None."""
+    rule = (conf.get("colours") or {}).get(key)
+    if not rule or shown is None or n < conf["faint_below"]:
+        return None
+    pct = 100 * shown
+    if "below" in rule and pct < rule["below"][0]:
+        return rule["below"][1]
+    if "above" in rule and pct > rule["above"][0]:
+        return rule["above"][1]
+    return None
+
+
+def badges_of(con, site, player, conf, got):
+    """
+    The badges a player earns, each with the sentence that earned it.
+
+    `got` is `numbers` for at least the rule stats; a rule fires only when
+    the 95% interval on the player's own count lies wholly past its line.
+    The overfold badge is `query.overfolds_of` on the player's own
+    decisions, and only its REAL rows -- Holm-corrected, thirty decisions
+    or more -- because the design promised that badge only where the
+    tool calls it, never from a rate read by eye.
+    """
+    import notes
+    import query
+    b = conf.get("badges") or {}
+    out = []
+    if b.get("note") and notes.note_of(con, site, player):
+        out.append((b["note"], "you have a note on this player"))
+    for rule in b.get("rules") or ():
+        n, k = got.get(rule["stat"], (0, 0))[:2]
+        if not n:
+            continue
+        _p, lo, hi = stats.wilson(k, n)
+        label = stats.BY_KEY[rule["stat"]].label
+        if "above" in rule and 100 * lo > rule["above"]:
+            out.append((rule["badge"], f"{label} surely above {rule['above']}%: "
+                        f"{k}/{n}, 95% from {round(100 * lo)}%"))
+        if "below" in rule and 100 * hi < rule["below"]:
+            out.append((rule["badge"], f"{label} surely below {rule['below']}%: "
+                        f"{k}/{n}, 95% up to {round(100 * hi)}%"))
+    if b.get("overfold"):
+        where = f"player = {query.q(player)} AND site = {query.q(site)}"
+        real = [r for r in query.overfolds_of(con, where)
+                if r["real"] and r["n"] >= 30]
+        if real:
+            r = real[0]
+            out.append((b["overfold"], f"overfolds the {r['street']} to a "
+                        f"{r['size']} bet: {r['fold']:.0f}% of {r['n']} against "
+                        f"a bar of {r['bar']:.0f}%"))
+    return out
+
+
+def rule_keys(conf):
+    """The stats the badge rules read, so they are counted with the box's."""
+    return [r["stat"] for r in (conf.get("badges") or {}).get("rules") or ()
+            if r.get("stat") in stats.BY_KEY]
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +363,15 @@ def view(con, site, table_id, conf=None):
     Everything one table's boxes need, worked out away from the window.
 
     Returns the table and, per opponent seat, the lines of the box: each a
-    list of (text, faint). Hero gets no box.
+    list of (text, faint, colour), the first the name and the badges. Hero
+    gets no box.
     """
     conf = conf or settings()
     t = table_now(con, site, table_id)
     if t is None:
         return None
-    keys = [k for line in conf["lines"] for k in line]
+    keys = list(dict.fromkeys([k for line in conf["lines"] for k in line]
+                              + rule_keys(conf)))
     want = [stats.BY_KEY[k] for k in keys if k in stats.BY_KEY]
     gw, gp = game_where(site, t["fmt"], t["bb"])
     pool = stats.rates(con, gw, gp, want)
@@ -215,7 +396,9 @@ def view(con, site, table_id, conf=None):
         # place where a real one appears.
         if klass.get(s["player"]) in ("reg", "fish"):
             head += "  " + klass[s["player"]].upper()
-        lines = [[(head, False)]]
+        badges = badges_of(con, site, s["player"], conf, got)
+        lines = [[(head, False, None)]
+                 + [(badge, False, BADGE) for badge, _why in badges]]
         for line in conf["lines"]:
             cells = []
             for key in line:
@@ -223,10 +406,11 @@ def view(con, site, table_id, conf=None):
                 # A dash, never a zero, when there has been no chance: "0"
                 # says they never do it, and they have never been asked.
                 text = "-" if not n or shown is None else f"{round(100 * shown)}"
-                cells.append((text, n < conf["faint_below"]))
+                cells.append((text, n < conf["faint_below"],
+                              colour_of(conf, key, shown, n)))
             lines.append(cells)
         boxes[s["seat"]] = {"player": s["player"], "lines": lines,
-                            "numbers": got}
+                            "numbers": got, "badges": badges}
     return {"table": t, "boxes": boxes}
 
 
@@ -237,9 +421,12 @@ def as_text(v):
            f"{t['max_seats']}-max  after hand {t['hand_id']}"]
     for seat, box in sorted(v["boxes"].items()):
         rows = []
-        for line in box["lines"]:
-            rows.append(" / ".join(f"({text})" if faint else text
-                                   for text, faint in line))
+        for i, line in enumerate(box["lines"]):
+            # Coloured numbers are marked with a star; on the screen they
+            # are the colour, and here there is none to show.
+            rows.append((" " if i == 0 else " / ").join(
+                f"({text})" if faint else text + ("*" if colour else "")
+                for text, faint, colour in line))
         out.append(f"  seat {seat:<2} " + "\n           ".join(rows))
     return "\n".join(out)
 
@@ -284,6 +471,7 @@ def popup_view(con, site, fmt, bb, player, conf=None):
             text, dim, raw, lo, hi, shown = cell(n, k, prior, mode, faint)
             rows.append({"key": key, "label": stats.BY_KEY[key].label,
                          "n": n, "k": k, "text": text, "faint": dim,
+                         "colour": colour_of(conf, key, shown, n),
                          "raw": raw, "lo": lo, "hi": hi, "prior": prior,
                          "shown": shown})
         sections.append((title, rows))
@@ -315,7 +503,9 @@ def popup_view(con, site, fmt, bb, player, conf=None):
                         (site, player)).fetchone()[0]
     klass = con.execute("SELECT class FROM players WHERE site=? AND player=?",
                         (site, player)).fetchone()
+    got = numbers(con, site, fmt, bb, player, rule_keys(conf), mode)
     return {"player": player, "site": site, "fmt": fmt, "bb": bb,
+            "badges": badges_of(con, site, player, conf, got),
             "hands": hands, "class": klass[0] if klass else None,
             "note": notes.note_of(con, site, player),
             "sections": sections, "positions": positions, "mode": mode}
@@ -349,6 +539,8 @@ def popup_text(p):
            "(brackets) under ten chances"]
     if p["note"]:
         out.append(f"  note: {p['note']}")
+    for badge, why in p["badges"]:
+        out.append(f"  {badge}: {why}")
     for title, rows in p["sections"]:
         out.append(f"  {title}")
         for r in rows:
@@ -380,15 +572,23 @@ def slot(seat, hero_seat, max_seats):
     return (seat - anchor) % max_seats
 
 
-def place(index, max_seats, ellipse=None):
+def place(index, max_seats, conf=None):
     """
     The point on the table window, as fractions of its width and height,
     where the box for this slot goes.
 
-    Seats lie on an ellipse inside the felt, clockwise from the bottom
-    centre, on the ellipse the settings give.
+    Where the user has placed the boxes for this table size, there; else
+    on the settings' ellipse for this size, clockwise from the bottom
+    centre.
     """
-    cx, cy, rx, ry = ellipse or DEFAULTS["ellipse"]
+    conf = conf or DEFAULTS
+    placed = (conf.get("seats") or {}).get(str(max_seats))
+    if placed and len(placed) == max_seats:
+        return tuple(placed[index])
+    ell = conf.get("ellipse") or DEFAULTS["ellipse"]
+    if isinstance(ell, dict):
+        ell = ell.get(str(max_seats)) or ell.get("default") or DEFAULTS["ellipse"]
+    cx, cy, rx, ry = ell
     angle = math.pi / 2 + 2 * math.pi * index / max_seats
     return cx + rx * math.cos(angle), cy + ry * math.sin(angle)
 
@@ -481,6 +681,9 @@ class Watcher:
         self.seen = {}
         self.active = {}            # (site, table_id) -> when its file last moved
         self.first = True
+        # Set when the settings change: every active table is worked out
+        # again on the next look, whether or not a file moved.
+        self.redraw = False
 
     def files(self):
         if self.folders is not None:
@@ -515,12 +718,14 @@ class Watcher:
                 continue
             changed.append(f)
         self.first = False
-        if not changed:
+        if not changed and not self.redraw:
             return []
+        self.redraw = False
 
-        got = importer.load(changed, self.db_path)
-        if got["ids"]:
-            importer.update(got["ids"], self.db_path)
+        if changed:
+            got = importer.load(changed, self.db_path)
+            if got["ids"]:
+                importer.update(got["ids"], self.db_path)
         con = sqlite3.connect(self.db_path)
         hud_sites = sites.with_hud()
         for f in changed:
@@ -557,6 +762,7 @@ class Watcher:
 # ---------------------------------------------------------------------------
 
 BG, INK, FAINT = "#14161a", "#e8e8e8", "#7b8088"
+BADGE = "#c9a2ff"
 
 
 class Overlay:
@@ -569,11 +775,18 @@ class Overlay:
     through a queue; Tk is only ever touched from its own thread.
     """
 
-    def __init__(self, root, source, conf=None, db_path=DB):
+    def __init__(self, root, source, conf=None, db_path=DB, layout=False,
+                 settings_path=None):
         self.root = root
         self.source = source            # () -> [(title, x, y, w, h)]
         self.conf = conf or settings()
         self.db_path = db_path
+        # In layout mode a box is dragged rather than clicked, and where it
+        # is dropped is saved for its table size; see `--layout`.
+        self.layout = layout
+        self.settings_path = settings_path
+        self.dragging = None            # (key, dx, dy) of the box held
+        self.where = {}                 # key -> (window x, y, w, h, slot, max_seats)
         self.views = {}
         self.boxes = {}                 # (site, table_id, seat) -> (Toplevel, Frame)
         self.who = {}                   # the same key -> (site, fmt, bb, player)
@@ -611,6 +824,40 @@ class Overlay:
             self.popup[1].destroy()
         self.popup = None
 
+    def press(self, key, event):
+        if not self.layout:
+            return self.toggle(key)
+        top = self.boxes[key][0]
+        self.dragging = (key, event.x_root - top.winfo_rootx(),
+                         event.y_root - top.winfo_rooty())
+
+    def motion(self, key, event):
+        if self.dragging and self.dragging[0] == key:
+            _k, dx, dy = self.dragging
+            self.boxes[key][0].geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def release(self, key, _event=None):
+        """
+        A box dropped in layout mode: its place, for every table this size.
+
+        Stored as the centre of the box in fractions of the table window, by
+        slot -- counted from hero -- so it holds when the window is resized
+        and whichever seat hero is given. The other slots of that size are
+        written where they are now drawn, so the first drag turns the
+        ellipse into a layout that can then be corrected one box at a time.
+        """
+        if not (self.dragging and self.dragging[0] == key):
+            return
+        self.dragging = None
+        top = self.boxes[key][0]
+        x, y, w, h, index, size = self.where[key]
+        cx = top.winfo_rootx() + top.winfo_width() / 2
+        cy = top.winfo_rooty() + top.winfo_height() / 2
+        spots = [list(place(i, size, self.conf)) for i in range(size)]
+        spots[index] = [round((cx - x) / w, 4), round((cy - y) / h, 4)]
+        self.conf.setdefault("seats", {})[str(size)] = spots
+        save(self.conf, self.settings_path)
+
     def tick(self):
         try:
             while True:
@@ -634,9 +881,11 @@ class Overlay:
             hero = next((s["seat"] for s in t["seats"] if s["is_hero"]), None)
             for seat, box in v["boxes"].items():
                 fx, fy = place(slot(seat, hero, t["max_seats"]), t["max_seats"],
-                               self.conf["ellipse"])
+                               self.conf)
                 key = hit + (seat,)
                 self.who[key] = (t["site"], t["fmt"], t["bb"], box["player"])
+                self.where[key] = (x, y, w, h, slot(seat, hero, t["max_seats"]),
+                                   t["max_seats"])
                 self.draw(key, box, int(x + fx * w), int(y + fy * h))
                 placed.add(key)
         for key in [k for k in self.boxes if k not in placed]:
@@ -655,31 +904,39 @@ class Overlay:
                 top.attributes("-alpha", 0.88)
             except tk.TclError:
                 pass
-            frame = tk.Frame(top, bg=BG, padx=4, pady=2, cursor="hand2")
+            frame = tk.Frame(top, bg=BG, padx=4, pady=2,
+                             cursor="fleur" if self.layout else "hand2")
             frame.pack()
-            frame.bind("<Button-1>", lambda _e, k=key: self.toggle(k))
             self.boxes[key] = (top, frame)
         top, frame = self.boxes[key]
-        shape = [[(text, faint) for text, faint in line] for line in box["lines"]]
+        shape = [list(line) for line in box["lines"]]
         if getattr(frame, "shape", None) != shape:
             for child in frame.winfo_children():
                 child.destroy()
-            for line in shape:
+            for n, line in enumerate(shape):
                 row = tk.Frame(frame, bg=BG)
                 row.pack(anchor="w")
-                for i, (text, faint) in enumerate(line):
-                    if i:
+                for i, (text, faint, colour) in enumerate(line):
+                    # The name and its badges are spaced; numbers are
+                    # slashed, as every HUD writes them.
+                    if i and n:
                         tk.Label(row, text="/", bg=BG, fg=FAINT,
                                  font=("Consolas", 9)).pack(side="left")
-                    tk.Label(row, text=text, bg=BG, fg=FAINT if faint else INK,
-                             font=("Consolas", 9)).pack(side="left")
+                    tk.Label(row, text=text, bg=BG,
+                             fg=FAINT if faint else colour or INK,
+                             font=("Consolas", 9, "bold") if colour else ("Consolas", 9)
+                             ).pack(side="left", padx=(4, 0) if i and not n else 0)
             # Every label takes the click too, or only the box's thin border
             # would open it.
-            for row in frame.winfo_children():
-                row.bind("<Button-1>", lambda _e, k=key: self.toggle(k))
-                for label in row.winfo_children():
-                    label.bind("<Button-1>", lambda _e, k=key: self.toggle(k))
+            for w in [frame] + frame.winfo_children() + [
+                    label for row in frame.winfo_children()
+                    for label in row.winfo_children()]:
+                w.bind("<ButtonPress-1>", lambda e, k=key: self.press(k, e))
+                w.bind("<B1-Motion>", lambda e, k=key: self.motion(k, e))
+                w.bind("<ButtonRelease-1>", lambda e, k=key: self.release(k, e))
             frame.shape = shape
+        if self.dragging and self.dragging[0] == key:
+            return
         top.update_idletasks()
         top.geometry(f"+{x - top.winfo_width() // 2}+{y - top.winfo_height() // 2}")
 
@@ -710,12 +967,17 @@ class Overlay:
              ("pool", FAINT, font)); r += 1
         if p["note"]:
             line(r, ("note: " + p["note"][:60], INK, font)); r += 1
+        for badge, why in p["badges"]:
+            tk.Label(frame, text=f"{badge}  {why}", bg=BG, fg=BADGE, font=font,
+                     anchor="w").grid(row=r, column=0, columnspan=5, sticky="w")
+            r += 1
         for title, rows in p["sections"]:
             line(r, (title, INK, bold)); r += 1
             for row in rows:
                 fg = FAINT if row["faint"] else INK
                 pool = f"{round(100 * row['prior'])}" if row["prior"] is not None else "-"
-                line(r, ("  " + row["label"], fg, font), (row["text"], fg, bold),
+                line(r, ("  " + row["label"], fg, font),
+                     (row["text"], row["colour"] or fg, bold),
                      (str(row["n"]), FAINT, font),
                      (interval(row["lo"], row["hi"]), FAINT, font),
                      (pool, FAINT, font)); r += 1
@@ -789,7 +1051,7 @@ def hostile(titles, names):
     return None
 
 
-def run(source=None, db_path=DB, folders=None, extra=None):
+def run(source=None, db_path=DB, folders=None, extra=None, layout=False):
     """The HUD: the watcher on its thread, the boxes on Tk's."""
     found = hostile([w[0] for w in windows()], processes())
     if found:
@@ -797,22 +1059,274 @@ def run(source=None, db_path=DB, folders=None, extra=None):
               "accounts that run a HUD. Close it completely, then start the "
               "HUD again.")
         return 1
+    conf = settings()
+    bad = problems(conf)
+    if bad:
+        print(f"not starting: {SETTINGS.name} has problems --")
+        for p in bad:
+            print(f"  {p}")
+        return 1
     dpi_aware()
     import tkinter as tk
     root = tk.Tk()
     root.title("TraceEV HUD")
-    root.geometry("260x60")
-    tk.Label(root, text="TraceEV HUD is running.\nClose this window to stop it.",
-             justify="left").pack(padx=10, pady=8)
-    conf = settings()
-    overlay = Overlay(root, source or windows, conf, db_path)
+    tk.Label(root, justify="left", text=(
+        "TraceEV HUD, layout mode: drag each box onto its seat.\n"
+        "Where you drop it is saved for every table that size."
+        if layout else
+        "TraceEV HUD is running.\nClick a box for the player in full.\n"
+        "Close this window to stop it.")).pack(padx=10, pady=(8, 4))
+    overlay = Overlay(root, source or windows, conf, db_path, layout=layout)
     watcher = Watcher(db_path, folders, overlay.inbox, conf)
+
+    def edited(new):
+        # The same dicts the overlay and the watcher hold, changed in place,
+        # and every table worked out again under them.
+        conf.clear()
+        conf.update(new)
+        watcher.redraw = True
+    tk.Button(root, text="Edit the HUD...",
+              command=lambda: Editor(root, conf, on_save=edited)).pack(
+                  padx=10, pady=(0, 8), anchor="w")
     stop = threading.Event()
     threading.Thread(target=watcher.run, args=(stop,), daemon=True).start()
     if extra:
         extra(root, watcher, overlay)
     root.after(100, overlay.tick)
     root.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), root.destroy()))
+    root.mainloop()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# The editor
+# ---------------------------------------------------------------------------
+
+def form_of(conf):
+    """
+    The settings as the editor's text fields: one string per field.
+
+    The fields are plain text, a stat key per word, because the registry
+    has forty stats and a user's own besides, and a word typed is quicker
+    than a list scrolled -- and the list of every key is beside them.
+    """
+    colours = []
+    for key, rule in (conf.get("colours") or {}).items():
+        colours.append(" ".join([key] + [f"{side} {pct:g} {c}" for side, (pct, c)
+                                         in rule.items()]))
+    badges = conf.get("badges") or {}
+    return {
+        "rates": conf["rates"],
+        "faint_below": str(conf["faint_below"]),
+        "lines": "\n".join(" ".join(line) for line in conf["lines"]),
+        "popup": "\n".join(f"{title}: {' '.join(keys)}"
+                           for title, keys in conf["popup"]),
+        "by_position": " ".join(conf["by_position"]),
+        "colours": "\n".join(colours),
+        "note": badges.get("note") or "",
+        "overfold": badges.get("overfold") or "",
+        "rules": "\n".join(
+            f"{r['badge']} {r['stat']} {'above' if 'above' in r else 'below'} "
+            f"{r.get('above', r.get('below')):g}" for r in badges.get("rules") or ()),
+    }
+
+
+def conf_of(form, base):
+    """
+    The editor's text fields back into settings, on top of `base`.
+
+    Anything that will not parse is left in a shape `problems` names in
+    words rather than raised: the editor shows the list and saves nothing.
+    """
+    def number(word):
+        try:
+            return float(word) if "." in word else int(word)
+        except ValueError:
+            return word
+
+    conf = json.loads(json.dumps(base))
+    conf["rates"] = form["rates"].strip()
+    conf["faint_below"] = number(form["faint_below"].strip())
+    conf["lines"] = [l.split() for l in form["lines"].splitlines() if l.strip()]
+    popup = []
+    for l in form["popup"].splitlines():
+        if l.strip():
+            title, _colon, keys = l.partition(":")
+            popup.append([title.strip(), keys.split()])
+    conf["popup"] = popup
+    conf["by_position"] = form["by_position"].split()
+    colours = {}
+    for l in form["colours"].splitlines():
+        words = l.split()
+        if not words:
+            continue
+        rule = colours.setdefault(words[0], {})
+        rest = words[1:]
+        while rest:
+            side, pair, rest = rest[0], rest[1:3], rest[3:]
+            rule[side] = [number(pair[0]) if pair else None,
+                          pair[1] if len(pair) > 1 else None]
+    conf["colours"] = colours
+    rules = []
+    for l in form["rules"].splitlines():
+        words = l.split()
+        if not words:
+            continue
+        rule = {"badge": words[0], "stat": words[1] if len(words) > 1 else None}
+        if len(words) > 3:
+            rule[words[2]] = number(words[3])
+        rules.append(rule)
+    conf["badges"] = {"note": form["note"].strip(),
+                      "overfold": form["overfold"].strip(), "rules": rules}
+    return conf
+
+
+class Editor:
+    """
+    The HUD's settings in a window: what a box shows, what a popup shows,
+    the colours and the badges. Saved to `hud.json`, refused with the
+    reasons when anything does not parse, and applied to the running HUD
+    without restarting it.
+    """
+
+    HELP = {
+        "lines": "One line of the box per line, stat keys separated by spaces.",
+        "popup": "One section per line:  Title: key key key",
+        "by_position": "Stats the popup also splits by position.",
+        "colours": "One stat per line:  vpip below 15 #7fb2ff above 40 #ff9b73",
+        "rules": "One badge per line, shown only when the 95% interval is past "
+                 "the line:  LOOSE vpip above 40",
+    }
+
+    def __init__(self, root, conf, path=None, on_save=None):
+        import tkinter as tk
+        self.conf, self.path, self.on_save = conf, path, on_save
+        self.top = top = tk.Toplevel(root)
+        top.title("Edit the TraceEV HUD")
+        form = form_of(conf)
+        self.fields = {}
+        left = tk.Frame(top, padx=10, pady=8)
+        left.pack(side="left", fill="both", expand=True)
+
+        row = tk.Frame(left)
+        row.pack(fill="x", pady=(0, 6))
+        self.rates = tk.StringVar(value=form["rates"])
+        tk.Label(row, text="Numbers").pack(side="left")
+        for value, text in (("pooled", "pulled towards the pool"),
+                            ("raw", "raw, as Hand2Note")):
+            tk.Radiobutton(row, text=text, value=value,
+                           variable=self.rates).pack(side="left")
+        tk.Label(row, text="   faint under").pack(side="left")
+        self.faint = tk.Entry(row, width=4)
+        self.faint.insert(0, form["faint_below"])
+        self.faint.pack(side="left")
+        tk.Label(row, text="chances").pack(side="left")
+
+        for name, label, height in (("lines", "The box", 3),
+                                    ("popup", "The popup", 6),
+                                    ("by_position", "By position", 1),
+                                    ("colours", "Colours", 4),
+                                    ("rules", "Badges", 4)):
+            tk.Label(left, text=label, font=("TkDefaultFont", 9, "bold"),
+                     anchor="w").pack(fill="x")
+            tk.Label(left, text=self.HELP[name], anchor="w", fg="#666").pack(fill="x")
+            text = tk.Text(left, height=height, width=72, wrap="none",
+                           undo=True, font=("Consolas", 9))
+            text.insert("1.0", form[name])
+            text.pack(fill="x", pady=(0, 6))
+            self.fields[name] = text
+        row = tk.Frame(left)
+        row.pack(fill="x")
+        self.marks = {}
+        for name, label in (("note", "note mark"), ("overfold", "overfold badge")):
+            tk.Label(row, text=label).pack(side="left")
+            e = tk.Entry(row, width=6)
+            e.insert(0, form[name])
+            e.pack(side="left", padx=(2, 12))
+            self.marks[name] = e
+        sizes = sorted((conf.get("seats") or {}), key=int)
+        self.layouts = tk.Label(
+            left, anchor="w", fg="#666",
+            text=("Seat layouts you placed: " + ", ".join(f"{s}-max" for s in sizes)
+                  if sizes else "No seat layouts placed yet; the ellipse is used.")
+            + "  Place them with  python hud.py --layout")
+        self.layouts.pack(fill="x", pady=(6, 0))
+        if sizes:
+            tk.Button(left, text="Forget the placed layouts",
+                      command=self.forget).pack(anchor="w")
+
+        self.errors = tk.Label(left, fg="#b00020", justify="left", anchor="w",
+                               wraplength=520)
+        self.errors.pack(fill="x", pady=6)
+        buttons = tk.Frame(left)
+        buttons.pack(fill="x")
+        tk.Button(buttons, text="Save", command=self.save, width=10).pack(side="right")
+        tk.Button(buttons, text="Defaults", command=self.defaults).pack(side="left")
+
+        # Every stat there is, saved ones included; a double-click puts its
+        # key where the cursor is.
+        right = tk.Frame(top, padx=6, pady=8)
+        right.pack(side="right", fill="y")
+        tk.Label(right, text="Stats (double-click to insert)").pack(anchor="w")
+        box = tk.Listbox(right, width=46, height=34, font=("Consolas", 9))
+        for s in stats.STATS:
+            box.insert("end", f"{s.key:24} {s.label}" + ("  (yours)" if s.custom else ""))
+        box.pack(fill="y", expand=True)
+        self.focus = self.fields["lines"]
+        for text in self.fields.values():
+            text.bind("<FocusIn>", lambda e: setattr(self, "focus", e.widget))
+        box.bind("<Double-Button-1>", lambda _e: self.insert(box))
+
+    def insert(self, box):
+        pick = box.curselection()
+        if pick:
+            self.focus.insert("insert", " " + box.get(pick[0]).split()[0])
+
+    def form(self):
+        got = {name: text.get("1.0", "end") for name, text in self.fields.items()}
+        got.update({name: e.get() for name, e in self.marks.items()})
+        got["rates"] = self.rates.get()
+        got["faint_below"] = self.faint.get()
+        return got
+
+    def save(self):
+        new = conf_of(self.form(), self.conf)
+        bad = problems(new)
+        if bad:
+            self.errors.config(text="Not saved:\n" + "\n".join(bad[:8]))
+            return None
+        save(new, self.path)
+        self.errors.config(text="")
+        if self.on_save:
+            self.on_save(new)
+        self.top.destroy()
+        return new
+
+    def defaults(self):
+        form = form_of(DEFAULTS)
+        for name, text in self.fields.items():
+            text.delete("1.0", "end")
+            text.insert("1.0", form[name])
+        for name, e in self.marks.items():
+            e.delete(0, "end")
+            e.insert(0, form[name])
+        self.rates.set(form["rates"])
+        self.faint.delete(0, "end")
+        self.faint.insert(0, form["faint_below"])
+
+    def forget(self):
+        self.conf["seats"] = {}
+        self.layouts.config(text="Placed layouts will be forgotten on Save.")
+
+
+def edit():
+    """`--edit`: the editor on its own, without the HUD running."""
+    import tkinter as tk
+    root = tk.Tk()
+    root.withdraw()
+    ed = Editor(root, settings())
+    ed.top.protocol("WM_DELETE_WINDOW", root.destroy)
+    ed.top.bind("<Destroy>", lambda e: root.destroy() if e.widget is ed.top else None)
     root.mainloop()
     return 0
 
@@ -831,7 +1345,7 @@ def last_tables(con, n=1):
         hud_sites + (n,))]
 
 
-def demo(db_path=DB):
+def demo(db_path=DB, layout=False):
     """
     A pretend table window named after the last table you played, with the
     HUD drawn over it from your own database.
@@ -872,9 +1386,10 @@ def demo(db_path=DB):
             print(as_text(v))
         con.close()
         overlay.inbox.put(views)
-        # The watcher would replace these with the tables it saw move, and
-        # in a demo none move, so it is stopped from sending.
-        watcher.out = queue.Queue()
+        # The watcher keeps these tables for ever, as if their files never
+        # stopped moving, so that an edit to the settings redraws them.
+        for t in views:
+            watcher.active[t] = float("inf")
 
     def source():
         out = []
@@ -887,7 +1402,7 @@ def demo(db_path=DB):
         return out
 
     return run(source=source, db_path=db_path, folders=[],
-               extra=open_tables) or 0
+               extra=open_tables, layout=layout) or 0
 
 
 # ---------------------------------------------------------------------------
@@ -955,14 +1470,27 @@ def check(db_path=DB):
         for seat, box in v["boxes"].items():
             boxes += 1
             for line_keys, cells in zip(conf["lines"], box["lines"][1:]):
-                for key, (text, faint) in zip(line_keys, cells):
-                    n = box["numbers"][key][0]
+                for key, (text, faint, colour) in zip(line_keys, cells):
+                    n, _k, _raw, _prior, shown = box["numbers"][key]
                     if (n == 0) != (text == "-"):
                         fails.append(f"{table_id} seat {seat} {key}: n={n} "
                                      f"drawn as {text!r}")
                     if faint != (n < conf["faint_below"]):
                         fails.append(f"{table_id} seat {seat} {key}: n={n} "
                                      f"faint={faint}")
+                    # The colour, written out from the rule by hand: the
+                    # rule's side, and never on a faint number.
+                    rule = conf["colours"].get(key, {})
+                    want = None
+                    if n >= conf["faint_below"] and shown is not None:
+                        if "below" in rule and 100 * shown < rule["below"][0]:
+                            want = rule["below"][1]
+                        elif "above" in rule and 100 * shown > rule["above"][0]:
+                            want = rule["above"][1]
+                    if colour != want:
+                        fails.append(f"{table_id} seat {seat} {key}: "
+                                     f"{100 * (shown or 0):.0f}% on n={n} "
+                                     f"coloured {colour}, the rule says {want}")
     print(f"boxes drawn as specified       {'yes' if not fails else 'NO'}   "
           f"{boxes} boxes over {len(tables)} tables")
     if tables:
@@ -1022,7 +1550,7 @@ def check(db_path=DB):
     bad = 0
     for max_seats in (2, 3, 4, 5, 6, 8, 9, 10):
         for hero in range(1, max_seats + 1):
-            spots_ = [place(slot(s, hero, max_seats), max_seats)
+            spots_ = [place(slot(s, hero, max_seats), max_seats, conf)
                       for s in range(1, max_seats + 1)]
             bottom = max(spots_, key=lambda p: p[1])
             if bottom != spots_[hero - 1]:
@@ -1060,6 +1588,7 @@ def check(db_path=DB):
         print(f"    {title!r} -> {got}")
     if wrong:
         fails.append(f"{len(wrong)} window titles matched the wrong table")
+    fails += badge_check(con)
     con.close()
 
     # The refusal to start beside a client that bans HUDs.
@@ -1070,11 +1599,129 @@ def check(db_path=DB):
     if not ok:
         fails.append("the HUD would start beside a client that bans it")
 
+    fails += settings_check()
     fails += watcher_check()
     fails += window_check(db_path)
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")
     return not fails
+
+
+def settings_check():
+    """
+    The settings the editor writes are the settings it read, and the ones
+    that are wrong are refused with a reason rather than drawn as nothing.
+    """
+    import tempfile
+    fails = []
+    if problems(DEFAULTS):
+        fails.append(f"the default settings have problems: {problems(DEFAULTS)}")
+    if conf_of(form_of(DEFAULTS), DEFAULTS) != DEFAULTS:
+        fails.append("the editor's fields do not give back the settings they show")
+    # One wrong thing per case, each of which would otherwise be drawn as
+    # nothing at all, or as the wrong thing.
+    form = form_of(DEFAULTS)
+    cases = {
+        "a misspelled stat on the box": dict(form, lines="vpip pfr threbet"),
+        "a misspelled stat in the popup": dict(form, popup="Flop: cbet_flp"),
+        "a colour that is not one": dict(form, colours="vpip above 40 orange"),
+        "a colour with no percentage": dict(form, colours="vpip above #ff9b73"),
+        "a badge with no side": dict(form, rules="LOOSE vpip 40"),
+        "a badge on no stat": dict(form, rules="LOOSE"),
+        "rates neither pooled nor raw": dict(form, rates="shrunk"),
+        "a faint threshold that is not a count": dict(form, faint_below="ten"),
+        "an empty box": dict(form, lines=""),
+    }
+    missed = [name for name, f in cases.items()
+              if not problems(conf_of(f, DEFAULTS))]
+    if missed:
+        fails.append(f"settings accepted that should be refused: {missed}")
+    # A layout saved for one table size is used for that size and no other,
+    # and comes back from the file it was saved to.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "hud.json"
+        conf = json.loads(json.dumps(DEFAULTS))
+        conf["seats"] = {"6": [[0.5, 0.9], [0.1, 0.7], [0.1, 0.2],
+                               [0.5, 0.05], [0.9, 0.2], [0.9, 0.7]]}
+        save(conf, path)
+        back = settings(path)
+        if back != conf:
+            fails.append("settings saved and read back are not the same")
+        if place(3, 6, back) != (0.5, 0.05) or place(3, 9, back) != place(3, 9):
+            fails.append("a placed layout is not used for its size alone")
+        mine = json.loads(path.read_text(encoding="utf-8"))
+        if set(mine) != {"seats"}:
+            fails.append(f"hud.json holds more than what was changed: {sorted(mine)}")
+        try:
+            save(dict(conf, lines=[["nonsense"]]), path)
+            fails.append("bad settings were saved")
+        except ValueError:
+            pass
+    print(f"the editor's settings hold     {'yes' if not fails else 'NO'}   "
+          f"{len(cases)} wrong settings refused")
+    return fails
+
+
+def badge_check(con):
+    """
+    A badge appears exactly when its rule says, written out longhand.
+
+    The rule badges against `stats.wilson` on the engine's own count; the
+    overfold badge against `query.overfolds_of` asked by hand; the note
+    mark against a note written into a copy of the database.
+    """
+    import query
+    fails = []
+    conf = json.loads(json.dumps(DEFAULTS))
+    # Lines low enough that the corpus's small samples clear some of them,
+    # so the test is of badges given as well as refused.
+    conf["badges"]["rules"] += [{"badge": "VP>5", "stat": "vpip", "above": 5},
+                                {"badge": "WT<60", "stat": "wtsd", "below": 60}]
+    given = asked = 0
+    for site in sites.with_hud():
+        for (player,) in con.execute(
+                "SELECT player FROM spots WHERE site=? AND is_hero=0 AND player "
+                "IS NOT NULL GROUP BY player ORDER BY COUNT(*) DESC LIMIT 6",
+                (site,)).fetchall():
+            got = numbers(con, site, "RING", 0, player, rule_keys(conf))
+            have = {b for b, _why in badges_of(con, site, player, conf, got)}
+            for rule in conf["badges"]["rules"]:
+                asked += 1
+                n, k = stats.rate(con, rule["stat"], "player=? AND site=?",
+                                  (player, site))[:2]
+                _p, lo, hi = stats.wilson(k, n) if n else (0, 0, 1)
+                want = n > 0 and (100 * lo > rule["above"] if "above" in rule
+                                  else 100 * hi < rule["below"])
+                if want != (rule["badge"] in have):
+                    fails.append(f"{player} {rule['badge']}: {k}/{n}, "
+                                 f"interval {lo:.2f}-{hi:.2f}, badge {not want}")
+                given += want
+            real = any(r["real"] and r["n"] >= 30 for r in query.overfolds_of(
+                con, f"player = {query.q(player)} AND site = {query.q(site)}"))
+            if real != (conf["badges"]["overfold"] in have):
+                fails.append(f"{player}: overfold badge disagrees with --overfolds")
+            if conf["badges"]["note"] in have:
+                fails.append(f"{player}: a note mark with no note written")
+    # The note mark, on a copy so that the user's notes are never touched.
+    import tempfile
+    import notes
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = sqlite3.connect(Path(tmp) / "copy.db")
+        con.backup(copy)
+        site, player = next(iter(con.execute(
+            "SELECT site, player FROM spots WHERE is_hero=0 AND player IS NOT "
+            "NULL AND site IN ('acr', 'pokerstars') LIMIT 1")))
+        notes.note(copy, site, player, "")
+        before = badges_of(copy, site, player, conf, {})
+        notes.note(copy, site, player, "limps everything")
+        after = badges_of(copy, site, player, conf, {})
+        copy.close()
+        if any(b == conf["badges"]["note"] for b, _w in before) or \
+                not any(b == conf["badges"]["note"] for b, _w in after):
+            fails.append("the note mark does not follow the note")
+    print(f"badges given as the rules say  {'yes' if not fails else 'NO'}   "
+          f"{given} of {asked} rule badges given")
+    return fails
 
 
 def watcher_check():
@@ -1206,15 +1853,72 @@ def window_check(db_path=DB):
             fails.append("a click on a box opened no popup")
         elif overlay.popup is not None:
             fails.append("a second click left the popup open")
+    drawn = len(overlay.boxes)
+    for top, _frame in overlay.boxes.values():
+        top.destroy()
+
+    # Layout mode: a box dragged 50 right and 30 down is saved there, for
+    # its slot and table size, and drawn there on the next tick.
+    import tempfile
+    tmp = tempfile.TemporaryDirectory()
+    path = Path(tmp.name) / "hud.json"
+    layout = Overlay(root, overlay.source, json.loads(json.dumps(DEFAULTS)),
+                     db_path, layout=True, settings_path=path)
+    layout.inbox.put(views)
+    layout.tick()
+    settle()
+    if layout.boxes:
+        key = sorted(layout.boxes)[0]
+        top, frame = layout.boxes[key]
+        x0, y0 = top.winfo_rootx(), top.winfo_rooty()
+        frame.event_generate("<ButtonPress-1>", x=5, y=5, rootx=x0 + 5, rooty=y0 + 5)
+        frame.event_generate("<B1-Motion>", x=55, y=35, rootx=x0 + 55, rooty=y0 + 35)
+        settle(0.1)
+        frame.event_generate("<ButtonRelease-1>", x=55, y=35,
+                             rootx=x0 + 55, rooty=y0 + 35)
+        layout.tick()
+        settle()
+        saved = settings(path).get("seats", {})
+        size = layout.where[key][5]
+        dx, dy = top.winfo_rootx() - x0, top.winfo_rooty() - y0
+        if str(size) not in saved:
+            fails.append("a box dragged in layout mode saved no layout")
+        elif abs(dx - 50) > 2 or abs(dy - 30) > 2:
+            fails.append(f"a dragged box was drawn {dx},{dy} away, not 50,30")
+    for top, _frame in layout.boxes.values():
+        top.destroy()
+
+    # The editor: a change saved is written and handed to the running HUD;
+    # a wrong one is refused, with its reason on the screen, and not written.
+    seen = []
+    ed = Editor(root, json.loads(json.dumps(DEFAULTS)), path=path,
+                on_save=seen.append)
+    ed.fields["lines"].delete("1.0", "end")
+    ed.fields["lines"].insert("1.0", "vpip pfr nonsense")
+    ed.save()
+    refused = bool(ed.errors.cget("text")) and not seen
+    ed.fields["lines"].delete("1.0", "end")
+    ed.fields["lines"].insert("1.0", "vpip pfr\nwtsd")
+    ed.save()
+    if not refused:
+        fails.append("the editor saved a stat that does not exist")
+    if not seen or settings(path)["lines"] != [["vpip", "pfr"], ["wtsd"]]:
+        fails.append("the editor's save did not reach the file and the HUD")
+    tmp.cleanup()
     root.destroy()
     print(f"the window draws and pops up  {'yes' if not fails else 'NO'}   "
-          f"{len(overlay.boxes)} boxes")
+          f"{drawn} boxes; dragged, edited")
     return fails
 
 
 def main(argv):
     if "--check" in argv:
         return 0 if check() else 1
+    if "--edit" in argv:
+        return edit()
+    if "--layout" in argv:
+        # With a real client open, the real tables; with none, the demo's.
+        return demo(layout=True) if "--demo" in argv else run(layout=True)
     if "--demo" in argv:
         return demo()
     if "--windows" in argv:
