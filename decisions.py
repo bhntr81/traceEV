@@ -183,7 +183,23 @@ CREATE INDEX IF NOT EXISTS dec_size
 CREATE INDEX IF NOT EXISTS dec_runout
     ON decisions(tn_over, tn_pair, tn_flush, tn_straight,
                  rv_over, rv_pair, rv_flush, rv_straight, street);
+-- The pot's matchup, which four smart reports and the window's "against"
+-- box filter on. Without it `--matchup BTN,BB` was answered from dec_vs on
+-- its `position IN (...)` half -- a third of the table fetched a row at a
+-- time, twice the cost of reading it straight through -- and the plan check
+-- passed it, because that is still an index. 50,000 hands, stats and range
+-- together: 0.54s -> 0.10s for BTN/BB, 0.73s -> 0.24s for SB/BB.
+CREATE INDEX IF NOT EXISTS dec_matchup ON decisions(matchup);
 """
+
+
+def missing(con):
+    """The indexes above that this database does not have yet."""
+    import re
+    want = re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", INDEXES)
+    have = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    return [name for name in want if name not in have]
 
 
 def index(db_path=DB, con=None):

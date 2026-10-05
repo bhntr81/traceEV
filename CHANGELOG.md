@@ -124,6 +124,26 @@ passes with it restored; the new switch was the first thing it caught.
 
 ---
 
+## The matchup filters have an index -- 3 Oct 2026
+
+### Added -- `dec_matchup`, and a database that is missing an index gets it on import
+
+`--matchup BTN,BB`, which four smart reports and the window's "against" box
+use, had no index of its own. SQLite answered it from `dec_vs` through the
+`position IN (...)` half of the filter, which fetches a third of the table
+a row at a time, twice the cost of a plain scan. The plan check passed it,
+because that is still an index. At 50,000 hands the stats and range tabs
+together took 0.54s for BTN/BB and now take 0.10s. For SB/BB they took 0.73s
+and now take 0.24s. `query.py --check` now requires `--matchup` to use the
+new index.
+
+Since imports stopped rebuilding, a new entry in `decisions.INDEXES` would
+reach an existing database only on its next rebuild, which might never
+come. `importer.update` now builds any missing indexes once, after its
+transaction commits.
+
+---
+
 ## The tabs answer faster -- 3 Oct 2026
 
 ### Changed -- fewer passes over `decisions` per click
