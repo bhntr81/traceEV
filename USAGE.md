@@ -384,6 +384,49 @@ A rate cell is left blank below three occurrences: one hand dealt twice is
 not a frequency. A composition cell is not, because a combo dealt twice
 really is 0.1% of the range.
 
+#### A stat, and the hands it was made of
+
+Neither chart above is "his 3-bet range". The first is every hand that
+reached the spot, folds included; the second is how *often* each combo
+3-bet, so aces 3-betting once in one chance is a full square and says
+nothing about how much of the range is aces. `--range-of` is the third:
+the hands that took the stat's action, each combo's share of them.
+
+```bash
+python query.py --pool --site ignition --chart --range-of threebet
+python query.py --pool --site ignition --chart --range-of threebet --alternative call
+```
+
+The first line printed is what the chart is a range *of*:
+
+```
+3bet: 148 of 1,318 chances (11.2%) -- the chart is those hands
+148 of 148 player-hands showed cards (100.0%)
+```
+
+After the flop a second line says what those hands had made, in the range
+tab's three tiers -- for a c-bet range, how much of it was weak:
+
+```
+cbet flop: 343 of 397 chances (86.4%) -- the chart is those hands
+on the board: strong 29%, middle pair 14%, weak 57% (of the 343 decisions with cards shown)
+```
+
+That is `range_of` over the same rows, so weak is `strength.WEAK` and the
+range tab under the same filter and `--quick cbet_flop` gives the full
+breakdown behind it. Preflop nothing has been made yet and there is no line.
+
+With `--alternative` it is the hands that did that instead on the same
+chances -- the call range beside the 3-bet range. A stat counted once per
+hand (VPIP, PFR) has no single decision that could have been a call
+instead, and is refused, as it is for `--show`.
+
+In the window this is the **stats** tab: click a row and its range is drawn
+beside the table. **range of** above the table switches between the hands
+that did it and the hands that called, folded, raised, checked or bet
+instead. Hover a square for its count. The seen fraction is printed under
+it for the same reason as above.
+
 ---
 
 ### Expression stats, in Hand2Note's language
@@ -464,6 +507,30 @@ REPORT** button at the foot of the filter dialog.
 
 `--forget` takes either a saved stat or a saved report; it refuses if you
 somehow have both under one name rather than guessing which you meant.
+
+### Saving the whole view
+
+A report is only the situation, laid over whatever tab and players are on
+the screen. A **view** is everything: who (me, the pool, a site, a player,
+the Players cohort), the filter, the tab, and the choices on it -- the
+split, the chart's stat and alternative, the stat clicked on the stats tab.
+Opening one replaces the window's state with it, which is Hand2Note's saved
+report.
+
+```bash
+python query.py --save-view "BTN 3bet pots" --pool --site ignition --pot 3bet --pos BTN --chart --show cbet_flop
+python query.py --views
+python query.py --open "BTN 3bet pots"
+python query.py --open "BTN 3bet pots" --since 2026-09-01
+```
+
+In the window it is the **Views** menu: **Save this view…**, then each saved
+one by name, and **Forget** below them. They live in `views.json` beside the
+program, separate from `filters.json`: a report joins the report box and
+must not carry columns or people, and a view must carry both. Flags typed
+after `--open NAME` narrow the view rather than replacing it. A view that no
+longer builds -- a flag renamed since -- is listed as broken rather than
+dropped.
 
 ### Sizes, depth and the game
 
@@ -662,6 +729,30 @@ without sizes. Use `--line` or `--node` when you want sizes.
 Ranges are `a-b`, inclusive: `--hour 18-23`, `--session-len 120-300`,
 `--session-min 0-60` (the first hour of any sitting), `--tables 1-2`.
 Weekdays are names: `--weekday sat,sun`.
+
+#### Tonight, and one sitting
+
+```bash
+python query.py --hero --last-sessions 1 --results       # my last sitting on each site
+python query.py --hero --site acr --last-sessions 1 --stats
+python query.py --session 41 --hands                      # one sitting, by its number
+python query.py --session 41 --export tuesday.txt         # and its hands, as written
+```
+
+`--last-sessions N` is Hand2Note's "Today", said the way this database can
+say it honestly: the last N sittings **on each site**, each ranked by that
+site's own clock. "The last three overall" would rank one room's evening
+against another room's afternoon. Add `--site` for tonight on one room.
+`--session` takes the numbers `--sessions` prints, and selects every seat's
+decisions in those hands, since the sitting is stamped on the whole hand.
+
+In the window both are boxes on the filter's General page, beside the
+session length. On the **sessions** tab a double-click on a sitting opens
+its hands. It drops the rest of the filter, because a sitting opened under
+"river, facing a bet" would show four of its hands and read as the whole
+night. **Views ▸ Export the hands it selects…** writes the hands under the
+filter to a file, as the sites wrote them, which is `--export` from the
+window.
 
 ---
 
@@ -979,6 +1070,18 @@ decisions by construction, which is 17% of the database.
 `--regs-only` and `--with-fish` ask the same thing of a pot of any size —
 everybody still in is a reg, or at least one of them is a fish — and between
 them cover 63%. Use these unless the matchup really has to be heads up.
+
+`--no-reg-vs-fish` is Hand2Note's "exclude reg vs fish": a reg's decisions
+with a fish still in the pot drop out, and everything else stays -- the
+fish's own decisions against regs, the unknowns, the regs among regs. A reg
+isolates wider and value-bets thinner against a fish on purpose, so a reg's
+rates taken over both kinds of table describe neither. It is an ordinary
+switch, so it narrows every tab; the window has it in the filter's player
+page and as **leave out regs against fish** above the stats table.
+
+```bash
+python query.py --pool --site ignition --reg --no-reg-vs-fish --show threebet
+```
 
 Only ACR names people. An Ignition ring identity lasts as long as somebody
 stays in the seat, and Zone names nobody.
