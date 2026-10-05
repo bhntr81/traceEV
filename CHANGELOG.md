@@ -23,6 +23,8 @@ computer with no email program set up does nothing at all on a mailto
 link, and says nothing either. `app.py --check` reads the link back and
 copies the address.
 
+---
+
 ## Panes off the main window -- 5 Oct 2026
 
 ### Added -- detach any tab, and put it back
@@ -46,6 +48,8 @@ hands. It does; pointed at the window's filter instead, the check fails.
 
 Not a docking layout: panes do not tile inside the main window and are
 not kept between runs. A saved view is the way to keep a whole window.
+
+---
 
 ## A square of a range opens its hands -- 5 Oct 2026
 
@@ -74,6 +78,25 @@ On the chart tab with a stat chosen, a square is coloured by the share that
 took the stat, and its click lists the ones that did. A click opens a
 window rather than writing `--combo` into the filter, because the chart is
 still being read and a click should not change what it is a chart of.
+
+---
+
+## The sittings filters have an index -- 5 Oct 2026
+
+### Added -- `dec_sid`, on `decisions(session_id)`
+
+"This sitting" and "my last five sittings" ask for session ids, and the
+only index carrying the id had it third, behind the length and minutes
+that the session-length filters need first. `--last-sessions` therefore
+read that index end to end: 0.3 to 0.5s a tab at 50,000 hands. With an
+index led by the id it is about 0.01s, under every view and combined with
+`--hero` or a street. `sessions.py --check` now requires a session filter
+to seek it. It is built with the other session indexes in `sessions.index`
+and not in `decisions.INDEXES`, because `decisions.build` makes a table
+without the session columns and indexes it before they exist. An existing
+database gets it on its next import, without a rebuild.
+
+---
 
 ## Notes: templates, a hand in a note, a note on a stat -- 5 Oct 2026
 
