@@ -1766,34 +1766,33 @@ def actions_of(con, where, by=None):
     is printed so. The next action is the next decision in the hand on the
     same street, by whoever took it; "street over" when nobody did.
     """
-    # stack at the end = stack at the start + won - everything put in;
-    # stack before the action is on the row; the difference, in bb.
-    profit = "((se.stack + se.won - se.posted - se.invested) - d.stack_before) / d.bb"
-    # The dimension is evaluated inside the subquery, where the column
-    # names are unambiguous; the self-join for the next action brings a
-    # second copy of every one of them.
+    # The profit, whether the seat won, whether it reached showdown and
+    # what came next are columns `decisions.outcome` writes, so this is one
+    # pass over the filter's rows. It was a join to `seats`, `spots` and
+    # `decisions` again for every row, two seconds unfiltered at 50,000
+    # hands. `showdown IS NOT NULL` keeps the rows the join to `spots` kept,
+    # and `+bb` keeps `bb > 0` off the stake index, which it would walk end
+    # to end -- under `--allin` that was five times slower than the all-in
+    # index the filter has.
     expr, order = DIMENSIONS[by] if by else ("NULL", lambda k: 0)
     rows = con.execute(f"""
-        SELECT d.action, d.grp,
+        SELECT action, ({expr}) grp,
                COUNT(*) n,
-               AVG({profit}) mean,
-               AVG(({profit}) * ({profit})) msq,
-               AVG(CASE WHEN se.won > 0 THEN 1.0 ELSE 0.0 END) won_hand,
-               AVG(CASE WHEN sp.wtsd THEN 1.0 ELSE 0.0 END) wtsd,
-               AVG(CASE WHEN sp.wtsd AND se.won > 0 THEN 1.0 ELSE 0.0 END) won_sd,
-               SUM(CASE WHEN n2.action IS NULL THEN 1 ELSE 0 END) over,
-               SUM(CASE WHEN n2.action = 'F' THEN 1 ELSE 0 END) nf,
-               SUM(CASE WHEN n2.action = 'X' THEN 1 ELSE 0 END) nx,
-               SUM(CASE WHEN n2.action = 'C' THEN 1 ELSE 0 END) nc,
-               SUM(CASE WHEN n2.action IN ('B') THEN 1 ELSE 0 END) nb,
-               SUM(CASE WHEN n2.action IN ('R', 'A') THEN 1 ELSE 0 END) nr
-        FROM (SELECT *, ({expr}) AS grp FROM decisions WHERE ({where})) d
-        JOIN seats se ON se.hand_id = d.hand_id AND se.seat = d.seat
-        JOIN spots sp ON sp.hand_id = d.hand_id AND sp.seat = d.seat
-        LEFT JOIN decisions n2 ON n2.hand_id = d.hand_id AND n2.n = d.n + 1
-                              AND n2.street = d.street
-        WHERE d.fmt <> 'MTT' AND d.bb > 0 AND d.stack_before IS NOT NULL
-        GROUP BY d.action, d.grp""").fetchall()
+               AVG(profit_bb) mean,
+               AVG(profit_bb * profit_bb) msq,
+               AVG(CASE WHEN won_pot THEN 1.0 ELSE 0.0 END) won_hand,
+               AVG(CASE WHEN showdown THEN 1.0 ELSE 0.0 END) wtsd,
+               AVG(CASE WHEN showdown AND won_pot THEN 1.0 ELSE 0.0 END) won_sd,
+               COUNT(*) FILTER (WHERE next_action IS NULL) over,
+               COUNT(*) FILTER (WHERE next_action = 'F') nf,
+               COUNT(*) FILTER (WHERE next_action = 'X') nx,
+               COUNT(*) FILTER (WHERE next_action = 'C') nc,
+               COUNT(*) FILTER (WHERE next_action = 'B') nb,
+               COUNT(*) FILTER (WHERE next_action IN ('R', 'A')) nr
+        FROM decisions
+        WHERE ({where}) AND fmt <> 'MTT' AND +bb > 0
+          AND stack_before IS NOT NULL AND showdown IS NOT NULL
+        GROUP BY 1, 2""").fetchall()
 
     def row(act, grp, n, mean, msq, won_hand, wtsd, won_sd, over, nf, nx, nc, nb, nr, total):
         var = max(0.0, (msq or 0.0) - (mean or 0.0) ** 2)
