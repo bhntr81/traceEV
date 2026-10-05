@@ -116,6 +116,9 @@ def vocabulary():
     lines += [
         "",
         "  --board TEX      flop texture, one of: " + ", ".join(query.BOARDS),
+        "  --pf-facing X    preflop, what is in front (Hand2Note's ladder; several are OR): "
+        + ", ".join(query.PF_FACING),
+        "  --fish-blinds X  a fish, not the player, in the blinds: " + ", ".join(query.FISH_BLINDS),
         "  --turn-card X    what the turn did: " + ", ".join(query.RUNOUT),
         "  --river-card X   what the river did: the same words",
         "  --quick NAME     a named filter: " + ", ".join(sorted(query.quick_by_key())),

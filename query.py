@@ -163,6 +163,13 @@ VALUE_FLAGS = {
     "--raise-x": "raise_x BETWEEN {lo} AND {hi}",
     "--depth": "eff_bb BETWEEN {lo} AND {hi}",
     "--spr": "spr BETWEEN {lo} AND {hi}",
+    # The pot as the street began, in big blinds -- Hand2Note's "initial
+    # pot", from `lines.py` -- where `pot_bb` is the pot at the decision.
+    "--street-pot": "street_pot BETWEEN {lo} AND {hi}",
+    # Hand2Note's "distance to fish": the nearest fish dealt in, counted in
+    # seats round the table, 1 being the next seat. Left acts after you.
+    "--fish-left-seats": "fish_dist_left BETWEEN {lo} AND {hi}",
+    "--fish-right-seats": "fish_dist_right BETWEEN {lo} AND {hi}",
     # The flop's high card, by rank letter; the game's format.
     "--high": "fl_hi IN ({list})",
     "--format": "fmt IN ({list})",
@@ -177,6 +184,8 @@ VALUE_FLAGS = {
     # `--my-node "*/X"` is "checked, and now has to act again".
     "--my-line": None, "--my-node": None,
     "--board": None,        # handled separately: named textures
+    "--pf-facing": None,    # Hand2Note's preflop ladder, from PF_FACING
+    "--fish-blinds": None,  # which blinds a fish is in, from FISH_BLINDS
     "--turn-card": None,    # what the turn did to the board
     "--river-card": None,   # and the river
     "--quick": None,        # one or more named filters from `quick_filters`
@@ -270,6 +279,17 @@ SWITCHES = {
     "--fish-right": "fish_right > 0",
     "--reg-left": "reg_left > 0",
     "--reg-right": "reg_right > 0",
+    # What was posted before the cards, which `hands` keeps and `decisions`
+    # does not: an ante or a straddle makes a different game of the same
+    # blinds, and a pool's opening ranges taken over both describe neither.
+    # Subqueries, as `--tag` is, because these are facts about the hand and
+    # few hands have either -- the partial indexes on `hands` hold only
+    # those. "No ante" asks for the hands known to have none: a hand read
+    # before the parsers recorded it is NULL, and `why_empty` says so.
+    "--ante": "hand_id IN (SELECT hand_id FROM hands WHERE ante > 0)",
+    "--no-ante": "hand_id IN (SELECT hand_id FROM hands WHERE ante = 0)",
+    "--straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle > 0)",
+    "--no-straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle = 0)",
     "--drawing": "(fd IS NOT NULL OR sd IS NOT NULL)",
     # Both at once, which is the hand that plays like neither: a flush draw
     # with a straight draw beside it is usually a favourite against a pair.
@@ -696,6 +716,48 @@ BOARDS = {
     "low": "fl_hi IN ('2','3','4','5','6','7','8','9')",
 }
 
+# What was in front of a player preflop, in Hand2Note's own ladder. The
+# `facing` column counts raises -- unopened, open, 3bet -- and so cannot
+# tell a pot with two limpers from an empty one, or an open somebody has
+# already called (the squeeze) from a bare open. Those are different
+# spots, played differently, and Hand2Note's filter separates them.
+#
+# Read from `node`, the table's preflop action up to this decision, one
+# letter per action in acting order. A limp and a call are both C, and
+# `lines.letter` writes an all-in call as C and an all-in raise as R, so
+# counting C before the first R is counting limpers and counting it after
+# is counting callers. `street` comes first so every entry seeks
+# `dec_spot`; the GLOB then reads the few rows it found.
+# Which blinds a fish other than the player is in: `players.py` writes the
+# small blind as 1 and the big as 2, so both is 3 and either is any of them.
+FISH_BLINDS = {
+    "sb": "fish_blinds IN (1, 3)",
+    "bb": "fish_blinds IN (2, 3)",
+    "both": "fish_blinds = 3",
+    "any": "fish_blinds IN (1, 2, 3)",
+    "none": "fish_blinds = 0",
+}
+
+PF_FACING = {
+    "unopened": "street = 'preflop' AND facing = 'unopened' "
+                "AND NOT node GLOB '*C*'",
+    "1-limp": "street = 'preflop' AND facing = 'unopened' "
+              "AND node GLOB '*C*' AND NOT node GLOB '*C*C*'",
+    "2-limps": "street = 'preflop' AND facing = 'unopened' "
+               "AND node GLOB '*C*C*'",
+    "1-raise": "street = 'preflop' AND facing = 'open' "
+               "AND NOT node GLOB '*R*C*'",
+    "raise-call": "street = 'preflop' AND facing = 'open' "
+                  "AND node GLOB '*R*C*' AND NOT node GLOB '*R*C*C*'",
+    "raise-2-calls": "street = 'preflop' AND facing = 'open' "
+                     "AND node GLOB '*R*C*C*'",
+    "2-raises": "street = 'preflop' AND facing = '3bet'",
+    # Hand2Note's "all folded to BB". The big blind makes no decision in a
+    # walk, so what this selects is everybody else's: the folds in hands
+    # where nobody but the big blind put money in.
+    "walk": "street = 'preflop' AND NOT pre GLOB '*[^F]*'",
+}
+
 # What a later card did. `--board` describes the flop, which arrives all at
 # once; these describe a single card arriving on a board that was already
 # there, which is a different kind of fact and needs its own words.
@@ -928,6 +990,32 @@ def build(argv):
                 parts.append("(" + " AND ".join(named) + ")")
                 described.append(f"{a.lstrip('-')} {v}")
                 continue
+            if a == "--fish-blinds":
+                # Alternatives, as the preflop ladder's are: a fish is in
+                # the small blind or the big, and "sb,bb" is either.
+                named = []
+                for name in v.split(","):
+                    if name not in FISH_BLINDS:
+                        raise SystemExit(f"unknown --fish-blinds {name!r} -- "
+                                         f"one of: {', '.join(FISH_BLINDS)}")
+                    named.append("(" + FISH_BLINDS[name] + ")")
+                parts.append("(" + " OR ".join(named) + ")")
+                described.append("fish on blinds " + v)
+                continue
+            if a == "--pf-facing":
+                # Several values are alternatives, not a conjunction: a
+                # decision faces one limper or two, never both, so AND-ing
+                # them as `--board` does would select nothing every time.
+                named = []
+                for name in v.split(","):
+                    if name not in PF_FACING:
+                        raise SystemExit(
+                            f"unknown preflop facing {name!r} -- one of: "
+                            f"{', '.join(PF_FACING)}")
+                    named.append("(" + PF_FACING[name] + ")")
+                parts.append("(" + " OR ".join(named) + ")")
+                described.append("pf-facing " + v)
+                continue
             if a == "--board":
                 named = []
                 for name in v.split(","):
@@ -1096,7 +1184,18 @@ def why_empty(con, parts):
     alone = [(label, sql, count(sql)) for label, sql in parts]
     dead = [f"'{label}'" for label, _sql, n in alone if not n]
     if dead:
-        return f"{', '.join(dead)} matches nothing at all in this database"
+        # Antes and straddles are read from the posts, which the parsers
+        # only began to record on 4 Oct 2026; a hand loaded before that has
+        # neither written down, and is in no answer to either question.
+        unread = 0
+        if any(f"FROM hands WHERE {c}" in sql for c in ("ante", "straddle")
+               for _l, sql, n in alone if not n):
+            unread = con.execute("SELECT COUNT(*) FROM hands "
+                                 "WHERE ante IS NULL").fetchone()[0]
+        return (f"{', '.join(dead)} matches nothing at all in this database"
+                + (f" -- {unread:,} hands were imported before antes and "
+                   f"straddles were recorded; `python importer.py --reread` "
+                   f"over their folders reads them again" if unread else ""))
 
     for i, (l1, s1, _n1) in enumerate(alone):
         for l2, s2, _n2 in alone[i + 1:]:
@@ -2398,6 +2497,75 @@ def show_hand(con, hand_id, seat=None):
         print(f"\nTOTAL POT {d['pot']:.2f}{rake}")
 
 
+def share_text(con, hand_id, seat=None):
+    """
+    One hand as text to paste somewhere public, with nobody in it.
+
+    Hand2Note's anonymised share. What identifies anybody is left out: the
+    screen names, the hand number, the table, the date and the site, any
+    one of which finds the hand in somebody's database and every name with
+    it. The players are their positions and the seat the hand is about is
+    "Hero". Amounts are in big blinds so the stake does not travel either,
+    and because a hand posted for advice is read in big blinds anyway.
+    Notes and tags are the user's own and are never in it. Cards are as the
+    site showed them -- Ignition shows the folded ones, ACR only showdowns
+    -- since a hand with the villain's cards removed is a different
+    question from the one being asked.
+    """
+    d = hand_detail(con, hand_id, seat)
+    if d is None:
+        return None
+    bb = d["bb"] or 1.0
+    me = seat if seat is not None else next(
+        (s["seat"] for s in d["seats"] if s["is_hero"]), None)
+    # Eight- and nine-handed tables are recorded against six position
+    # names, so three seats can all be UTG, and in a hand with nothing
+    # else to tell them apart "UTG calls" would not say which. Repeats are
+    # numbered in the order the seats first act -- not the order they are
+    # listed, which is by seat number and put "UTG+3" before UTG -- so they
+    # read UTG, UTG+1, UTG+2 as the seats are called at a full table.
+    acted = [a["seat"] for st in d["streets"] for a in st["actions"]]
+    order = sorted(d["seats"], key=lambda s: acted.index(s["seat"])
+                   if s["seat"] in acted else len(acted))
+    pos, seen = {}, {}
+    for s in order:
+        label = s["position"] or "?"
+        k = seen[label] = seen.get(label, -1) + 1
+        pos[s["seat"]] = label + (f"+{k}" if k else "")
+
+    def who(n):
+        return "Hero" if n == me else pos.get(n, "?")
+
+    def bbs(x):
+        return f"{x / bb:.1f} bb"
+    out = [f"No-limit hold'em, {len(d['seats'])} players"
+           + ("" if d["bb"] else ", chips")]
+    for s in d["seats"]:
+        name = f"Hero ({pos[s['seat']]})" if s["seat"] == me else pos[s["seat"]]
+        out.append(f"  {name:10} {bbs(s['stack'] or 0):>9}"
+                   + (f"   {s['cards']}" if s["cards"] else ""))
+    for st in d["streets"]:
+        first = st["actions"][0] if st["actions"] else None
+        head = st["street"].capitalize()
+        if st["board"]:
+            head += f" [{st['board']}]"
+        if first and first["pot_before"] is not None:
+            head += f"  pot {bbs(first['pot_before'])}"
+        out.append("")
+        out.append(head)
+        for a in st["actions"]:
+            amt = f" {bbs(a['amount'])}" if a["amount"] else ""
+            out.append(f"  {who(a['seat'])} {a['verb']}{amt}")
+    if d["pot"]:
+        out.append("")
+        out.append(f"Final pot {bbs(d['pot'])}")
+        mine = next((s for s in d["seats"] if s["seat"] == me), None)
+        net = (mine["won"] or 0) - mine["put_in"] if mine else 0
+        if abs(net) > 1e-9:
+            out.append(f"Hero {'won' if net > 0 else 'lost'} {bbs(abs(net))}")
+    return "\n".join(out)
+
+
 def show_report(con, where, label, dim, columns, min_n=30, argv=()):
     """
     One row per value of the dimension, one column per stat.
@@ -2788,7 +2956,49 @@ def show_results(con, where, label, parts=()):
 # biggest-losses list would open with a page of nothing.
 SORTS = {"date": "d.played_at DESC",
          "won": "s.net_bb IS NULL, s.net_bb DESC",
-         "lost": "s.net_bb IS NULL, s.net_bb ASC"}
+         "lost": "s.net_bb IS NULL, s.net_bb ASC",
+         # Ordered in Python, after the query: see `by_strength`.
+         "strength": "d.played_at DESC"}
+
+
+def by_strength(con, rows):
+    """
+    The hands strongest first, by what each seat held on the final board.
+
+    Hand2Note lists the showdown hands under its range diagram in this
+    order. Strength is `strength.classify` on the seat's cards and the
+    whole board -- the hand it finished with, not the hand at some earlier
+    decision, which for a seat that bet the flop and checked the river is
+    a different answer. The categories go in `strength.ORDER`, so a hand
+    the board made sits under a real pair exactly as it does in the range
+    view; within one category the evaluator's own tuple breaks the tie,
+    so aces up comes before nines up. Hands whose cards were never shown,
+    or that ended before a flop, have no strength and go last in date
+    order, rather than being dropped from a list someone is reading
+    as the whole of what the filter selected.
+    """
+    import strength
+    from equity import best5
+    pairs = {(r[0], r[1]) for r in rows}
+    cards = {}
+    for hid, seat, c in con.execute(
+            "SELECT hand_id, seat, cards FROM seats WHERE hand_id IN (%s)"
+            % ",".join("?" * len({h for h, _s in pairs}) or "NULL"),
+            sorted({h for h, _s in pairs})):
+        if (hid, seat) in pairs:
+            cards[(hid, seat)] = c
+    known, unknown = [], []
+    for r in rows:
+        c, board = cards.get((r[0], r[1])), r[7]
+        made = strength.classify(c, board)[0] if c and board else None
+        if made is None:
+            unknown.append(r + (None,))
+            continue
+        shape = best5(strength.parse(c) + strength.parse(board))
+        known.append((strength.ORDER.index(made), shape, r + (made,)))
+    known.sort(key=lambda k: k[1], reverse=True)
+    known.sort(key=lambda k: k[0])
+    return [k[2] for k in known] + unknown
 
 
 def hands_of(con, where, limit=None, sort="date"):
@@ -2819,9 +3029,16 @@ def hands_of(con, where, limit=None, sort="date"):
            f"ORDER BY {SORTS.get(sort, SORTS['date'])}")
     if limit:
         sql += f" LIMIT {int(limit)}"
+    if limit and sort == "strength":
+        # The strongest of all of them, not of the latest few hundred.
+        sql = sql[:sql.rindex(" LIMIT ")]
     rows = con.execute(sql).fetchall()
     tagged = notes.tags_for(con, {r[0] for r in rows})
-    return [tuple(r) + (tagged.get(r[0], []),) for r in rows]
+    rows = [tuple(r) + (tagged.get(r[0], []),) for r in rows]
+    if sort == "strength":
+        rows = [r[:-1] for r in by_strength(con, rows)]
+        rows = rows[:int(limit)] if limit else rows
+    return rows
 
 
 def show_hands(con, where, label, limit=40, parts=(), sort="date"):
@@ -2857,6 +3074,8 @@ def usage():
         if v:
             print(f"    {k:14} {v}")
     print(f"    {'--board':14} one of: {', '.join(BOARDS)}")
+    print(f"    {'--pf-facing':14} preflop, what is in front: "
+          f"{', '.join(PF_FACING)}")
     print(f"    {'--quick':14} named filters: "
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
     print(f"    {'--where':14} raw SQL over `decisions`, for anything above")
@@ -2880,7 +3099,8 @@ def usage():
     print(f"    {'--show':14} which stats are the columns "
           f"(default: {','.join(DEFAULT_COLUMNS)})")
     print(f"    {'--min':14} mark cells below this many chances (default 30)")
-    print(f"    {'--hand':14} replay one hand by id, ignoring every filter")
+    print(f"    {'--hand':14} replay one hand by id, ignoring every filter;"
+          f" add --share for it with nobody in it")
     print(f"    {'--chart':14} the 13x13 chart: what the range holds, or "
           f"one stat per combo with --show")
     print("    --alternative ACTION  compare that stat with call/raise/fold/check/bet "
@@ -2971,6 +3191,8 @@ def check(db_path=DB):
         "--made": "top pair", "--kicker": "top", "--fd": "nut",
         "--sd": "oesd",
         "--players": "6", "--live": "2",
+        "--street-pot": "2-6", "--fish-left-seats": "1-2",
+        "--fish-right-seats": "1-2",
         "--since": midpoint, "--until": midpoint,
         "--vs-player": con.execute(
             "SELECT vs_player FROM decisions WHERE vs_player IS NOT NULL "
@@ -2985,6 +3207,66 @@ def check(db_path=DB):
     cases = [(k, [k]) for k in SWITCHES]
     cases += [(k, [k, v]) for k, v in samples.items()]
     cases += [("--board " + b, ["--board", b]) for b in BOARDS]
+    cases += [("--pf-facing " + f, ["--pf-facing", f]) for f in PF_FACING]
+    cases += [("--fish-blinds " + f, ["--fish-blinds", f]) for f in FISH_BLINDS]
+    # The ladder has to cut each facing it refines into pieces that add back
+    # up: every unopened preflop decision is unopened, one limp or two, and
+    # every open is bare, called once or called twice or more. A rung that
+    # overlapped another or dropped a case would print plausible rates over
+    # the wrong decisions -- a limp written as some letter other than C is
+    # exactly that, and it would leave the sum short.
+    def count(sql):
+        return con.execute(f"SELECT COUNT(*) FROM decisions WHERE {sql}").fetchone()[0]
+    ladder = []
+    for facing, rungs in (("unopened", ("unopened", "1-limp", "2-limps")),
+                          ("open", ("1-raise", "raise-call", "raise-2-calls"))):
+        whole = count(f"street = 'preflop' AND facing = '{facing}'")
+        pieces = [count(PF_FACING[r]) for r in rungs]
+        if sum(pieces) != whole:
+            ladder.append(f"facing {facing}: {' + '.join(map(str, pieces))} "
+                          f"= {sum(pieces)}, not {whole}")
+        print(f"the preflop ladder splits {facing:8} {whole:,} = "
+              f"{' + '.join(f'{p:,}' for p in pieces)}"
+              f"{'' if sum(pieces) == whole else '  NO'}")
+    fails += ladder
+
+    # Strongest first has to mean it: the categories in `strength.ORDER`'s
+    # order, the unclassifiable last, and nothing gained or lost on the way.
+    import strength as _strength
+    plain = hands_of(con, "street = 'river'")
+    ranked = by_strength(con, plain)
+    places = [_strength.ORDER.index(r[-1]) for r in ranked if r[-1]]
+    tail = [r[-1] for r in ranked[len(places):]]
+    wrong = (len(ranked) != len(plain) or places != sorted(places)
+             or any(t is not None for t in tail))
+    print(f"hands strongest first   {len(places):,} ranked, {len(tail):,} "
+          f"without cards last{'' if not wrong else '  NO'}")
+    if wrong:
+        fails.append("--sort strength is out of order or changes the hands")
+
+    # A shared hand carries nobody. Checked on hands from every site,
+    # against everything that could find the hand or a player again: each
+    # seat's label and identity, the hand number, the table and the date.
+    leaked = []
+    sample = con.execute("SELECT hand_id, site, table_id, played_at FROM hands "
+                         "WHERE hand_id IN (SELECT MIN(hand_id) FROM hands "
+                         "GROUP BY site)").fetchall()
+    for hid, site, table, when in sample:
+        text = share_text(con, hid)
+        names = [r[0] for r in con.execute(
+            "SELECT label FROM seats WHERE hand_id = ? UNION "
+            "SELECT player FROM spots WHERE hand_id = ?", (hid, hid)) if r[0]]
+        # Labels that are only a position ("Small Blind", "UTG+1" on
+        # Ignition) say nothing about anybody and may appear as words.
+        found = [x for x in names + [hid, str(table), (when or "")[:10]]
+                 if x and len(str(x)) > 3 and str(x) in text
+                 and not str(x).replace(" ", "").replace("+", "").isalpha()]
+        if found:
+            leaked.append(f"{site} {hid}: {found[:3]}")
+    print(f"a shared hand names nobody   {len(sample) - len(leaked)}/{len(sample)} sites")
+    for l in leaked:
+        print(f"    {l}")
+    fails += leaked
     cases += [(f"{flag} {name}", [flag, name])
               for flag in RUNOUT_FLAG for name in RUNOUT]
     cases.append(("--where", ["--where", "eff_bb > 100"]))
@@ -3626,6 +3908,11 @@ def main(argv):
             raise SystemExit(f"unknown stat {c!r} -- see `stats.py --list`")
     min_n = int(opt("--min", "30"))
 
+    if opt("--hand") and "--share" in argv:
+        con = connect()
+        text = share_text(con, opt("--hand"))
+        print(text if text is not None else f"no hand {opt('--hand')!r}")
+        return 0 if text is not None else 1
     if opt("--hand"):
         con = connect()
         show_hand(con, opt("--hand"))

@@ -174,7 +174,7 @@ def parse_hand(text, source=""):
     names_longest = sorted(by_name, key=len, reverse=True)
 
     board, actions, street, order = [], [], "preflop", 0
-    blinds, street_in, sb_seat = {}, {}, None
+    blinds, street_in, sb_seat, ante = {}, {}, None, 0.0
     seen_action = False
     # A queue rather than the lines themselves, because the client has
     # twice glued two players' lines together with no break between them
@@ -244,6 +244,14 @@ def parse_hand(text, source=""):
             # A dead post is a small blind thrown away plus a live big
             # blind; only the live part stands toward a raise "to".
             live = put - (blinds.get("sb") or 0.0) if "dead" in rest else put
+            # An ante is in the pot and not in front of the player, so it never
+            # stands toward a raise "to": counted on the street, a raise to
+            # 600 from a seat that anted 50 came out as 550 put in. The
+            # Stars parser had this bug and lost it in Run 19; this one
+            # kept it, unseen, because only tournaments ante and the money
+            # test leaves them out.
+            if rest.startswith("posts ante"):
+                ante, live = max(ante, put), 0.0
             street_in[s["seat"]] = street_in.get(s["seat"], 0.0) + live
             if "small blind" in rest:
                 blinds.setdefault("sb", put)
@@ -360,6 +368,8 @@ def parse_hand(text, source=""):
                  "pot": went_in,
                  "rake": _money(pot_m.group(2)) if pot_m else None,
                  "jp_fee": None,
+                 # PartyPoker has no straddle.
+                 "ante": ante, "straddle": 0.0,
                  "hero_seat": hero["seat"] if hero else None,
                  "standard": standard, "source": source,
                  "max_seats": max_seats},

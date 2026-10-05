@@ -176,7 +176,13 @@ OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--headsup": "--multiway",
              "--reg": "--fish", "--fish": "--reg",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
-             "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero"}
+             "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero",
+             "--ante": "--no-ante", "--no-ante": "--ante",
+             "--straddle": "--no-straddle", "--no-straddle": "--straddle"}
+# What was posted before the cards. Each has its opposite, because the
+# usual question is "my cash numbers without the straddled hands in them".
+POSTS = [("--ante", "antes"), ("--no-ante", "no ante"),
+         ("--straddle", "a straddle"), ("--no-straddle", "no straddle")]
 
 
 def pick_fonts():
@@ -615,7 +621,8 @@ class App(ImportMixin, ttk.Frame):
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
                       "sd": set(), "turn_card": set(), "river_card": set(),
-                      "facing": set(), "combo": set()}
+                      "facing": set(), "combo": set(), "pf_facing": set(),
+                      "fish_blinds": set()}
         # The filter's values live here rather than on the widgets, because
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
@@ -626,7 +633,8 @@ class App(ImportMixin, ttk.Frame):
                       "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
                       "tables", "tag", "size", "size_bb", "raise_x", "depth",
-                      "spr", "high", "format", "session", "last_sessions")}
+                      "spr", "high", "format", "session", "last_sessions",
+                      "street_pot", "fish_left_seats", "fish_right_seats")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -933,6 +941,15 @@ class App(ImportMixin, ttk.Frame):
             bar, text="leave out regs against fish",
             variable=self.flags["--no-reg-vs-fish"], command=self.refresh)
 
+        # The order of the hands tab. A heading click sorts what is shown;
+        # this decides which 500 are shown, and the strongest hands of a
+        # filter are rarely among its latest.
+        self.hand_sort = ttk.Combobox(bar, state="readonly", width=10,
+                                      values=list(query.SORTS))
+        self.hand_sort.set("date")
+        self.hand_sort.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.hand_sort_label = ttk.Label(bar, text="first by", style="Dim.TLabel")
+
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.refresh())
@@ -1086,7 +1103,9 @@ class App(ImportMixin, ttk.Frame):
                             ("fd", "--fd"), ("sd", "--sd"),
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card"),
-                            ("facing", "--facing")):
+                            ("facing", "--facing"),
+                            ("pf_facing", "--pf-facing"),
+                            ("fish_blinds", "--fish-blinds")):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
         for name, flag in (("site", "--site"), ("stake", "--stake"),
@@ -1106,7 +1125,10 @@ class App(ImportMixin, ttk.Frame):
                            ("session_min", "--session-min"),
                            ("tables", "--tables"), ("tag", "--tag"),
                            ("session", "--session"),
-                           ("last_sessions", "--last-sessions")):
+                           ("last_sessions", "--last-sessions"),
+                           ("street_pot", "--street-pot"),
+                           ("fish_left_seats", "--fish-left-seats"),
+                           ("fish_right_seats", "--fish-right-seats")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1126,7 +1148,8 @@ class App(ImportMixin, ttk.Frame):
                 "--made": "made", "--kicker": "kicker", "--fd": "fd",
                 "--combo": "combo",
                 "--sd": "sd", "--turn-card": "turn_card",
-                "--river-card": "river_card", "--facing": "facing"}
+                "--river-card": "river_card", "--facing": "facing",
+                "--pf-facing": "pf_facing", "--fish-blinds": "fish_blinds"}
     VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
               "--deep": "deep", "--short": "short", "--since": "since",
               "--until": "until", "--where": "where", "--line": "line",
@@ -1138,7 +1161,10 @@ class App(ImportMixin, ttk.Frame):
               "--tag": "tag", "--size": "size", "--size-bb": "size_bb",
               "--raise-x": "raise_x", "--depth": "depth", "--spr": "spr",
               "--high": "high", "--format": "format",
-              "--session": "session", "--last-sessions": "last_sessions"}
+              "--session": "session", "--last-sessions": "last_sessions",
+              "--street-pot": "street_pot",
+              "--fish-left-seats": "fish_left_seats",
+              "--fish-right-seats": "fish_right_seats"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
               "--actions": "actions", "--overfolds": "overfolds",
@@ -1329,6 +1355,12 @@ class App(ImportMixin, ttk.Frame):
             self.of.pack_forget()
             self.alternative_label.pack_forget()
             self.alternative.pack_forget()
+        if view == "hands":
+            self.hand_sort_label.pack(side="left", padx=(0, 6))
+            self.hand_sort.pack(side="left")
+        else:
+            self.hand_sort_label.pack_forget()
+            self.hand_sort.pack_forget()
         if view == "stats":
             self.expression_label.pack(side="left", padx=(0, 6))
             self.expression.pack(side="left")
@@ -1364,7 +1396,11 @@ class App(ImportMixin, ttk.Frame):
             self.clear_btn.pack_forget()
         self.pending += 1
         token = self.pending
-        stat = self.expression.get() if view == "stats" else self.chart_stat()
+        # `stat` is what the view is OF, which for the hands tab is the
+        # order -- it chooses which hands are shown, so it is part of the
+        # answer and of the key it is cached under.
+        stat = (self.expression.get() if view == "stats" else
+                self.hand_sort.get() if view == "hands" else self.chart_stat())
         alternative = (self.alternative.get() or None) if view == "chart" else None
         key = (view, where, self.by.get(), stat, alternative, repr(cohort_spec))
         self.last = (where, label, parts, cohort_spec, query_argv)
@@ -1552,7 +1588,8 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = query.hands_of(con, where, limit=500)
+                out["rows"] = query.hands_of(con, where, limit=500,
+                                             sort=stat or "date")
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if view != "statrange" and not self._any(out):
@@ -2956,6 +2993,21 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "what kind of player")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in WHO])
+        # Hand2Note's distance to fish and fish on the blinds. These are the
+        # table, not the pot: who was dealt in, wherever they are now.
+        self._heading(page, "where the fish sit  (seats round the table to "
+                            "the nearest one, 1 is next to me; ranges are a-b)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("fish_left_seats", "on my left, e.g. 1-2"),
+                           ("fish_right_seats", "on my right")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=6).pack(
+                side="left", padx=(6, 18))
+        self._heading(page, "a fish in the blinds  (not me)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._set_item("fish_blinds", v)))
+            for v in query.FISH_BLINDS])
         ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
                   text="A reg plays a third of hands or fewer and raises at "
                        "least one in ten. A fish is loose or passive: over a "
@@ -2987,6 +3039,12 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "facing  (what is in front of the player when they act)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("facing", v))) for v in query.FACINGS])
+        # Hand2Note's preflop ladder: the facing above, with the limpers and
+        # the callers counted. Two chosen are either one, not both.
+        self._heading(page, "preflop, in more detail  (limpers and callers counted)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v.replace("-", " "), *self._set_item("pf_facing", v)))
+            for v in query.PF_FACING])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -3246,7 +3304,8 @@ class FilterDialog(tk.Toplevel):
         row.pack(fill="x", padx=18)
         for name, text in (("deep", "at least"), ("short", "less than"),
                            ("depth", "or a range, e.g. 20-50"),
-                           ("spr", "SPR range, e.g. 1-4")):
+                           ("spr", "SPR range, e.g. 1-4"),
+                           ("street_pot", "pot as the street began, bb, e.g. 5-7")):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=8).pack(
                 side="left", padx=(6, 18))
@@ -3272,6 +3331,8 @@ class FilterDialog(tk.Toplevel):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=10).pack(
                 side="left", padx=(6, 18))
+        self._grid(page, [(lambda parent, f=f, t=t: self._pick(
+            parent, t, *self._flag_item(f))) for f, t in POSTS])
 
         self._heading(page, "dates   (yyyy-mm-dd)")
         row = ttk.Frame(page)
@@ -3650,6 +3711,13 @@ class HandWindow(tk.Toplevel):
         self.tag_entry.pack(side="left")
         self.tag_entry.bind("<Return>", lambda e: self._add_tag())
         ttk.Button(top, text="tag", command=self._add_tag).pack(side="left", padx=4)
+        # The hand as text for a forum or a coach, with every name, the
+        # hand number, the table and the date taken out -- `share_text`
+        # says what is kept. Told from the seat the hand was opened for,
+        # so a hand opened on an opponent shares it as that opponent's.
+        self.seat = seat
+        ttk.Button(top, text="copy for sharing",
+                   command=self._copy_share).pack(side="right")
         self._draw_tags()
 
         # The note on the seat this hand was opened for, when that seat is
@@ -3733,6 +3801,12 @@ class HandWindow(tk.Toplevel):
                            command=lambda t=t: self._drop_tag(t))
             b.pack(side="left", padx=2)
 
+    def _copy_share(self):
+        text = query.share_text(self.con, self.hand_id, self.seat)
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+
     def _add_tag(self):
         import notes
         notes.tag(self.con, self.hand_id, self.tag_entry.get())
@@ -3815,6 +3889,14 @@ def check(db_path=DB):
         ({"flags": ["--hero"], "vals": {"last_sessions": "2"}},
          ["--hero", "--last-sessions", "2"]),
         ({"flags": [], "vals": {"session": "3,4"}}, ["--session", "3,4"]),
+        # The preflop ladder, two rungs at once, which is an OR.
+        ({"flags": ["--pool"], "pf_facing": ["1-limp", "2-limps"]},
+         ["--pool", "--pf-facing", "1-limp,2-limps"]),
+        # The table around the player, and what was posted.
+        ({"flags": ["--hero", "--no-straddle"], "fish_blinds": ["bb"],
+          "vals": {"fish_left_seats": "1-2", "street_pot": "5-7"}},
+         ["--hero", "--no-straddle", "--fish-blinds", "bb",
+          "--fish-left-seats", "1-2", "--street-pot", "5-7"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():

@@ -8,6 +8,121 @@ Newest first.
 
 ---
 
+## The table and the posts: five filters that needed columns -- 4 Oct 2026
+
+The rest of the 24 Sep audit's filter gaps, each of which needed something
+recorded that was not. **Every one adds a column, so a database from
+before this rebuilds once on its next import** (`importer.current` sees
+the columns missing), and the ante and the straddle need
+`python importer.py --reread` over the folders the hands came from,
+since they are read from the history text.
+
+### Added -- `--fish-left-seats`, `--fish-right-seats`: distance to fish
+
+`fish_left` has said which side a fish in the pot sits on since 17 Sep;
+Hand2Note's filter is how many seats away, of the table and not the pot.
+`players.py` now writes `fish_dist_left` and `fish_dist_right` on every
+decision: seats round to the nearest fish dealt in, empty and sitting-out
+chairs not counted, NULL with no fish there. Ranges, like the other
+numeric filters. `players.py --check` asks it two ways from SQL: with one
+fish at the table the two distances go round it exactly (1,995 of 1,995
+on the corpus), and a fish one seat away really is in the next seat up or
+down -- the half that catches left and right swapped, which the sum
+cannot see, and did catch when the sides were swapped on purpose.
+
+### Added -- `--fish-blinds sb|bb|both|any|none`
+
+Hand2Note's "fish on blinds", for the steal it is worth widening. A
+column, `fish_blinds`, of which blinds a fish other than the player is
+in, written by the same walk and checked against a join on `spots`.
+
+### Added -- `--street-pot`: the pot as the street began
+
+Hand2Note's "initial pot". `pot_bb` is the pot at the decision, so it
+cannot say "a flop that began at 20bb". `lines.py` writes `street_pot`,
+the first decision's pot carried to every decision on the street, and
+`lines.py --check` holds it to what was posted (991 of 991 hands
+preflop, a second road to the number through `seats.posted`), to never
+shrinking from one street to the next, and to one figure per street.
+
+### Added -- `--ante`, `--no-ante`, `--straddle`, `--no-straddle`
+
+The parsers fold every post into `seats.posted`, so nothing recorded
+whether a hand had either. `hands` has `ante` and `straddle` now, from the
+posts, and the filters are subqueries over it with partial indexes, as
+`--tag` is. A hand imported before has them NULL, matches none of the
+four rather than counting as "no ante", and `why_empty` names the
+`--reread` that fixes it.
+
+The PokerStars parser now reads "posts straddle $X". That spelling is
+FPDB's own parser's; no history from a site read here has one in its
+corpus, so a synthetic straddled hand in `fixtures/synthetic/` stands in
+for it in the CI database and proves the money adds up. Before this the
+line was a tallied unknown verb and the hand failed the money test. That
+hand also moves two counts in the preflop ladder's check by one.
+
+### Fixed -- an ante counted toward a raise on ACR, Ignition and PartyPoker
+
+The Stars parser lost this bug in Run 19: an ante is in the pot, not in
+front of the player, so a raise "to" X from a seat that anted put in X.
+The other three parsers kept it, counting the ante as the street's money
+already in. Only tournaments ante there, and tournaments are outside the
+money test, so nothing saw it. Over FPDB's tournament files it changes
+one hand: Ignition 2647092083 (2012, a raise written as its street total)
+recorded the raiser's money in as 1,095 against an all-in of 1,175 it
+matched, and now records 1,175.
+
+---
+
+## Gaps from the 24 Sep audit: preflop ladder, hands by strength, sharing a hand -- 4 Oct 2026
+
+### Added -- `--pf-facing`, Hand2Note's preflop ladder
+
+Two of the gaps the 24 Sep audit verified as missing: "limpers count" and
+"all folded to BB" as preflop facings. `facing` counts raises, so an empty
+pot and a pot with two limpers were the same spot, and so were a bare
+open and an open already called -- the squeeze, which is played nothing
+like it. `--pf-facing` adds unopened, 1-limp, 2-limps, 1-raise,
+raise-call, raise-2-calls, 2-raises and walk, OR-ed when several are
+named.
+
+Built without a column. `node` already holds the table's preflop action up
+to the decision, one letter each, and `lines.letter` writes every limp and
+call as C, all-in or not -- so the count of C before the first R is the
+limpers and after it the callers. Each rung seeks `dec_spot` on street and
+facing first. `query.py --check` holds the ladder to adding back up: on
+the corpus, 3,118 unopened decisions are 2,443 + 450 + 225, and 1,865
+opens are 1,561 + 250 + 54.
+
+### Added -- hands strongest first
+
+Another of the 24 Sep gaps: Hand2Note lists the showdown hands under its
+range diagram sorted by strength. `--hands --sort strength`, and **first
+by** above the window's hands tab, order them by `strength.classify` on
+the seat's cards and the whole board, in `strength.ORDER`'s categories with
+the evaluator's tuple breaking ties. The ordering is done in Python after
+the query, over every matching hand rather than the latest 500, since the
+strongest hands of a filter are rarely its newest. `query.py --check`
+holds the order to the categories, the unshown hands to the end (93 of 730
+river hands on the corpus), and the count to the unsorted list's.
+
+### Added -- a hand to share, with nobody in it
+
+The third of the 24 Sep gaps. `--hand ID --share`, and **copy for
+sharing** in the hand window, write the hand as text with the names, the
+hand number, the table, the date and the site left out -- any one of them
+finds the hand again, and every player in it. Seats are positions, the
+seat the hand was opened for is Hero, amounts are big blinds. A full
+table records three seats as UTG, so repeats are numbered in the order
+they first act, UTG to UTG+3, or "UTG calls" would not say who. Hand2Note
+can also hide the showdown; this keeps the cards the site showed, since a
+hand posted for advice without the villain's cards asks a different
+question. `query.py --check` shares the first hand of every site and
+looks for every seat's label and identity, the hand number, the table and
+the day in the text: none on any of six.
+
+---
+
 ## Tonight's sitting, one sitting, and its hands -- 3 Oct 2026
 
 ### Added -- `--last-sessions N` and `--session N,M`

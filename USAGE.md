@@ -291,6 +291,32 @@ split beneath it; the split's frequencies are within the action. `size`
 is also a dimension for any table: `--by size --show cbet_flop` is the
 c-bet rate by how big it was.
 
+### Limpers and callers, preflop
+
+```bash
+python query.py --pool --site ignition --pos BTN --pf-facing 1-limp,2-limps --show iso
+python query.py --hero --pf-facing raise-call --show threebet     # squeeze spots
+python query.py --pool --site ignition --pf-facing walk --by position
+```
+
+`--facing` counts raises -- unopened, open, 3bet -- so it cannot tell an
+empty pot from one with two limpers in it, or a bare open from one somebody
+has already called. `--pf-facing` is Hand2Note's preflop ladder, which can:
+
+| value | in front of the player |
+|---|---|
+| `unopened` | nobody in yet but the blinds |
+| `1-limp`, `2-limps` | one limper; two or more |
+| `1-raise` | an open nobody has called yet (limpers before it allowed) |
+| `raise-call`, `raise-2-calls` | an open and one caller; two or more |
+| `2-raises` | a 3-bet, which is `--facing 3bet` |
+| `walk` | Hand2Note's "all folded to BB": the folds in hands the big blind won without acting, since the big blind makes no decision there |
+
+Several values are alternatives, so `1-limp,2-limps` is any limped pot.
+They are read from the preflop action string, where a limp and a call are
+both `C`; `query.py --check` holds the rungs to adding back up to the
+facing they split. In the window it is a row of the filter's Actions page.
+
 ### The matchup
 
 "BTN vs BB" means the button raised and the big blind did not fold: an
@@ -541,6 +567,8 @@ python query.py --hero --depth 20-50 --results          # effective stack, in bi
 python query.py --hero --street flop --spr 1-4 --show cbet_flop
 python query.py --pool --site ignition --street flop --high A,K --show cbet_flop
 python query.py --hero --format ZONE --results
+python query.py --pool --site pokerstars --street flop --street-pot 5-7 --show cbet_flop
+python query.py --hero --no-straddle --no-ante --results
 ```
 
 `--size` is the bet or raise as a share of the pot in front of the
@@ -549,6 +577,18 @@ multiple of the bet it raised (3.0 is a 3x); `--depth` and `--spr` are
 ranges on the effective stack and the stack-to-pot ratio; `--high` is
 the flop's high card by rank letter; `--format` is RING, ZONE, BLITZ or
 MTT. All in the filter dialog's General tab.
+
+`--street-pot` is the pot as the street began, in big blinds, where the
+pot a bet is sized against is the pot at that decision: a flop that began
+at 5 to 7 big blinds is a single-raised pot whatever anybody did after.
+
+`--ante`, `--no-ante`, `--straddle` and `--no-straddle` are what was
+posted before the cards. A straddle is read where a site writes one --
+"posts straddle", which no site with sample files here has yet been seen
+to -- and an ante wherever it is posted. Hands imported before 4 Oct 2026
+have neither written down and match none of the four until
+`python importer.py --reread` over their folders; a filter that matches
+nothing for that reason says so.
 
 ### Hero in the pot, or out of it
 
@@ -593,6 +633,20 @@ so it comes with the count of pots it was measured on. `--sessions` has
 a hands-per-hour column. `--hands --sort won` and `--sort lost` are the
 biggest wins and losses; in the window, click any column heading to sort
 by it and again to flip, on any tab.
+
+`--sort strength` lists the hands strongest first, by what each seat held
+on the final board -- Hand2Note's showdown list under its range diagram:
+
+```bash
+python query.py --pool --site ignition --street river --facing bet --aggressive --hands --sort strength
+```
+
+The categories go in `strength.ORDER`, so a hand the board made sits under
+a real pair as it does in the range view, and the evaluator breaks ties
+inside one, so aces up comes before nines up. Hands whose cards were never
+shown go last in date order rather than being left out. In the window,
+**first by** above the hands tab chooses it, which decides which 500 hands
+are listed; a heading click only re-sorts the ones already there.
 
 The filter dialog's Cards tab has the 13x13 grid: click the combos you
 mean and they become `--combo`. The hands list shows your own line
@@ -799,6 +853,8 @@ python query.py --hero --fish-right --results     # a fish acts before me (I hav
 python query.py --hero --fish-left --results      # a fish acts after me (they have it)
 python query.py --hero --regs-only --results      # nobody left but regs
 python query.py --hero --fish-left --pot 3bet --street flop --stats
+python query.py --hero --fish-left-seats 1-2 --results    # a fish one or two seats to my left
+python query.py --hero --pos BTN --fish-blinds any --show rfi
 ```
 
 `n_fish` and `n_reg` count who else is still in the pot; `fish_left`,
@@ -808,6 +864,16 @@ order -- the seats clockwise from the button -- and has position on you
 for the whole hand; right is everybody who acts before you. Every fish
 in the pot is on one side or the other, and `players.py --check` holds
 every row to `fish_left + fish_right = n_fish`.
+
+`--fish-left-seats` and `--fish-right-seats` are Hand2Note's distance to
+fish, and are about the table rather than the pot: how many seats round
+to the nearest fish dealt into the hand, 1 being the next seat, counting
+only seats that were dealt in. A range, so `1-2` is a fish within two
+seats. With no fish at the table there is no distance and neither
+selects the hand. `--fish-blinds` is a fish other than you in the small
+blind (`sb`), the big (`bb`), `both`, either (`any`), or `none`; several
+are alternatives. `players.py --check` holds the distances to going round
+the table and asks the blinds again from `spots`.
 
 The switches are in the window's filter dialog under "who". A class is
 only given to a player there is enough evidence about, so "a fish on my
@@ -1232,6 +1298,20 @@ street with the pot before each decision. On Ignition every player's cards
 are there including the folded ones, because the site shows them. On ACR a
 seat reads `--` when the hand was never shown, which is different from
 having been dealt nothing.
+
+To post a hand somewhere public, add `--share`, or press **copy for
+sharing** in the hand's window, which puts the same text on the clipboard:
+
+```bash
+python query.py --hand 5331315698 --share
+```
+
+It has nobody in it. The names, the hand number, the table, the date and
+the site are gone, since any one of them finds the hand in somebody's
+database and every name with it; the players are their positions, the
+seat the hand was opened for is Hero, and every amount is in big blinds.
+Your tags and notes are never in it. The cards are as the site showed
+them, so an Ignition hand still shows the folds.
 
 ### When nothing matches
 

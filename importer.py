@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS hands (
   hand_id TEXT PRIMARY KEY, played_at TEXT, table_id TEXT, game TEXT,
   fmt TEXT, sb REAL, bb REAL, n_players INT, board TEXT, pot REAL,
   hero_seat INT, standard INT, source TEXT, site TEXT, rake REAL,
-  max_seats INT, jp_fee REAL);
+  max_seats INT, jp_fee REAL, ante REAL, straddle REAL);
 CREATE TABLE IF NOT EXISTS seats (
   hand_id TEXT, seat INT, label TEXT, position TEXT, stack REAL,
   cards TEXT, is_hero INT, won REAL, posted REAL, invested REAL,
@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS hands_fmt ON hands(fmt, bb);
 
 HAND_COLUMNS = ("hand_id", "played_at", "table_id", "game", "fmt", "sb", "bb",
                 "n_players", "board", "pot", "hero_seat", "standard", "source",
-                "site", "rake", "max_seats", "jp_fee")
+                "site", "rake", "max_seats", "jp_fee", "ante", "straddle")
 
 
 def migrate(con):
@@ -72,9 +72,19 @@ def migrate(con):
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
     for col, kind in (("site", "TEXT"), ("rake", "REAL"),
-                      ("max_seats", "INT"), ("jp_fee", "REAL")):
+                      ("max_seats", "INT"), ("jp_fee", "REAL"),
+                      ("ante", "REAL"), ("straddle", "REAL")):
         if col not in cols:
             con.execute(f"ALTER TABLE hands ADD COLUMN {col} {kind}")
+    # The ante and the straddle are what the parser read in the posts,
+    # which it folds into `posted` and nowhere else, so a hand imported
+    # before these columns has them NULL -- not known, rather than zero --
+    # until `--reread`. `--ante` and `--straddle` are filters over hands
+    # (`query.py`), and these make them a seek over the few that have one.
+    con.execute("CREATE INDEX IF NOT EXISTS hands_ante ON hands(ante) "
+                "WHERE ante > 0")
+    con.execute("CREATE INDEX IF NOT EXISTS hands_straddle ON hands(straddle) "
+                "WHERE straddle > 0")
     if "site" not in cols:
         # Before a second site existed, every hand was Ignition's.
         con.execute("UPDATE hands SET site='ignition' WHERE site IS NULL")
@@ -526,6 +536,7 @@ def current(con):
     # fail on it.
     import decisions
     return set(decisions.SCHEMA_COLUMNS) | set(lines.LINE_COLUMNS) \
+        | set(lines.NUM_COLUMNS) \
         | set(strength.COLUMNS) | set(players.NAMES) | set(sessions.NAMES) <= cols
 
 
