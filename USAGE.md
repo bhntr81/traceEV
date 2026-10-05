@@ -4,6 +4,15 @@ Every command, what it does, and how to read what comes back.
 
 ---
 
+## Feedback and feature requests
+
+**✉ Feedback**, on the bar beside **Ask** (and in the Help menu), opens a
+small window with **Report a problem** and **Request a feature**. Each opens
+your email program with the developer's address, a subject and the build
+you are running already filled in; nothing is sent until you press send.
+Without an email program -- webmail, say -- copy the address from the same
+window. For a crash, Help > **Show the log** has what is needed.
+
 ## Loading hands
 
 One loader for every site. Each file is identified by the header its hands

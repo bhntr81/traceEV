@@ -38,8 +38,10 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import platform
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
@@ -62,6 +64,12 @@ HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
         else Path(__file__).parent)
 DB = HERE / "hands.db"
 query.DB = DB
+# Where testers' feedback and feature requests go: the owner's own address,
+# given for exactly this. The window opens the tester's email program with
+# it filled in rather than sending anything itself, because sending would
+# need a mail password or an API key in the program, and the repository is
+# public -- a key in it is a key for everybody.
+FEEDBACK_TO = "john.brandon.h86@gmail.com"
 # The saved stats are the user's as much as the database is, so they sit
 # beside it rather than beside the code -- which, frozen, is a directory
 # PyInstaller deletes on the way out. Loading them again here is what puts
@@ -417,6 +425,8 @@ class ImportMixin:
 
         h = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
+        h.add_command(label="Send feedback or a feature request…",
+                      command=self.feedback)
         h.add_command(label="Show the log…", command=self.show_log)
         h.add_command(label="Open the log folder",
                       command=lambda: open_folder(diag.LOG.parent))
@@ -453,6 +463,9 @@ class ImportMixin:
             f"Commit: {update.head() or 'unknown'}\n"
             f"Repository: {update.remote_repo()}\n\n"
             f"The database is at:\n{DB}")
+
+    def feedback(self):
+        Feedback(self)
 
     def show_log(self):
         win = tk.Toplevel(self.master)
@@ -799,6 +812,13 @@ class App(ImportMixin, ttk.Frame):
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
         ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
+        # On the bar every view keeps, not only in the Help menu: a tester
+        # who has something to say should not have to go looking for where
+        # to say it, and most never open a menu that sounds like a manual.
+        self.feedback_btn = ttk.Button(bar, text="✉  Feedback",
+                                       style="Accent.TButton",
+                                       command=self.feedback)
+        self.feedback_btn.pack(side="right", padx=(0, 6))
         ttk.Button(bar, text="detach", command=self.detach).pack(
             side="right", padx=(0, 6))
         ttk.Separator(self).pack(fill="x")
@@ -3836,6 +3856,82 @@ class AskPanel(ttk.Frame):
         self.app.apply_argv(self.last_ran)
 
 
+def feedback_mail(kind):
+    """
+    A mailto: link to FEEDBACK_TO for a problem or a feature request.
+
+    The subject says which, and the body carries what a reply would
+    otherwise have to ask for first: which build, on what computer. The
+    commit is unknown in a packaged build, which has no git beside it, so
+    it says it is one instead.
+    """
+    build = update.head() or ("a packaged build" if getattr(sys, "frozen", False)
+                              else "unknown")
+    subject = f"TraceEV {kind}"
+    body = ("\n\n\n-- \n"
+            f"TraceEV build: {build}\n"
+            f"Computer: {platform.system()} {platform.release()}, "
+            f"Python {platform.python_version()}\n")
+    if kind == "problem":
+        body = ("What happened, and what did you expect?\n" + body
+                + "If it crashed, Help > Show the log has the details.\n")
+    else:
+        body = "What would you like TraceEV to do?\n" + body
+    return (f"mailto:{FEEDBACK_TO}?subject={quote(subject)}"
+            f"&body={quote(body)}")
+
+
+class Feedback(tk.Toplevel):
+    """
+    Feedback and feature requests, to the owner's email.
+
+    Two buttons open the tester's own email program with the address, a
+    subject and the build filled in; nothing is sent until they press send
+    there. The address is printed with a copy button as well, because a
+    computer with no email program set up opens nothing on a mailto: link
+    and gives no error, and webmail users are most testers.
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.title("Feedback and feature requests")
+        self.configure(background=BG)
+        self.geometry("520x260")
+        self.transient(app.master)
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=18, pady=14)
+        ttk.Label(body, text="Found a problem, or want TraceEV to do something "
+                             "it doesn't? It goes straight to the developer.",
+                  wraplength=480, justify="left").pack(anchor="w")
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(14, 10))
+        ttk.Button(row, text="Report a problem", style="Accent.TButton",
+                   command=lambda: self.write("problem")).pack(side="left")
+        ttk.Button(row, text="Request a feature",
+                   command=lambda: self.write("feature request")).pack(
+            side="left", padx=(8, 0))
+        ttk.Label(body, text="Your email program opens with this filled in; "
+                             "nothing is sent until you press send there. "
+                             "No email program? Write to:",
+                  style="Dim.TLabel", wraplength=480,
+                  justify="left").pack(anchor="w")
+        addr = ttk.Frame(body)
+        addr.pack(anchor="w", pady=(6, 0))
+        ttk.Label(addr, text=FEEDBACK_TO).pack(side="left")
+        self.copied = ttk.Label(addr, text="", style="Dim.TLabel")
+        ttk.Button(addr, text="copy address", command=self.copy).pack(
+            side="left", padx=(10, 0))
+        self.copied.pack(side="left", padx=(8, 0))
+
+    def write(self, kind):
+        webbrowser.open(feedback_mail(kind))
+
+    def copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(FEEDBACK_TO)
+        self.copied.configure(text="copied")
+
+
 class Pane(tk.Toplevel):
     """
     One tab's answer in a window of its own, under the filter it was made in.
@@ -4357,6 +4453,23 @@ def check(db_path=DB):
                          f"click listed {listed}")
         if opened:
             opened.destroy()
+    # Feedback reaches the owner: a link that addresses him, says which
+    # kind of message it is, and carries the build, from a button on the
+    # bar rather than only from a menu.
+    from urllib.parse import urlsplit, parse_qs
+    link = urlsplit(feedback_mail("problem"))
+    asked = parse_qs(link.query)
+    window = Feedback(app)
+    window.copy()
+    copied = root.clipboard_get() == FEEDBACK_TO
+    window.destroy()
+    mail_ok = (link.scheme == "mailto" and link.path == FEEDBACK_TO
+               and asked.get("subject") == ["TraceEV problem"]
+               and "TraceEV build:" in asked.get("body", [""])[0]
+               and app.feedback_btn.winfo_manager() == "pack" and copied)
+    print(f"feedback is addressed and on the bar  {'yes' if mail_ok else 'NO'}")
+    if not mail_ok:
+        fails.append("the feedback link, its button or its copy is wrong")
     # Detach: the chart tab, drawn under one filter, copied into a pane;
     # then the window moves on to another filter, and the pane must still
     # draw and click as the first. A pane that followed the window would

@@ -8,6 +8,21 @@ Newest first.
 
 ---
 
+## Feedback from inside the program -- 5 Oct 2026
+
+### Added -- a Feedback button, to the developer's email
+
+For the beta's testers: **✉ Feedback** on the bar, beside **Ask**, and in
+the Help menu. It opens the tester's own email program addressed to the
+developer, with a subject saying problem or feature request and the build
+and operating system in the body -- the two questions a reply would
+otherwise have to ask first. It does not send mail itself, because sending
+would need a mail password or an API key in the program, and the
+repository is public. The address is printed with a copy button too: a
+computer with no email program set up does nothing at all on a mailto
+link, and says nothing either. `app.py --check` reads the link back and
+copies the address.
+
 ## Panes off the main window -- 5 Oct 2026
 
 ### Added -- detach any tab, and put it back
