@@ -795,9 +795,12 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box.bind("<<ComboboxSelected>>",
                              lambda _e: self.refresh())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
+        self.shown_out, self.panes = {}, {}
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
         ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
+        ttk.Button(bar, text="detach", command=self.detach).pack(
+            side="right", padx=(0, 6))
         ttk.Separator(self).pack(fill="x")
 
         # The answer on the left, the assistant on the right when it is
@@ -1239,6 +1242,8 @@ class App(ImportMixin, ttk.Frame):
         """The Views menu, read from the file each time it is opened."""
         menu.delete(0, "end")
         menu.add_command(label="Save this view…", command=self.save_view)
+        menu.add_command(label="Detach this tab into a window",
+                         command=self.detach)
         menu.add_command(label="Export the hands it selects…",
                          command=self.export_hands)
         known = query.saved_views()
@@ -1699,6 +1704,12 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        # What each tab last drew, and under what, for Detach: a pane is a
+        # copy of an answer already on the screen, so it costs no query and
+        # cannot come out different from the tab it was taken from.
+        if view not in ("statrange", "square") and getattr(self, "last", None):
+            self.shown_out[view] = (out, self.last, self.chart_stat(),
+                                    self.by.get())
         # A cached table carries the range of whatever was clicked when it
         # was computed; `show_stat_range` draws the current one after it.
         current = self._range_request(self.last[0], self.last[3]) \
@@ -1725,7 +1736,10 @@ class App(ImportMixin, ttk.Frame):
                                  (out.get("mode") == "comparison" and out.get("total"))) else None
             self._draw_chart(out.get("why") or out.get("error"))
             return
-        tv = self.tree[view]
+        self._render_into(self.tree[view], view, out)
+
+    def _render_into(self, tv, view, out):
+        """One table view's answer into a Treeview, the tab's or a pane's."""
         tv.delete(*tv.get_children())
         if out.get("error") or (out.get("why") and view != "report"):
             tv.configure(columns=("msg",))
@@ -2066,6 +2080,26 @@ class App(ImportMixin, ttk.Frame):
         sid = chosen[0][len("session:"):]
         self.apply_argv(["--hero", "--session", sid, "--hands"])
 
+    def detach(self):
+        """
+        The tab on screen, copied into a window of its own.
+
+        Hand2Note's panes come off the main window so that two answers can
+        be read side by side -- the button's range beside the cutoff's, last
+        month's graph beside this month's. The copy keeps the filter it was
+        made under, and the main window goes on to the next question: a
+        pane that followed the filter would show the same thing as the tab
+        and compare nothing.
+        """
+        view = self.nb.tab(self.nb.select(), "text")
+        shown = self.shown_out.get(view)
+        if not shown:
+            messagebox.showinfo("Nothing to detach",
+                                f"The {view} tab has not drawn anything yet.",
+                                parent=self.master)
+            return
+        Pane(self, view, *shown)
+
     def export_hands(self):
         """
         The hands the filter selects, as the sites wrote them, to a file.
@@ -2132,8 +2166,7 @@ class App(ImportMixin, ttk.Frame):
         w, h = c.winfo_width(), c.winfo_height()
         if w < 80 or h < 80:
             return
-        side = c is getattr(self, "stat_canvas", None)
-        g = self.stat_chart if side else self.chart
+        g, side, pane = self._chart_on(c)
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
@@ -2158,7 +2191,9 @@ class App(ImportMixin, ttk.Frame):
         foot = 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
-        if side:
+        if pane:
+            pane["geometry"] = (left, top, size)
+        elif side:
             self._stat_geometry = (left, top, size)
         else:
             self._chart_geometry = (left, top, size)
@@ -2248,13 +2283,12 @@ class App(ImportMixin, ttk.Frame):
     def _chart_hover(self, event):
         """A colour's sample is one pointer move away, without another query."""
         c = getattr(event, "widget", self.chart_canvas)
-        side = c is getattr(self, "stat_canvas", None)
-        g = self.stat_chart if side else self.chart
-        geometry = "_stat_geometry" if side else "_chart_geometry"
+        g, side, pane = self._chart_on(c)
+        geometry = self._geometry_of(c)
         c.delete("hint")
-        if not g or not hasattr(self, geometry):
+        if not g or not geometry:
             return
-        left, top, size = getattr(self, geometry)
+        left, top, size = geometry
         if size <= 0:
             return
         i, j = int((event.y - top) // size), int((event.x - left) // size)
@@ -2286,6 +2320,21 @@ class App(ImportMixin, ttk.Frame):
                                         fill=BG, outline=EDGE, tags=("hint",))
         c.tag_lower(background, item)
 
+    def _chart_on(self, c):
+        """(chart, is the stats tab's, detached pane or None) for a canvas."""
+        pane = getattr(self, "panes", {}).get(c)
+        if pane:
+            return pane["g"], False, pane
+        side = c is getattr(self, "stat_canvas", None)
+        return (self.stat_chart if side else self.chart), side, None
+
+    def _geometry_of(self, c):
+        _g, side, pane = self._chart_on(c)
+        if pane:
+            return pane.get("geometry")
+        return getattr(self, "_stat_geometry" if side else "_chart_geometry",
+                       None)
+
     def _square_hands(self, event):
         """
         A square of a chart, clicked: the hands it was drawn from.
@@ -2301,11 +2350,10 @@ class App(ImportMixin, ttk.Frame):
         not change what it is a chart of.
         """
         c = event.widget
-        side = c is getattr(self, "stat_canvas", None)
-        g = self.stat_chart if side else self.chart
-        geometry = getattr(self, "_stat_geometry" if side else "_chart_geometry",
-                           None)
-        if not g or not geometry or not getattr(self, "last", None):
+        g, side, pane = self._chart_on(c)
+        geometry = self._geometry_of(c)
+        last = pane["last"] if pane else getattr(self, "last", None)
+        if not g or not geometry or not last:
             return
         left, top, size = geometry
         if size <= 0:
@@ -2316,16 +2364,18 @@ class App(ImportMixin, ttk.Frame):
         combo = query.combo_at(i, j)
         if not g["cells"].get(combo, (0, None))[0]:
             return
-        _where, _label, _parts, cohort_spec, query_argv = self.last
+        _where, _label, _parts, cohort_spec, query_argv = last
         extra = ["--combo", combo]
         if side and self.picked:
             alternative = TOOK.get(self.took.get())
             extra += ["--took", self.picked
                       + (":" + alternative if alternative else "")]
-        elif not side and g["mode"] != "composition" and self.chart_stat():
+        elif not side and g["mode"] != "composition":
             # A rate's square is coloured by the share that took it, and
             # the ones that did are the hands worth opening.
-            extra += ["--took", self.chart_stat()]
+            stat = pane["stat"] if pane else self.chart_stat()
+            if stat:
+                extra += ["--took", stat]
         argv = list(query_argv) + extra
         try:
             where, label, parts = query.build(argv)
@@ -2342,19 +2392,21 @@ class App(ImportMixin, ttk.Frame):
                            "", cohort_spec, None, None, argv, None))
 
     # ---- the graph, drawn rather than served ---------------------------
-    def _draw_graph(self, message=None):
-        c = self.canvas
+    def _draw_graph(self, message=None, canvas=None, series=None):
+        """The main graph, or with `canvas` and `series` a detached one."""
+        c = canvas or self.canvas
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50:
             return
-        s = self.series
+        s = series if canvas is not None else self.series
+        ran = canvas is not None or self.graph_ran
         if not s:
             idle = "the graph is drawn once the filter has run"
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10),
                           text=message or (
                               "fewer than two of your hands match -- a line "
-                              "needs two points" if self.graph_ran else idle))
+                              "needs two points" if ran else idle))
             return
         L, R, T, B = 70, 210, 30, 40
         n = len(s["total"])
@@ -3784,6 +3836,91 @@ class AskPanel(ttk.Frame):
         self.app.apply_argv(self.last_ran)
 
 
+class Pane(tk.Toplevel):
+    """
+    One tab's answer in a window of its own, under the filter it was made in.
+
+    Drawn by the tab's own code from the answer the tab already had, so a
+    pane and the tab it came from cannot disagree. A chart pane is a chart
+    like the tab's: hover for counts, click a square for its hands, under
+    the pane's filter and not the window's. **back into the window** puts
+    that filter and tab back in the main window and closes the pane.
+    """
+
+    def __init__(self, app, view, out, last, stat, by):
+        super().__init__(app)
+        self.app, self.view, self.last, self.by = app, view, last, by
+        self.configure(background=BG)
+        label = last[1] + (f", cohort: {players.describe_cohort(last[3])}"
+                           if last[3] is not None else "")
+        self.title(f"{view} · {label}"[:120])
+        self.geometry("900x620")
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        ttk.Label(top, text=f"{view} -- {label}"
+                  + (f", by {by}" if view in ("report", "results", "actions",
+                                              "overfolds") and by else ""),
+                  style="Dim.TLabel", wraplength=700,
+                  justify="left").pack(side="left")
+        ttk.Button(top, text="back into the window",
+                   command=self.dock).pack(side="right")
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.canvas = None
+        if view in ("chart", "graph"):
+            c = self.canvas = tk.Canvas(body, bg=BG, highlightthickness=0)
+            c.pack(fill="both", expand=True)
+            if view == "chart":
+                g = out if (out.get("cells") or (out.get("mode") == "comparison"
+                                                 and out.get("total"))) else None
+                app.panes[c] = {"g": g, "last": last, "stat": stat}
+                message = out.get("why") or out.get("error")
+                c.bind("<Configure>", lambda e: app._draw_chart(message, c))
+                c.bind("<Motion>", app._chart_hover)
+                c.bind("<Leave>", lambda e: c.delete("hint"))
+                c.bind("<Button-1>", app._square_hands)
+            else:
+                c.bind("<Configure>", lambda e: app._draw_graph(
+                    out.get("why") or out.get("error"), c, out.get("series")))
+        else:
+            self.tv = app._table(body)
+            # The tab's renderers keep a note of what they drew, for the
+            # tab's own clicks; a pane must not leave its answer there, or
+            # a double-click on the tab would open the pane's hands.
+            kept = (getattr(app, "shown_stats", None),
+                    getattr(app, "_hand_ids", {}))
+            try:
+                app._render_into(self.tv, view, out)
+                self.ids = getattr(app, "_hand_ids", {}) if view == "hands" else {}
+            finally:
+                app.shown_stats, app._hand_ids = kept
+            if self.ids:
+                self.tv.bind("<Double-1>", self._open)
+                self.tv.bind("<Return>", self._open)
+        self.bind("<Destroy>", self._gone)
+
+    def _open(self, _event=None):
+        sel = self.tv.selection()
+        if sel and sel[0] in self.ids:
+            HandWindow(self.app, self.app.con, *self.ids[sel[0]])
+
+    def _gone(self, event):
+        if event.widget is self and self.canvas is not None:
+            self.app.panes.pop(self.canvas, None)
+
+    def dock(self):
+        _w, _l, _p, cohort_spec, query_argv = self.last
+        argv = list(query_argv)
+        if self.by and self.view in ("report", "results"):
+            argv += ["--by", self.by]
+        self.app.apply_argv(argv, cohort_spec)
+        if self.view in ("actions", "overfolds") and self.by is not None:
+            self.app.by.set(self.by)
+        self.app.nb.select(self.app.tabs[self.view])
+        self.app.refresh()
+        self.destroy()
+
+
 class SquareHands(tk.Toplevel):
     """
     The hands behind one square of a chart, each one double-clicked open.
@@ -4220,6 +4357,66 @@ def check(db_path=DB):
                          f"click listed {listed}")
         if opened:
             opened.destroy()
+    # Detach: the chart tab, drawn under one filter, copied into a pane;
+    # then the window moves on to another filter, and the pane must still
+    # draw and click as the first. A pane that followed the window would
+    # compare nothing, and one that clicked through to the window's filter
+    # would list hands from a different chart than the one under the mouse.
+    root.deiconify()
+    btn = query.build(["--pos", "BTN"])
+    app.last = (btn[0], btn[1], btn[2], None, ["--pos", "BTN"])
+    app.of.set("the range itself")
+    app.nb.select(app.tabs["chart"])
+    root.update()
+    shown = app._work(0, "chart", btn[0], btn[1], btn[2], "", None)
+    app.results.get_nowait()
+    app.last = (btn[0], btn[1], btn[2], None, ["--pos", "BTN"])
+    app._render(shown)
+    app.detach()
+    panes = [w for w in app.winfo_children() if isinstance(w, Pane)]
+    pane = panes[-1] if panes else None
+    pane_ok = bool(pane)
+    if pane:
+        pane.geometry("900x620")
+        root.update()
+        app.last = ("1=1", "everything", [], None, [])
+        drawn = len(pane.canvas.find_all())
+        geometry = app._geometry_of(pane.canvas)
+        combo = next(c for c, (n, _k) in shown["cells"].items() if n)
+        spot = next((i, j) for i in range(13) for j in range(13)
+                    if query.combo_at(i, j) == combo)
+        left, top, size = geometry or (0, 0, 0)
+        click = type("Click", (), {"widget": pane.canvas,
+                                   "x": left + (spot[1] + .5) * size,
+                                   "y": top + (spot[0] + .5) * size})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        app._square_hands(click)
+        item = app.requests.get_nowait() if not app.requests.empty() else None
+        want = query.build(["--pos", "BTN", "--combo", combo])[0]
+        pane_ok = drawn >= 169 and item is not None and item[3] == want
+        print(f"a detached chart keeps its filter  "
+              f"{'yes' if pane_ok else 'NO'}, {drawn} items, {combo} "
+              f"clicks through to BTN")
+        pane.destroy()
+        root.update()
+    if not pane_ok or app.panes:
+        fails.append("a detached chart did not draw, or clicked through to "
+                     "the window's filter, or outlived its window")
+    # A table pane is the tab's own renderer into another table, and must
+    # leave the tab's record of its rows alone.
+    before = dict(getattr(app, "_hand_ids", {}))
+    rows = app._work(0, "hands", btn[0], btn[1], btn[2], "", None)
+    app.results.get_nowait()
+    table = Pane(app, "hands", rows, app.last, None, "")
+    listed = len(table.ids)
+    table.destroy()
+    kept = getattr(app, "_hand_ids", {}) == before
+    print(f"a detached table lists its rows  {listed} of {len(rows['rows'])}"
+          f"; the tab's own left alone  {'yes' if kept else 'NO'}")
+    if listed != len(rows["rows"]) or not kept:
+        fails.append("a detached hands table lost rows or overwrote the tab's")
+    root.withdraw()
     if not refused["range"].get("error"):
         fails.append("a hand-counted stat was given an alternative range")
     # The weak share under a postflop range is `range_of`'s over the same

@@ -8,6 +8,30 @@ Newest first.
 
 ---
 
+## Panes off the main window -- 5 Oct 2026
+
+### Added -- detach any tab, and put it back
+
+**detach**, beside **Ask** and in the Views menu, copies the tab on screen
+into a window of its own under the filter it was drawn with. Hand2Note's
+panes come off so two answers can be read side by side, and a copy that
+followed the window's filter would show what the tab shows and compare
+nothing, so a pane keeps its own. It is drawn by the tab's own code from
+the answer the tab already had: no query, and no way for the two to differ.
+A detached chart hovers and clicks like the tab's, and a square lists the
+hands under the pane's filter; **back into the window** restores the pane's
+filter and tab in the main window and closes it.
+
+The renderers note what they drew for the tab's own clicks -- the stats
+tab's player, the hands tab's rows -- and a pane drawn through them puts
+those back, or a double-click on the hands tab would open the pane's hands.
+`app.py --check` detaches a chart drawn on the button, moves the window to
+everything, and clicks a square of the pane: it must ask for the button's
+hands. It does; pointed at the window's filter instead, the check fails.
+
+Not a docking layout: panes do not tile inside the main window and are
+not kept between runs. A saved view is the way to keep a whole window.
+
 ## A square of a range opens its hands -- 5 Oct 2026
 
 ### Added -- click a square, get the hands; `--took`
