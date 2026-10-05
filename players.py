@@ -636,6 +636,14 @@ def show(name, db_path=DB):
                                         "identity dies with the session)")
         print(f"\n{r['player']}   {r['site']}   {r['hands']:,} hands   "
               f"{r['class'].upper()}{note}")
+        # Your own words first, as `opponents.show` has them, then the
+        # hands you put beside them -- each one openable with --hand.
+        import notes
+        written = notes.note_of(con, r["site"], r["player"])
+        for line in written.splitlines():
+            print(f"  note: {line}")
+        for hid, words in notes.hands_noted(con, r["site"], r["player"]):
+            print(f"  hand: {hid}  {words}")
         profile(con, r["player"], r["site"], r["bb100"])
 
 
@@ -661,6 +669,8 @@ def profile(con, player, site, bb100=None):
     mine_d = stats.rates(con, mine, mp, want)
     pool_d = stats.rates(con, pool_where, pool_params, want) if pool_where else {}
 
+    import notes
+    said = notes.stat_notes_of(con, site, player)
     print(f"  {'':20} {'n':>6} {'rate':>8} {'95% interval':>15} "
           f"{'pool':>7} {'w/ pool':>8}")
     for label, key in PROFILE:
@@ -680,6 +690,8 @@ def profile(con, player, site, bb100=None):
               f"{'       -' if p is None else f'{p * 100:7.1f}%'} {iv:>15} "
               f"{'      -' if pool is None else f'{pool * 100:6.1f}%'} "
               f"{'       -' if s is None else f'{s * 100:7.1f}%'}")
+        if key in said:
+            print(f"  {'':20} note: {said[key]}")
     if bb100 is not None:
         print(f"  {'bb/100':20} {'':>6} {bb100:7.1f}")
 

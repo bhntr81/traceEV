@@ -1463,7 +1463,8 @@ straddle (built 4 Oct, `--straddle`), "all folded to BB" as a facing (built 4 Oc
 as `--pf-facing walk`, with the limper and caller counts), the initial pot
 on a street (built 4 Oct, `--street-pot`), fish on the blinds (built 4 Oct,
 `--fish-blinds`), antes (built 4 Oct, `--ante`), out-of-queue posts, note templates, a
-hand inserted into a note, notes on a stat, an anonymised one-hand share
+hand inserted into a note, notes on a stat (all three built 5 Oct, `notes.py`
+and the hand window), an anonymised one-hand share
 (built 4 Oct, `--hand ID --share` and a button in the hand window),
 sorting showdown hands by strength (built 4 Oct, `--sort strength`), and a stat-expression string in the
 cohort picker.
@@ -1523,7 +1524,7 @@ cohort picker.
 
 | Hand2Note | here |
 |---|---|
-| Notes per player, **note templates**, inserting a hand into a note, **notes on a stat**, badges (rule-based icons) | have player notes and hand marks; templates, hand-in-note, stat notes, badges missing (badges are HUD) |
+| Notes per player, **note templates**, inserting a hand into a note, **notes on a stat**, badges (rule-based icons) | have player notes, hand marks, and since 5 Oct templates (filled with the player's rates and their n), a hand in a note, and notes on a stat; badges are HUD |
 | Marked hands with **labels** (named, coloured) and per-hand notes | have marks (`--tag`), which are labels; per-hand notes exist in `notes.py` |
 | Share a hand as a link or image, hiding names and showdown | have it as text (`--hand ID --share`, **copy for sharing**): no names, hand number, table, date or site, amounts in bb. Showdown cards are kept; no link or image |
 | Showdowns indicator (count of new showdowns per opponent since sitting down) | HUD; in scope since 3 Oct 2026, not built |
