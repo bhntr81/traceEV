@@ -8,6 +8,21 @@ Newest first.
 
 ---
 
+## The sittings filters have an index -- 5 Oct 2026
+
+### Added -- `dec_sid`, on `decisions(session_id)`
+
+"This sitting" and "my last five sittings" ask for session ids, and the
+only index carrying the id had it third, behind the length and minutes
+that the session-length filters need first. `--last-sessions` therefore
+read that index end to end: 0.3 to 0.5s a tab at 50,000 hands. With an
+index led by the id it is about 0.01s, under every view and combined with
+`--hero` or a street. `sessions.py --check` now requires a session filter
+to seek it. It is built with the other session indexes in `sessions.index`
+and not in `decisions.INDEXES`, because `decisions.build` makes a table
+without the session columns and indexes it before they exist. An existing
+database gets it on its next import, without a rebuild.
+
 ## The actions tab reads one table -- 3 Oct 2026
 
 ### Changed -- four outcome columns on `decisions`

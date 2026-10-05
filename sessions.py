@@ -186,6 +186,27 @@ def write(con, sessions, stamps):
     con.execute("DROP TABLE temp.staged")
 
 
+def index(con):
+    """
+    The indexes on the session columns of `decisions`.
+
+    Length first in `dec_session`, because "sessions of two to five hours"
+    is a range on it and a range can only seek on the leading column;
+    minutes-in and the id ride along so the other two questions read this
+    index end to end rather than the fifty-column table. But "this sitting"
+    and "my last five" ask for ids, and an id in third place is a skip-scan
+    at best: `--last-sessions` read the whole index, 0.3 to 0.5s a tab at
+    50,000 hands, against 0.01s from `dec_sid`. These live here and not in
+    `decisions.INDEXES` because `decisions.build` makes a table without
+    these columns and indexes it before this stage has added them.
+    """
+    con.execute("DROP INDEX IF EXISTS dec_session")
+    con.execute("CREATE INDEX IF NOT EXISTS dec_session "
+                "ON decisions(session_len, session_min, session_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS dec_sid ON decisions(session_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS dec_tables ON decisions(tables_now)")
+
+
 def update(con):
     """
     The sittings again, and the columns of only the hands they changed.
@@ -211,6 +232,10 @@ def update(con):
     # hero seat with it -- has its stamp taken off rather than left behind.
     changed += [(None, None, None, None, h) for h in had if h not in wanted]
     write(con, sessions, changed)
+    # A database built before `dec_sid` existed is never rebuilt now that
+    # imports are incremental, so the update path adds it, once; on every
+    # later import it is already there and this does nothing.
+    con.execute("CREATE INDEX IF NOT EXISTS dec_sid ON decisions(session_id)")
     return len(sessions)
 
 
@@ -223,14 +248,7 @@ def build(db_path=DB):
 
     rows, sessions, stamps = plan(con)
     write(con, sessions, stamps)
-    # Length first, because "sessions of two to five hours" is a range on
-    # it and a range can only seek on the leading column; minutes-in and the
-    # id ride along so the other two questions read this index end to end
-    # rather than the fifty-column table.
-    con.execute("DROP INDEX IF EXISTS dec_session")
-    con.execute("CREATE INDEX IF NOT EXISTS dec_session "
-                "ON decisions(session_len, session_min, session_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS dec_tables ON decisions(tables_now)")
+    index(con)
     con.execute("ANALYZE")
     con.commit()
     print(f"{len(sessions):,} sessions over {len(rows):,} of your hands, "
@@ -334,6 +352,16 @@ def check(db_path=DB):
           f"{'' if not overlap else '   <-- they must not'}")
     if overlap:
         fails.append("two sessions on one site overlap")
+
+    # The sittings filters ask for ids, and only an index led by the id
+    # seeks them. `dec_session` carries the id third, so a plan through it
+    # reads the index end to end and still looks like an index.
+    plan = " ".join(str(r[3]) for r in con.execute(
+        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM decisions "
+        "WHERE session_id IN (SELECT session_id FROM sessions LIMIT 3)"))
+    print(f"a sitting seeks its own index {'yes' if 'dec_sid' in plan else 'NO -- ' + plan}")
+    if "dec_sid" not in plan:
+        fails.append("a session filter does not use dec_sid")
 
     # And what the tool is for: something to look at.
     big = con.execute("SELECT COUNT(*) FROM sessions WHERE hands >= 50").fetchone()[0]
