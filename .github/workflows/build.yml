@@ -39,15 +39,24 @@ jobs:
       # a window -- which looks like a crash rather than a missing package.
       - name: Install Tk
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y python3-tk
+        run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
 
       # The parts that do not need a database. The rest of the checks read
       # hands, and there are none here: hand histories are the user's data
       # and are not in the repository.
+      #
+      # `diag.py --check` opens a window to prove a Tk callback's error is
+      # logged, and a Linux runner has no screen to open it on, so there it
+      # runs under a virtual display, as check.yml's window checks do. The
+      # first build ever run, on 5 Oct 2026, built Windows and macOS and
+      # stopped Linux here with exit 1 and nothing printed.
       - name: Check what runs without hands
+        shell: bash
         run: |
+          screen=""
+          if [ "$RUNNER_OS" = "Linux" ]; then screen="xvfb-run -a"; fi
           python -c "import app, query, stats, lines, decisions, spots, equity, importer, diag"
-          python diag.py --check
+          $screen python diag.py --check
           python build.py --check
 
       - name: Install PyInstaller
@@ -93,6 +102,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" out/* \
+          # A tag with a suffix, v0.1.0-beta, is a pre-release: GitHub
+          # labels it so and keeps it off "Latest", which is what a beta
+          # tester should see and what a later paid release should replace.
+          pre=""
+          case "${{ github.ref_name }}" in *-*) pre="--prerelease" ;; esac
+          gh release create "${{ github.ref_name }}" out/* $pre \
             --repo "${{ github.repository }}" --generate-notes \
             --title "TraceEV ${{ github.ref_name }}"
