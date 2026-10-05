@@ -1234,6 +1234,16 @@ def why_empty(con, parts):
             "nothing -- drop one at a time to find the pair that does")
 
 
+def one_player(con, argv):
+    """(site, player) when the filter names exactly one player on one site."""
+    named = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--player"]
+    if len(named) != 1:
+        return None
+    sites = [r[0] for r in con.execute(
+        "SELECT DISTINCT site FROM decisions WHERE player = ?", (named[0],))]
+    return (sites[0], named[0]) if len(sites) == 1 else None
+
+
 def pool_beside(con, argv):
     """
     The pool one named player's rates can be read against, or nothing.
@@ -1252,15 +1262,11 @@ def pool_beside(con, argv):
     of them into a number that describes neither is the mistake `fmt='RING'`
     has already caused here once.
     """
-    named = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--player"]
-    if len(named) != 1:
+    one = one_player(con, argv)
+    if one is None:
         return None, ()
-    who = named[0]
-    sites = [r[0] for r in con.execute(
-        "SELECT DISTINCT site FROM decisions WHERE player = ?", (who,))]
-    if len(sites) != 1:
-        return None, ()
-    pool, params = players.pool_for(con, who, sites[0])
+    site, who = one
+    pool, params = players.pool_for(con, who, site)
     if not pool:
         return None, ()
     # Their own conditions stay; the clause naming them goes. `--vs-player`

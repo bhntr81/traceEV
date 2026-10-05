@@ -842,6 +842,32 @@ A note is per site: a screen name on PokerStars is not the same person as
 that name on ACR, and an Ignition seat is nobody after the session -- the
 window offers a note box only where the site has names.
 
+Hand2Note's three other kinds of note:
+
+```bash
+python notes.py --template light "3-bets light, {threebet}"     # a sentence to reuse
+python notes.py --use-template pokerstars eodh light            # -> "3bet 14% (n=58) (2026-10-05)"
+python notes.py --note-hand pokerstars eodh ps-261810052519 "river overbluff"
+python notes.py --stat-note pokerstars eodh fold_to_3bet "folds only out of position"
+```
+
+A **template** is a sentence written once. `{key}` is any stat key
+`--show` takes, filled with that player's rate and its n when the template
+is used, and dated, because the note keeps what was true when it was
+written. A misspelt key is refused when the template is saved. In the
+hand window, **insert template** puts it in the note box to read before
+saving.
+
+A **hand in a note** sits beside the player with a few words, and the
+profile (`players.py NAME`, `opponents.py NAME`) lists it to open again
+with `--hand`. Only a hand the player was dealt into is accepted. In the
+hand window, **put this hand in the note** does it with whatever is typed
+beside the button.
+
+A **note on a stat** is printed under that stat's row in the profiles,
+and when the window's filter names one player it is a column of the stats
+tab: double-click a row to write one.
+
 Tags and notes live in `hands.db`, in tables of their own that nothing in
 the derivation chain touches, so a re-import never loses them. Back up
 the database and they come with it.

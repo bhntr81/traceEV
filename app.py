@@ -975,6 +975,9 @@ class App(ImportMixin, ttk.Frame):
         split.add(side, weight=2)
         self.tree["stats"] = self._table(table)
         self.tree["stats"].bind("<<TreeviewSelect>>", self._picked_stat)
+        # A double-click writes a note on that stat, when the table is one
+        # named player's -- Hand2Note's notes on a stat.
+        self.tree["stats"].bind("<Double-1>", self._note_on_stat)
         self.stat_canvas = tk.Canvas(side, bg=BG, highlightthickness=0)
         self.stat_canvas.pack(fill="both", expand=True)
         self.stat_canvas.bind("<Configure>", lambda e: self._draw_chart(
@@ -1457,6 +1460,27 @@ class App(ImportMixin, ttk.Frame):
         return (("statrange", where, self.picked, took, repr(cohort_spec)),
                 self.picked, took)
 
+    def _note_on_stat(self, _event=None):
+        import notes
+        from tkinter import simpledialog
+        shown = getattr(self, "shown_stats", None)
+        chosen = self.tree["stats"].selection()
+        if not shown or "who" not in shown or not chosen \
+                or not chosen[0].startswith("stat:"):
+            return
+        key = chosen[0][len("stat:"):]
+        site, player = shown["who"]
+        text = simpledialog.askstring(
+            "note on a stat", f"{player} on {site}, {key} (empty removes):",
+            initialvalue=shown["said"].get(key, ""), parent=self)
+        if text is None:
+            return
+        notes.stat_note(self.con, site, player, key, text)
+        shown["said"] = notes.stat_notes_of(self.con, site, player)
+        tv = self.tree["stats"]
+        tv.delete(*tv.get_children())
+        self._render_stats(tv, shown)
+
     def _picked_stat(self, _event=None):
         chosen = self.tree["stats"].selection()
         if not chosen or not chosen[0].startswith("stat:"):
@@ -1529,6 +1553,13 @@ class App(ImportMixin, ttk.Frame):
                 pool_where, pool_params = query.pool_beside(con, list(filter_argv))
                 out["n"], out["rows"] = query.stats_of(con, where, pool_where,
                                                        pool_params)
+                # The same one player's notes on their stats, beside the
+                # rows they are about -- only where a name is a person.
+                one = query.one_player(con, list(filter_argv))
+                if one and one[0] in sites.named():
+                    import notes
+                    out["who"] = one
+                    out["said"] = notes.stat_notes_of(con, *one)
                 if stat in stats.EXPR_BY_KEY:
                     expression = stats.EXPR_BY_KEY[stat]
                     value, n = stats.evaluate(con, expression, where)
@@ -1723,16 +1754,19 @@ class App(ImportMixin, ttk.Frame):
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
     def _render_stats(self, tv, out):
+        self.shown_stats = out
         # The last two columns exist only when one player is named, because
         # only then is there a pool that is the same spot with other people
         # in it. Added rather than substituted: the interval belongs to the
         # raw rate, and a reader who wants to know what was actually seen
         # should not have to work it back out of a shrunk figure.
         pooled = bool(out["rows"]) and "pool" in out["rows"][0]
-        names = ("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
-        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ()),
-                   {"stat": "w"})
-        blank = ("", "") if pooled else ()
+        said = out.get("said") if "who" in out else None
+        names = (("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
+                 + (("note",) if said is not None else ()))
+        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ())
+                   + ((320,) if said is not None else ()), {"stat": "w", "note": "w"})
+        blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
         for r in out["rows"]:
             if r["group"] != group:
@@ -1744,6 +1778,8 @@ class App(ImportMixin, ttk.Frame):
                 # A stat the pool never had the chance to take gets no
                 # comparison. "0.0%" there would invent a population.
                 extra = (_pct(r.get("pool")), _pct(r.get("shrunk")))
+            if said is not None:
+                extra += (said.get(r["key"], ""),)
             tv.insert("", "end", iid="stat:" + r["key"],
                       tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
@@ -3740,6 +3776,28 @@ class HandWindow(tk.Toplevel):
             self.note_box.pack(side="left", padx=8, fill="x", expand=True)
             self.note_box.insert("1.0", focus.get("note") or "")
             ttk.Button(row, text="save", command=self._save_note).pack(side="left")
+            # Hand2Note's templates and hand-in-a-note, under the box: a
+            # template is written into the box filled with this player's
+            # numbers, to be read and saved like anything typed, and this
+            # hand goes beside the player with the words typed next to it.
+            row = ttk.Frame(self)
+            row.pack(side="top", fill="x", padx=12, pady=(0, 6))
+            names = [n for n, _t in notes.templates(con)]
+            self.template = ttk.Combobox(row, state="readonly", width=18,
+                                         values=names)
+            if names:
+                self.template.set(names[0])
+                self.template.pack(side="left")
+                ttk.Button(row, text="insert template",
+                           command=self._insert_template).pack(side="left", padx=4)
+            self.hand_words = ttk.Entry(row, width=28)
+            self.hand_words.pack(side="left", padx=(12, 4))
+            self.hand_state = ttk.Label(row, style="Dim.TLabel")
+            ttk.Button(row, text="put this hand in the note",
+                       command=self._note_hand).pack(side="left")
+            self.hand_state.pack(side="left", padx=8)
+            if any(h == hand_id for h, _w in notes.hands_noted(con, *self.note_for)):
+                self.hand_state.configure(text="in the note")
 
         text = tk.Text(self, background=BG, foreground=INK, borderwidth=0,
                        font=mono, padx=16, pady=12, wrap="none",
@@ -3823,6 +3881,21 @@ class HandWindow(tk.Toplevel):
         if self.note_for:
             notes.note(self.con, *self.note_for,
                        self.note_box.get("1.0", "end"))
+
+    def _insert_template(self):
+        import notes
+        if not self.note_for or not self.template.get():
+            return
+        line = notes.filled(self.con, self.template.get(), *self.note_for)
+        had = self.note_box.get("1.0", "end").strip()
+        self.note_box.insert("end", ("\n" if had else "") + line)
+
+    def _note_hand(self):
+        import notes
+        if self.note_for:
+            notes.note_hand(self.con, *self.note_for, self.hand_id,
+                            self.hand_words.get())
+            self.hand_state.configure(text="in the note")
 
 
 def check(db_path=DB):

@@ -192,8 +192,11 @@ def show(con, player, site):
     # Your own words about them, above the numbers, because that is the
     # order they are useful in at the table.
     written = notes.note_of(con, site, player)
-    if written:
-        print(f"  note: {written}")
+    for line in written.splitlines():
+        print(f"  note: {line}")
+    for hid, words in notes.hands_noted(con, site, player):
+        print(f"  hand: {hid}  {words}")
+    said = notes.stat_notes_of(con, site, player)
 
     devs = profile(con, player, site)
     if not devs:
@@ -224,7 +227,8 @@ def show(con, player, site):
         arrow = "^" if way == "high" else "v"
         print(f"  {s.label:22} {100 * p:6.1f}% {100 * bp:7.1f}% {arrow}  "
               f"{note or '(no standard adjustment)'}")
-        print(f"  {'':22} {'n=' + str(n):>8}")
+        print(f"  {'':22} {'n=' + str(n):>8}"
+              + (f"   note: {said[s.key]}" if s.key in said else ""))
     return len(devs)
 
 

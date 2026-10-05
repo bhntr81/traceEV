@@ -8,6 +8,38 @@ Newest first.
 
 ---
 
+## Notes: templates, a hand in a note, a note on a stat -- 5 Oct 2026
+
+### Added -- Hand2Note's three other kinds of note
+
+A **template** is a sentence saved once (`notes.py --template`) and added
+to any player's note (`--use-template`, or **insert template** in the hand
+window). `{threebet}` and every other stat key is filled with that
+player's rate when it is used -- "3bet 14% (n=58)", never a bare
+percentage -- and the line is dated, because a note records a read made
+on what was true then; one that recomputed itself would put today's number
+under last month's judgement. A key that is no stat is refused when the
+template is saved rather than turning up as a literal `{fold_to_3bat}` at
+the table.
+
+A **hand in a note** (`--note-hand`, or **put this hand in the note**) is
+a hand id beside the player with a few words, listed in both profiles. It
+has to be a hand the player was dealt into, checked against `spots`.
+
+A **note on a stat** (`--stat-note`) is printed under that stat's row in
+`players.py NAME`, beside it in `opponents.py NAME`, and is a column of
+the stats tab when the filter names one player on one site; a
+double-click writes one. `query.one_player` is now the one place that
+decides "one player on one site", for this and for `pool_beside`.
+
+Three tables beside `notes`, created on demand and outside the
+derivation, so no rebuild touches them. `notes.py --check` round-trips
+each, refuses a misspelt template, a hand the player was not in and a
+note on a stat that does not exist, and fills a template from the real
+engine.
+
+---
+
 ## The table and the posts: five filters that needed columns -- 4 Oct 2026
 
 The rest of the 24 Sep audit's filter gaps, each of which needed something
