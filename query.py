@@ -2939,6 +2939,17 @@ def check(db_path=DB):
         print(f"    {name}: reads every row"
               f"{' -- ' + SCAN_OK[name] if name in SCAN_OK else ''}")
     unexplained = [n for n in scanning if n not in SCAN_OK]
+    # "Reaches an index" is not enough for a filter that has one of its own.
+    # `--matchup` reached dec_vs, through the `position IN (...)` it also
+    # says, and fetched a third of the table a row at a time while this
+    # line counted it as indexed.
+    plan = " ".join(str(r[3]) for r in con.execute(
+        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM decisions WHERE "
+        + build(["--matchup", "BTN,BB"])[0]))
+    print(f"--matchup seeks its own index   "
+          f"{'yes' if 'dec_matchup' in plan else 'NO -- ' + plan}")
+    if "dec_matchup" not in plan:
+        fails.append("--matchup does not use dec_matchup")
     if unexplained:
         fails.append("these read the whole table and nothing says why: "
                      + ", ".join(unexplained))

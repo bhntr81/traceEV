@@ -548,6 +548,7 @@ def update(hand_ids, db_path=DB, progress=None):
     hands, which were committed before any of this began.
     """
     import importlib
+    import decisions
     hand_ids = list(dict.fromkeys(hand_ids))
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -565,6 +566,14 @@ def update(hand_ids, db_path=DB, progress=None):
                 progress(f"deriving {name} for {len(hand_ids)} hands...")
             importlib.import_module(name).update(con)
         con.commit()
+        # An index added to `decisions.INDEXES` since this database was last
+        # rebuilt would otherwise wait for the next rebuild, and since imports
+        # stopped rebuilding that can be never. Built once, here, after the
+        # update has committed, because creating one commits.
+        if decisions.missing(con):
+            if progress:
+                progress("adding the new indexes...")
+            decisions.index(con=con)
     except Exception:
         con.rollback()
         con.close()
