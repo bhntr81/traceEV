@@ -170,6 +170,10 @@ VALUE_FLAGS = {
     # seats round the table, 1 being the next seat. Left acts after you.
     "--fish-left-seats": "fish_dist_left BETWEEN {lo} AND {hi}",
     "--fish-right-seats": "fish_dist_right BETWEEN {lo} AND {hi}",
+    # The decisions where a stat was taken: its chance and its action, so
+    # `--took threebet --combo AKo` is the hands behind one square of a
+    # 3-bet range. `threebet:call` is the hands that called instead.
+    "--took": None,
     # The flop's high card, by rank letter; the game's format.
     "--high": "fl_hi IN ({list})",
     "--format": "fmt IN ({list})",
@@ -831,7 +835,7 @@ def quick_by_key():
 # The switches that say what the player DID rather than what they could have
 # done. A filter is a situation; these are outcomes, and a stat defined over
 # one of them is 100% by construction -- see `define_stat`.
-ACTION_FLAGS = ("--aggressive", "--allin", "--quick")
+ACTION_FLAGS = ("--aggressive", "--allin", "--quick", "--took")
 
 
 def define_stat(argv, key, label=None, do="aggressive", per="decision",
@@ -989,6 +993,18 @@ def build(argv):
                 # the pairs loses a clause off the end.
                 parts.append("(" + " AND ".join(named) + ")")
                 described.append(f"{a.lstrip('-')} {v}")
+                continue
+            if a == "--took":
+                key, _c, alternative = v.partition(":")
+                if key not in BY_KEY:
+                    raise SystemExit(f"--took: unknown stat {key!r} -- see "
+                                     f"`stats.py --list` for the keys")
+                try:
+                    these, said, _st = took_where(None, key, alternative)
+                except ValueError as e:
+                    raise SystemExit(f"--took {v}: {e}")
+                parts.append("(" + these + ")")
+                described.append("took " + said)
                 continue
             if a == "--fish-blinds":
                 # Alternatives, as the preflop ladder's are: a fish is in
@@ -1679,6 +1695,36 @@ def chart_of(con, where, stat=None, min_n=3, alternative=None):
     return result
 
 
+def took_where(where, stat, alternative=None):
+    """
+    The rows where a stat's chance arose and its action was taken.
+
+    Returns the clause, what to call it, and the stat it counts. Both the
+    range beside the stats table and `--took` are this, so a square of that
+    range and the hands listed behind it cannot come to disagree about
+    which decisions it is of. With `alternative`, the rows that took that
+    action instead on the same chances.
+    """
+    stat = BY_KEY.get(stat) if isinstance(stat, str) else stat
+    if stat is None or stat.source != "d":
+        raise ValueError("A range needs a stat counted over decisions, "
+                         "such as threebet or cbet_flop.")
+    action, said = stat.action, stat.label
+    if alternative:
+        if alternative not in CHART_ALTERNATIVES:
+            raise ValueError("Alternative action must be one of: "
+                             + ", ".join(CHART_ALTERNATIVES))
+        if stat.per != "decision":
+            raise ValueError(f"{stat.label} is counted once per hand, so "
+                             "there is no one decision that could have been "
+                             f"a {alternative} instead.")
+        action = stats.ACTIONS[alternative][0]
+        said = f"{alternative} instead of {stat.label}"
+    took = stats.Stat("_took", said, stat.chance, action, per=stat.per)
+    these = f"({stat.chance}) AND ({action})"
+    return (these if where is None else f"({where}) AND {these}"), said, took
+
+
 def stat_range_of(con, where, stat, alternative=None):
     """
     The hands a stat was made of: the range that DID it.
@@ -1703,24 +1749,8 @@ def stat_range_of(con, where, stat, alternative=None):
     and chances, every hand included, so the caption can say what share
     of the chances the drawn range is -- the 9% the chart is of.
     """
-    stat = BY_KEY.get(stat) if isinstance(stat, str) else stat
-    if stat is None or stat.source != "d":
-        raise ValueError("A range needs a stat counted over decisions, "
-                         "such as threebet or cbet_flop.")
-    action, said = stat.action, stat.label
-    if alternative:
-        if alternative not in CHART_ALTERNATIVES:
-            raise ValueError("Alternative action must be one of: "
-                             + ", ".join(CHART_ALTERNATIVES))
-        if stat.per != "decision":
-            raise ValueError(f"{stat.label} is counted once per hand, so "
-                             "there is no one decision that could have been "
-                             f"a {alternative} instead.")
-        action = stats.ACTIONS[alternative][0]
-        said = f"{alternative} instead of {stat.label}"
-    took = stats.Stat("_took", said, stat.chance, action, per=stat.per)
+    these, said, took = took_where(where, stat, alternative)
     n, k = stats.rate(con, took, where)[:2]
-    these = f"({where}) AND ({stat.chance}) AND ({action})"
     chart = chart_of(con, these)
     chart.update(stat=said, took=(k, n))
     # After the flop the same hands have a second description, what they
@@ -3084,6 +3114,8 @@ def usage():
           f"{', '.join(PF_FACING)}")
     print(f"    {'--quick':14} named filters: "
           f"{', '.join(sorted(quick_by_key())[:6])}, ... (see --quick-list)")
+    print(f"    {'--took':14} the decisions where a stat was taken, e.g. "
+          f"threebet; threebet:call for the calls on the same chances")
     print(f"    {'--where':14} raw SQL over `decisions`, for anything above")
     print("\n  Multiple Players cohort filters:")
     print("    --cohort       select players before filtering situations")
@@ -3198,7 +3230,7 @@ def check(db_path=DB):
         "--sd": "oesd",
         "--players": "6", "--live": "2",
         "--street-pot": "2-6", "--fish-left-seats": "1-2",
-        "--fish-right-seats": "1-2",
+        "--fish-right-seats": "1-2", "--took": "threebet",
         "--since": midpoint, "--until": midpoint,
         "--vs-player": con.execute(
             "SELECT vs_player FROM decisions WHERE vs_player IS NOT NULL "
@@ -3215,6 +3247,7 @@ def check(db_path=DB):
     cases += [("--board " + b, ["--board", b]) for b in BOARDS]
     cases += [("--pf-facing " + f, ["--pf-facing", f]) for f in PF_FACING]
     cases += [("--fish-blinds " + f, ["--fish-blinds", f]) for f in FISH_BLINDS]
+    cases += [("--took cbet_flop:check", ["--took", "cbet_flop:check"])]
     # The ladder has to cut each facing it refines into pieces that add back
     # up: every unopened preflop decision is unopened, one limp or two, and
     # every open is bare, called once or called twice or more. A rung that
@@ -3587,6 +3620,24 @@ def check(db_path=DB):
     if len(squares) != 169 or not dealt <= squares:
         fails.append(f"the chart has {len(squares)} squares and misses "
                      f"{sorted(dealt - squares)[:5]}")
+
+    # A square of a stat's range, clicked, lists the hands behind it -- and
+    # it has to list exactly the hands the square counted. The window builds
+    # that list from `--took` and `--combo`, the range from `took_where`; if
+    # the two came apart, the click would open a different set of hands
+    # from the number printed on the square, and nothing would look wrong.
+    behind = []
+    for key, alternative in (("threebet", None), ("cbet_flop", "check")):
+        g = stat_range_of(con, "1=1", key, alternative)
+        for combo, (n, _k) in g["cells"].items():
+            argv = ["--took", key + (":" + alternative if alternative else ""),
+                    "--combo", combo]
+            listed = len(hands_of(con, build(argv)[0]))
+            if listed != n:
+                behind.append(f"{key} {combo}: square {n}, listed {listed}")
+    print(f"a square lists its own hands  "
+          f"{'yes' if not behind else 'NO'}")
+    fails += behind
 
     # A saved report must come back as the filter that was saved. Saved to a
     # file of its own: a check that writes to somebody's own reports is a

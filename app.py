@@ -983,6 +983,7 @@ class App(ImportMixin, ttk.Frame):
         self.stat_canvas.bind("<Configure>", lambda e: self._draw_chart(
             self.stat_note, self.stat_canvas))
         self.stat_canvas.bind("<Motion>", self._chart_hover)
+        self.stat_canvas.bind("<Button-1>", self._square_hands)
         self.stat_canvas.bind("<Leave>",
                               lambda e: self.stat_canvas.delete("hint"))
         self.stat_chart, self.picked = None, None
@@ -1006,6 +1007,7 @@ class App(ImportMixin, ttk.Frame):
         self.chart_canvas.pack(fill="both", expand=True)
         self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
         self.chart_canvas.bind("<Motion>", self._chart_hover)
+        self.chart_canvas.bind("<Button-1>", self._square_hands)
         self.chart_canvas.bind("<Leave>", lambda e: self.chart_canvas.delete("hint"))
         self.chart = None
         self.tree["sessions"].bind("<Double-1>", self._open_session)
@@ -1621,6 +1623,9 @@ class App(ImportMixin, ttk.Frame):
             elif view == "hands":
                 out["rows"] = query.hands_of(con, where, limit=500,
                                              sort=stat or "date")
+            elif view == "square":
+                out["rows"] = query.hands_of(con, where, limit=500)
+                out["label"], out["argv"] = label, list(filter_argv)
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if view != "statrange" and not self._any(out):
@@ -1711,6 +1716,9 @@ class App(ImportMixin, ttk.Frame):
             self.series = out.get("series")
             self.graph_ran = True
             self._draw_graph(out.get("why") or out.get("error"))
+            return
+        if view == "square":
+            SquareHands(self, out)
             return
         if view == "chart":
             self.chart = out if (out.get("cells") or
@@ -2015,14 +2023,15 @@ class App(ImportMixin, ttk.Frame):
             "one hand's result has a standard deviation near 11.7bb, so the "
             "error on a win rate is about 1170/√n", ""))
 
-    def _render_hands(self, tv, out):
+    def _fill_hands(self, tv, rows):
+        """`hands_of`'s rows into a table; returns each row's (hand, seat)."""
         self._cols(tv, ("when", "site", "bb", "pos", "hand", "my line",
                         "net bb", "board", "tags"),
                    (140, 90, 60, 60, 70, 150, 90, 170, 160),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
                     "my line": "w", "board": "w", "tags": "w"})
-        self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in out["rows"]:
+        ids = {}
+        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in rows:
             iid = tv.insert("", "end", values=(
                 (when or "")[:16], site, f"{bb:g}" if bb else "",
                 pos or "", combo or "–", own or "",
@@ -2030,7 +2039,11 @@ class App(ImportMixin, ttk.Frame):
                 board or "", ", ".join(marks)),
                 tags=("pos",) if (net or 0) > 0 else
                      ("neg",) if (net or 0) < 0 else ())
-            self._hand_ids[iid] = (hid, seat)
+            ids[iid] = (hid, seat)
+        return ids
+
+    def _render_hands(self, tv, out):
+        self._hand_ids = self._fill_hands(tv, out["rows"])
         if out["rows"]:
             tv.insert("", "end", values=("",) * 9)
             tv.insert("", "end", tags=("note",),
@@ -2261,6 +2274,8 @@ class App(ImportMixin, ttk.Frame):
                 text += "\nThin sample; colours hidden."
         else:
             text += " matching opportunities"
+        if n:
+            text += "\nclick for these hands"
         x = max(4, min(event.x + 14, c.winfo_width() - 300))
         y = max(4, min(event.y + 14, c.winfo_height() - 100))
         item = c.create_text(x + 6, y + 6, anchor="nw", text=text, fill=INK,
@@ -2270,6 +2285,61 @@ class App(ImportMixin, ttk.Frame):
                                         bounds[2] + 6, bounds[3] + 6,
                                         fill=BG, outline=EDGE, tags=("hint",))
         c.tag_lower(background, item)
+
+    def _square_hands(self, event):
+        """
+        A square of a chart, clicked: the hands it was drawn from.
+
+        Hand2Note's range opens onto its hands, and a square is the question
+        a reader actually has -- "which ace-king was it" -- once the shape
+        has answered the first one. The hands are the filter's, cut to that
+        combo, and on a stat's range cut again to the decisions that took
+        the stat (or the action taken instead), so the list is exactly the
+        count printed on the square; `query.py --check` holds the two to
+        that. Opened in a window of its own rather than written into the
+        filter, because the chart is still being read and a click should
+        not change what it is a chart of.
+        """
+        c = event.widget
+        side = c is getattr(self, "stat_canvas", None)
+        g = self.stat_chart if side else self.chart
+        geometry = getattr(self, "_stat_geometry" if side else "_chart_geometry",
+                           None)
+        if not g or not geometry or not getattr(self, "last", None):
+            return
+        left, top, size = geometry
+        if size <= 0:
+            return
+        i, j = int((event.y - top) // size), int((event.x - left) // size)
+        if not (0 <= i < 13 and 0 <= j < 13):
+            return
+        combo = query.combo_at(i, j)
+        if not g["cells"].get(combo, (0, None))[0]:
+            return
+        _where, _label, _parts, cohort_spec, query_argv = self.last
+        extra = ["--combo", combo]
+        if side and self.picked:
+            alternative = TOOK.get(self.took.get())
+            extra += ["--took", self.picked
+                      + (":" + alternative if alternative else "")]
+        elif not side and g["mode"] != "composition" and self.chart_stat():
+            # A rate's square is coloured by the share that took it, and
+            # the ones that did are the hands worth opening.
+            extra += ["--took", self.chart_stat()]
+        argv = list(query_argv) + extra
+        try:
+            where, label, parts = query.build(argv)
+        except SystemExit as e:
+            messagebox.showerror("No hands", str(e), parent=self)
+            return
+        key = ("square", where, repr(cohort_spec))
+        if key in self.cache:
+            self._render(self.cache[key])
+            return
+        self.pending += 1
+        self.status.configure(text="working…")
+        self.requests.put((self.pending, key, "square", where, label, parts,
+                           "", cohort_spec, None, None, argv, None))
 
     # ---- the graph, drawn rather than served ---------------------------
     def _draw_graph(self, message=None):
@@ -3714,6 +3784,50 @@ class AskPanel(ttk.Frame):
         self.app.apply_argv(self.last_ran)
 
 
+class SquareHands(tk.Toplevel):
+    """
+    The hands behind one square of a chart, each one double-clicked open.
+
+    The filter they were found under is written along the top, because a
+    list of nine hands is read as "his ace-king" and it is his ace-king
+    3-betting from the button in the last month, or whatever else the
+    filter was, and nothing else on the screen would say so.
+    """
+
+    def __init__(self, master, out):
+        super().__init__(master)
+        self.configure(background=BG)
+        rows = out.get("rows") or []
+        self.title(f"{len(rows):,} hands" if rows else "no hands")
+        self.geometry("1000x420")
+        self.master_app, self.con = master, master.con
+        said = out.get("label", "")
+        if len(rows) >= 500:
+            said += " -- the latest 500"
+        ttk.Label(self, text=said, style="Dim.TLabel", wraplength=960,
+                  justify="left").pack(anchor="w", padx=12, pady=(10, 4))
+        frame = ttk.Frame(self)
+        frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.tv = master._table(frame)
+        if out.get("error") or not rows:
+            self.tv.configure(columns=("msg",))
+            self.tv.column("msg", width=900, anchor="w")
+            self.tv.insert("", "end", tags=("neg",), values=(
+                out.get("error") or "nothing matches",))
+            if out.get("why"):
+                self.tv.insert("", "end", values=(out["why"],), tags=("note",))
+            self.ids = {}
+            return
+        self.ids = master._fill_hands(self.tv, rows)
+        self.tv.bind("<Double-1>", self._open)
+        self.tv.bind("<Return>", self._open)
+
+    def _open(self, _event=None):
+        sel = self.tv.selection()
+        if sel and sel[0] in self.ids:
+            HandWindow(self.master_app, self.con, *self.ids[sel[0]])
+
+
 class HandWindow(tk.Toplevel):
     """
     One hand, replayed in a window of its own -- and where it gets marked.
@@ -4076,6 +4190,36 @@ def check(db_path=DB):
           f"{'refused' if refused['range'].get('error') else 'NOT refused'}")
     if g.get("cells") and drew < 169:
         fails.append("the stats tab's range is computed but not drawn")
+    # A square of it, clicked, opens the hands it counted -- as many as the
+    # square says, through the same queue every other query takes.
+    opened = None
+    if g.get("cells") and getattr(app, "_stat_geometry", None):
+        combo, (n_sq, _k) = max(g["cells"].items(), key=lambda kv: kv[1][0])
+        left, top, size = app._stat_geometry
+        spot = next((i, j) for i in range(13) for j in range(13)
+                    if query.combo_at(i, j) == combo)
+        click = type("Click", (), {"widget": app.stat_canvas,
+                                   "x": left + (spot[1] + .5) * size,
+                                   "y": top + (spot[0] + .5) * size})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        # Drawing the tab refreshed it under whatever the window's boxes
+        # held; the range above is of everything, and so is its square.
+        app.last = ("1=1", "everything", [], None, [])
+        app._square_hands(click)
+        item = app.requests.get_nowait()
+        out = app._work(*item[:1], *item[2:])
+        app.results.get_nowait()
+        app._render(out)
+        windows = [w for w in app.winfo_children() if isinstance(w, SquareHands)]
+        opened = windows[-1] if windows else None
+        listed = len(opened.ids) if opened else 0
+        print(f"a clicked square lists its hands  {combo}: {listed} of {n_sq}")
+        if listed != n_sq:
+            fails.append(f"the square {combo} counts {n_sq} hands and its "
+                         f"click listed {listed}")
+        if opened:
+            opened.destroy()
     if not refused["range"].get("error"):
         fails.append("a hand-counted stat was given an alternative range")
     # The weak share under a postflop range is `range_of`'s over the same

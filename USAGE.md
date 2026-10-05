@@ -453,6 +453,18 @@ that did it and the hands that called, folded, raised, checked or bet
 instead. Hover a square for its count. The seen fraction is printed under
 it for the same reason as above.
 
+**Click a square** -- here or on the chart tab -- and the hands behind it
+open in a window, latest first, each a double-click from its replay. The
+list is exactly the square's count: the filter, that combo, and on a
+stat's range the decisions that took the stat (or the action named in
+**range of**). On the command line the same list is `--took`, a filter
+like any other:
+
+```bash
+python query.py --pool --site ignition --took threebet --combo AKo --hands
+python query.py --pool --site ignition --took threebet:call --combo AJs --hands
+```
+
 ---
 
 ### Expression stats, in Hand2Note's language

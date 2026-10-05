@@ -8,6 +8,34 @@ Newest first.
 
 ---
 
+## A square of a range opens its hands -- 5 Oct 2026
+
+### Added -- click a square, get the hands; `--took`
+
+Hand2Note's range map opens onto the hands behind each square, and the
+question a reader has once a range's shape has answered the first one is
+"which ace-king was it". A click on any square of the chart tab, or of the
+range beside the stats table, now opens those hands in a window of their
+own, each one a double-click from its replay. The window says what filter
+they were found under, because a list of nine hands reads as "his ace-king"
+when it is his ace-king 3-betting from the button last month.
+
+The hands are the filter's, cut to the combo, and on a stat's range cut
+again to the decisions that took the stat -- or the action taken instead,
+whichever the box beside the table says. That second cut is a filter of its
+own, **`--took STAT`** (`--took threebet:call` for the calls on the same
+chances), so `query.py --took threebet --combo AKo --hands` is the same
+list on the command line. Both it and the range are `query.took_where`, and
+`query.py --check` holds every square of two stats' ranges to the number of
+hands the click lists. `--took` joins `--aggressive` and `--allin` among
+the flags a saved stat may not be defined over: a chance that already
+contains its own action reads 100% for ever.
+
+On the chart tab with a stat chosen, a square is coloured by the share that
+took the stat, and its click lists the ones that did. A click opens a
+window rather than writing `--combo` into the filter, because the chart is
+still being read and a click should not change what it is a chart of.
+
 ## Notes: templates, a hand in a note, a note on a stat -- 5 Oct 2026
 
 ### Added -- Hand2Note's three other kinds of note
