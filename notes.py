@@ -40,6 +40,11 @@ PokerStars pool.
     python notes.py --alias <site> <alias> <player>      the alias is the player
     python notes.py --unalias <site> <alias>
     python notes.py --aliases                            every alias
+    python notes.py --template <name> "<text>"           a sentence to reuse; {vpip} fills in
+    python notes.py --templates                          every template
+    python notes.py --use-template <site> <player> <name>  add one to a player's note
+    python notes.py --note-hand <site> <player> <hand id> ["<words>"]  a hand beside them
+    python notes.py --stat-note <site> <player> <stat> "<text>"        a note on one stat
     python notes.py --check
 """
 
@@ -60,11 +65,19 @@ CREATE TABLE IF NOT EXISTS notes (
   site TEXT, player TEXT, note TEXT, updated TEXT, PRIMARY KEY (site, player));
 CREATE TABLE IF NOT EXISTS aliases (
   site TEXT, alias TEXT, player TEXT, made TEXT, PRIMARY KEY (site, alias));
+CREATE TABLE IF NOT EXISTS note_templates (
+  name TEXT PRIMARY KEY, text TEXT, made TEXT);
+CREATE TABLE IF NOT EXISTS stat_notes (
+  site TEXT, player TEXT, stat TEXT, note TEXT, updated TEXT,
+  PRIMARY KEY (site, player, stat));
+CREATE TABLE IF NOT EXISTS note_hands (
+  site TEXT, player TEXT, hand_id TEXT, comment TEXT, made TEXT,
+  PRIMARY KEY (site, player, hand_id));
 """
 
 
 def ensure(con):
-    """The three tables, if the database does not have them yet."""
+    """The user's tables, if the database does not have them yet."""
     con.executescript(SCHEMA)
 
 
@@ -212,6 +225,158 @@ def all_aliases(con):
     ).fetchall()
 
 
+# ---- Hand2Note's three kinds of note beyond the plain one --------------
+#
+# A template is a sentence written once and dropped into any player's note:
+# "3-bets light from the button", or with the numbers in it, "{threebet}"
+# becoming "3bet 14% (n=58)". The numbers are filled in at the moment the
+# template is used and written into the note as text, dated, because a
+# note is what was true when it was written -- a note that silently
+# recomputed would say "fold to 3-bet 70%" today about a read made on 9%.
+# Every number carries its n, by the project's first reporting rule; a
+# template naming a stat that does not exist is refused when it is saved,
+# not discovered as a literal "{fold_to_3bat}" in a note at the table.
+#
+# A hand in a note is a hand id beside the player, with a few words, so
+# "the river overbluff" can be opened again from the player rather than
+# remembered. It must be a hand the player was dealt into: a note pointing
+# at a hand they were not in is a typo that reads as evidence.
+#
+# A note on a stat is the read beside the number it is about -- "folds to
+# 3-bets only when out of position" -- keyed by site, player and stat, and
+# shown on that stat's row wherever that player's rates are.
+
+PLACEHOLDER = re.compile(r"\{([a-z0-9_]+)\}")
+
+
+def _stat_keys():
+    import stats
+    stats.load_custom()
+    return stats.BY_KEY
+
+
+def template(con, name, text):
+    """Save a template; an empty text removes it. Unknown stats are refused."""
+    ensure(con)
+    name, text = (name or "").strip(), (text or "").strip()
+    if not name:
+        raise ValueError("a template needs a name")
+    if not text:
+        con.execute("DELETE FROM note_templates WHERE name=?", (name,))
+        con.commit()
+        return
+    known = _stat_keys()
+    unknown = [k for k in PLACEHOLDER.findall(text) if k not in known]
+    if unknown:
+        raise ValueError(f"no stat called {', '.join(unknown)}; a placeholder "
+                         f"is a stat key, as `query.py --show` takes")
+    con.execute("INSERT OR REPLACE INTO note_templates VALUES (?, ?, ?)",
+                (name, text, time.strftime("%Y-%m-%d %H:%M:%S")))
+    con.commit()
+
+
+def templates(con):
+    ensure(con)
+    return con.execute(
+        "SELECT name, text FROM note_templates ORDER BY name").fetchall()
+
+
+def fill(con, text, site, player):
+    """
+    A template's placeholders as this player's rates, each with its n.
+
+    The rate is the raw one over everything the player did on the site --
+    the note is about them, not about a filter -- and a stat they never
+    had the chance to take reads "no chances" rather than 0%, which would
+    be a read nobody made.
+    """
+    import stats
+    known = _stat_keys()
+
+    def one(m):
+        s = known.get(m.group(1))
+        if s is None:
+            return m.group(0)
+        n, k, p, _lo, _hi = stats.rate(con, s, "player=? AND site=?",
+                                       (player, site))
+        if not n:
+            return f"{s.label} no chances"
+        return f"{s.label} {100 * p:.0f}% (n={n})"
+    return PLACEHOLDER.sub(one, text)
+
+
+def filled(con, name, site, player):
+    """A template as the line it puts in this player's note, dated if it has numbers."""
+    ensure(con)
+    row = con.execute("SELECT text FROM note_templates WHERE name=?",
+                      (name,)).fetchone()
+    if row is None:
+        raise ValueError(f"no template called {name!r}")
+    line = fill(con, row[0], site, player)
+    if PLACEHOLDER.search(row[0]):
+        line += f" ({time.strftime('%Y-%m-%d')})"
+    return line
+
+
+def use_template(con, site, player, name):
+    """Add a template, filled for this player, to the end of their note."""
+    line = filled(con, name, site, player)
+    was = note_of(con, site, player)
+    note(con, site, player, (was + "\n" if was else "") + line)
+    return note_of(con, site, player)
+
+
+def note_hand(con, site, player, hand_id, comment=""):
+    """Put a hand beside a player; the player has to have been dealt in."""
+    ensure(con)
+    dealt = con.execute("SELECT 1 FROM spots WHERE hand_id=? AND site=? "
+                        "AND player=?", (hand_id, site, player)).fetchone()
+    if not dealt:
+        raise ValueError(f"{player} on {site} was not dealt into {hand_id}")
+    con.execute("INSERT OR REPLACE INTO note_hands VALUES (?, ?, ?, ?, ?)",
+                (site, player, hand_id, (comment or "").strip(),
+                 time.strftime("%Y-%m-%d %H:%M:%S")))
+    con.commit()
+
+
+def unnote_hand(con, site, player, hand_id):
+    ensure(con)
+    n = con.execute("DELETE FROM note_hands WHERE site=? AND player=? "
+                    "AND hand_id=?", (site, player, hand_id)).rowcount
+    con.commit()
+    return n
+
+
+def hands_noted(con, site, player):
+    """[(hand_id, comment)] beside a player, newest first."""
+    ensure(con)
+    return con.execute("SELECT hand_id, comment FROM note_hands WHERE site=? "
+                       "AND player=? ORDER BY made DESC, hand_id",
+                       (site, player)).fetchall()
+
+
+def stat_note(con, site, player, stat, text):
+    """Write a note on one of a player's stats; empty text removes it."""
+    ensure(con)
+    if stat not in _stat_keys():
+        raise ValueError(f"no stat called {stat!r}")
+    text = (text or "").strip()
+    if not text:
+        con.execute("DELETE FROM stat_notes WHERE site=? AND player=? AND stat=?",
+                    (site, player, stat))
+    else:
+        con.execute("INSERT OR REPLACE INTO stat_notes VALUES (?, ?, ?, ?, ?)",
+                    (site, player, stat, text, time.strftime("%Y-%m-%d %H:%M:%S")))
+    con.commit()
+
+
+def stat_notes_of(con, site, player):
+    """{stat key: note} for one player."""
+    ensure(con)
+    return dict(con.execute("SELECT stat, note FROM stat_notes WHERE site=? "
+                            "AND player=?", (site, player)).fetchall())
+
+
 def check(db_path=DB):
     """
     Round trips, on a database of its own, and the rules that make a tag
@@ -277,7 +442,67 @@ def check(db_path=DB):
             fails.append(f"identify gave {who}")
         if unalias(con, "acr", "older_name") != 1 or "older_name" in alias_map(con, "acr"):
             fails.append("unalias did not remove the alias")
+
+        # Templates: a misspelt stat is refused at the door, and a used one
+        # lands on the end of the note rather than over it.
+        try:
+            template(con, "bad", "folds {fold_to_3bat}")
+            fails.append("a template naming no stat was saved")
+        except ValueError:
+            pass
+        template(con, "light", "3-bets light from the button")
+        note(con, "acr", "dblj32", "calls down")
+        got = use_template(con, "acr", "dblj32", "light")
+        print(f"template appended            {got!r}")
+        if got != "calls down\n3-bets light from the button":
+            fails.append(f"use_template left the note as {got!r}")
+
+        # A hand beside a player: only one they were dealt into.
+        con.execute("CREATE TABLE spots (hand_id TEXT, seat INT, player TEXT, "
+                    "site TEXT)")
+        con.execute("INSERT INTO spots VALUES ('h9', 3, 'dblj32', 'acr')")
+        try:
+            note_hand(con, "acr", "dblj32", "h8", "never there")
+            fails.append("a hand the player was not in was put in their note")
+        except ValueError:
+            pass
+        note_hand(con, "acr", "dblj32", "h9", " river overbluff ")
+        got = hands_noted(con, "acr", "dblj32")
+        print(f"hand in a note               {got}")
+        if got != [("h9", "river overbluff")]:
+            fails.append(f"hands_noted gave {got}")
+        if unnote_hand(con, "acr", "dblj32", "h9") != 1 or hands_noted(con, "acr", "dblj32"):
+            fails.append("unnote_hand did not take the hand out")
+
+        # A note on a stat: on that stat and that player only.
+        stat_note(con, "acr", "dblj32", "fold_to_3bet", "only folds OOP")
+        try:
+            stat_note(con, "acr", "dblj32", "fold_to_3bat", "x")
+            fails.append("a note on a stat that does not exist was kept")
+        except ValueError:
+            pass
+        got = stat_notes_of(con, "acr", "dblj32")
+        print(f"note on a stat               {got}")
+        if got != {"fold_to_3bet": "only folds OOP"} or stat_notes_of(con, "pokerstars", "dblj32"):
+            fails.append(f"stat notes came back as {got}")
+        stat_note(con, "acr", "dblj32", "fold_to_3bet", "")
+        if stat_notes_of(con, "acr", "dblj32"):
+            fails.append("an empty stat note did not remove it")
         con.close()
+
+    # Filled from the real engine where there is a database: every number
+    # with its n, and a stat never had the chance at said so, not 0%.
+    if Path(db_path).exists():
+        real = sqlite3.connect(db_path)
+        who = real.execute("SELECT site, player FROM decisions WHERE is_hero=0 "
+                           "AND player IS NOT NULL GROUP BY 1, 2 "
+                           "ORDER BY COUNT(*) DESC LIMIT 1").fetchone()
+        if who:
+            got = fill(real, "{vpip}, {threebet}", *who)
+            print(f"a template filled            {who[1]}: {got}")
+            if not re.fullmatch(r"VPIP \d+% \(n=\d+\), \S+ (\d+% \(n=\d+\)|no chances)", got):
+                fails.append(f"a filled template read {got!r}")
+        real.close()
 
     # The derivation must never take these tables with it. `decisions.build`
     # drops its own table and that is the whole hazard, so the assertion is
@@ -362,6 +587,51 @@ def main(argv):
         for site, a, p in rows:
             print(f"  {site:10} {a:22} is {p}")
         return 0
+    if "--template" in argv:
+        i = argv.index("--template")
+        if len(argv) < i + 2:
+            raise SystemExit('--template <name> "<text with {stat} in it>"   (empty text removes)')
+        try:
+            template(con, argv[i + 1], " ".join(argv[i + 2:]))
+        except ValueError as e:
+            raise SystemExit(str(e))
+        return 0
+    if "--templates" in argv:
+        rows = templates(con)
+        if not rows:
+            print('no templates yet -- `python notes.py --template light "3-bets light, {threebet}"`')
+        for name, text in rows:
+            print(f"  {name:16} {text}")
+        return 0
+    if "--use-template" in argv:
+        i = argv.index("--use-template")
+        if len(argv) < i + 4:
+            raise SystemExit("--use-template <site> <player> <template>")
+        try:
+            print(use_template(con, argv[i + 1], argv[i + 2], argv[i + 3]))
+        except ValueError as e:
+            raise SystemExit(str(e))
+        return 0
+    if "--note-hand" in argv:
+        i = argv.index("--note-hand")
+        if len(argv) < i + 4:
+            raise SystemExit('--note-hand <site> <player> <hand id> ["<words>"]')
+        try:
+            note_hand(con, argv[i + 1], argv[i + 2], argv[i + 3],
+                      " ".join(argv[i + 4:]))
+        except ValueError as e:
+            raise SystemExit(str(e))
+        return 0
+    if "--stat-note" in argv:
+        i = argv.index("--stat-note")
+        if len(argv) < i + 4:
+            raise SystemExit('--stat-note <site> <player> <stat> "<text>"   (empty text removes)')
+        try:
+            stat_note(con, argv[i + 1], argv[i + 2], argv[i + 3],
+                      " ".join(argv[i + 4:]))
+        except ValueError as e:
+            raise SystemExit(str(e))
+        return 0
     if "--notes" in argv:
         i = argv.index("--notes")
         who = argv[i + 1] if len(argv) > i + 1 and not argv[i + 1].startswith("--") else None
@@ -370,6 +640,10 @@ def main(argv):
             print("no notes yet -- `python notes.py --note <site> <player> \"text\"`")
         for site, player, text, updated in rows:
             print(f"  {site:10} {player:22} {text}   ({updated[:10]})")
+            for stat, said in sorted(stat_notes_of(con, site, player).items()):
+                print(f"  {'':10} {'':22} on {stat}: {said}")
+            for hid, words in hands_noted(con, site, player):
+                print(f"  {'':10} {'':22} hand {hid}  {words}")
         return 0
     print(__doc__)
     return 1

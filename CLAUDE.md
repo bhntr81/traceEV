@@ -365,6 +365,9 @@ A filter saved under a name is the same idea one verb over: `query.py
 keeps the reporting options (`--by`, `--show`, `--min`) or a player cohort:
 the first would rewrite the columns of every view the report was opened in,
 and the second confuses choosing people with describing a situation.
+The whole window, people, tab and columns included, is a view instead:
+`views.json`, which replaces the window's state when opened rather than
+joining the report box (`query.save_view`, the Views menu).
 
 ## Reporting numbers
 

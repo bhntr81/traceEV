@@ -40,7 +40,7 @@ import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
 
@@ -70,6 +70,7 @@ query.DB = DB
 stats.DB = DB
 stats.load_custom(HERE / "stats.json")
 query.SAVED = HERE / "filters.json"
+query.VIEWS = HERE / "views.json"
 # The assistant's provider, key and model are the user's in the same way,
 # and `ask`'s own comment says they live beside the program -- but its path
 # was the last one still measured from the code. Frozen, that is the
@@ -156,11 +157,18 @@ WHO = [("--reg", "the player is a reg"), ("--fish", "the player is a fish"),
        ("--fish-left", "a fish on my left (acts after me)"),
        ("--fish-right", "a fish on my right (acts before me)"),
        ("--reg-left", "a reg on my left"),
-       ("--reg-right", "a reg on my right")]
+       ("--reg-right", "a reg on my right"),
+       ("--no-reg-vs-fish", "leave out regs' hands against fish")]
 SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
               ("--pfa", "was the raiser"), ("--vs-pfa", "facing the raiser"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
+# What the chart beside the stats table is a range of, by the words in its
+# box: the stat's own action, or one of `query.CHART_ALTERNATIVES` taken
+# instead on the same chances.
+TOOK = {"the hands that did it": None, "call instead": "call",
+        "fold instead": "fold", "raise instead": "raise",
+        "check instead": "check", "bet instead": "bet"}
 # Turning one of these on turns its opposite off, or the filter selects
 # nothing and looks broken rather than contradictory.
 OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
@@ -168,7 +176,13 @@ OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--headsup": "--multiway",
              "--reg": "--fish", "--fish": "--reg",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
-             "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero"}
+             "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero",
+             "--ante": "--no-ante", "--no-ante": "--ante",
+             "--straddle": "--no-straddle", "--no-straddle": "--straddle"}
+# What was posted before the cards. Each has its opposite, because the
+# usual question is "my cash numbers without the straddled hands in them".
+POSTS = [("--ante", "antes"), ("--no-ante", "no ante"),
+         ("--straddle", "a straddle"), ("--no-straddle", "no straddle")]
 
 
 def pick_fonts():
@@ -382,6 +396,13 @@ class ImportMixin:
         m.add_command(label="Import a file…", command=self.import_file)
         m.add_command(label="Merge another database…", command=self.import_db)
         bar.add_cascade(label="Import", menu=m)
+
+        # Read from the file each time it opens, so a view saved a moment
+        # ago is in it without the menu having been told.
+        v = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                    activebackground=ACCENT, activeforeground=BG)
+        v.configure(postcommand=lambda: self._fill_views(v))
+        bar.add_cascade(label="Views", menu=v)
 
         u = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
@@ -600,7 +621,8 @@ class App(ImportMixin, ttk.Frame):
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
                       "sd": set(), "turn_card": set(), "river_card": set(),
-                      "facing": set(), "combo": set()}
+                      "facing": set(), "combo": set(), "pf_facing": set(),
+                      "fish_blinds": set()}
         # The filter's values live here rather than on the widgets, because
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
@@ -611,7 +633,8 @@ class App(ImportMixin, ttk.Frame):
                       "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
                       "tables", "tag", "size", "size_bb", "raise_x", "depth",
-                      "spr", "high", "format")}
+                      "spr", "high", "format", "session", "last_sessions",
+                      "street_pot", "fish_left_seats", "fish_right_seats")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -902,6 +925,31 @@ class App(ImportMixin, ttk.Frame):
         self.expression_label = ttk.Label(bar, text="expression",
                                           style="Dim.TLabel")
 
+        # Which hands the chart beside the stats table draws: the ones that
+        # took the clicked stat's action, or the ones that did something
+        # else on the same chances -- the call range beside the 3-bet range.
+        self.took = ttk.Combobox(bar, state="readonly", width=16,
+                                 values=list(TOOK))
+        self.took.set(next(iter(TOOK)))
+        self.took.bind("<<ComboboxSelected>>", lambda e: self.show_stat_range())
+        self.took_label = ttk.Label(bar, text="range of", style="Dim.TLabel")
+        # Hand2Note keeps this beside its statistics rather than among the
+        # filters, because it is the switch people flip while reading them.
+        # It is an ordinary switch all the same, and the filter dialog
+        # offers it too.
+        self.no_reg_fish = ttk.Checkbutton(
+            bar, text="leave out regs against fish",
+            variable=self.flags["--no-reg-vs-fish"], command=self.refresh)
+
+        # The order of the hands tab. A heading click sorts what is shown;
+        # this decides which 500 are shown, and the strongest hands of a
+        # filter are rarely among its latest.
+        self.hand_sort = ttk.Combobox(bar, state="readonly", width=10,
+                                      values=list(query.SORTS))
+        self.hand_sort.set("date")
+        self.hand_sort.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.hand_sort_label = ttk.Label(bar, text="first by", style="Dim.TLabel")
+
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.refresh())
@@ -917,7 +965,29 @@ class App(ImportMixin, ttk.Frame):
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "actions", "overfolds", "range", "report", "results",
+        # The stats table with the range of whichever row is clicked beside
+        # it: Hand2Note's statistics view, where a rate and the hands it
+        # was made of are one look and not two tabs and a dropdown.
+        split = ttk.Panedwindow(self.tabs["stats"], orient="horizontal")
+        split.pack(fill="both", expand=True)
+        table, side = ttk.Frame(split), ttk.Frame(split)
+        split.add(table, weight=3)
+        split.add(side, weight=2)
+        self.tree["stats"] = self._table(table)
+        self.tree["stats"].bind("<<TreeviewSelect>>", self._picked_stat)
+        # A double-click writes a note on that stat, when the table is one
+        # named player's -- Hand2Note's notes on a stat.
+        self.tree["stats"].bind("<Double-1>", self._note_on_stat)
+        self.stat_canvas = tk.Canvas(side, bg=BG, highlightthickness=0)
+        self.stat_canvas.pack(fill="both", expand=True)
+        self.stat_canvas.bind("<Configure>", lambda e: self._draw_chart(
+            self.stat_note, self.stat_canvas))
+        self.stat_canvas.bind("<Motion>", self._chart_hover)
+        self.stat_canvas.bind("<Leave>",
+                              lambda e: self.stat_canvas.delete("hint"))
+        self.stat_chart, self.picked = None, None
+        self.stat_note = "click a stat to see the hands it was made of"
+        for name in ("actions", "overfolds", "range", "report", "results",
                      "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
@@ -938,6 +1008,8 @@ class App(ImportMixin, ttk.Frame):
         self.chart_canvas.bind("<Motion>", self._chart_hover)
         self.chart_canvas.bind("<Leave>", lambda e: self.chart_canvas.delete("hint"))
         self.chart = None
+        self.tree["sessions"].bind("<Double-1>", self._open_session)
+        self.tree["sessions"].bind("<Return>", self._open_session)
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
 
@@ -995,22 +1067,28 @@ class App(ImportMixin, ttk.Frame):
         (self.multi[group].add if var.get() else self.multi[group].discard)(value)
         self.refresh()
 
-    def argv(self):
+    def _cohort_argv(self):
+        if self.cohort_spec is None:
+            return []
+        conditions, site, klass, durable = self.cohort_spec
+        argv = ["--cohort"]
+        flags = {"fold_to_threebet": "--fold-to-threebet"}
+        for field, value in conditions:
+            argv += [flags.get(field, "--" + field), value]
+        if site:
+            argv += ["--site", site]
+        if klass:
+            argv += ["--class", klass]
+        if durable is not None:
+            argv += ["--durable", str(durable)]
+        return argv
+
+    def argv(self, cohort=True):
         """The window's state as the argument list `query.build` understands."""
         argv = query.preset_argv(self.preset.get()) if self.preset.get() else []
         argv += [fl for fl, v in self.flags.items() if v.get()]
-        if self.cohort_spec is not None:
-            conditions, site, klass, durable = self.cohort_spec
-            argv.append("--cohort")
-            flags = {"fold_to_threebet": "--fold-to-threebet"}
-            for field, value in conditions:
-                argv += [flags.get(field, "--" + field), value]
-            if site:
-                argv += ["--site", site]
-            if klass:
-                argv += ["--class", klass]
-            if durable is not None:
-                argv += ["--durable", str(durable)]
+        if cohort:
+            argv += self._cohort_argv()
         # "Against" is the pot's matchup, in the user's words: BTN vs BB is
         # any time the button raised and the big blind did not fold. With
         # no "my position" chosen it is every seat's pots against those.
@@ -1028,7 +1106,9 @@ class App(ImportMixin, ttk.Frame):
                             ("fd", "--fd"), ("sd", "--sd"),
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card"),
-                            ("facing", "--facing")):
+                            ("facing", "--facing"),
+                            ("pf_facing", "--pf-facing"),
+                            ("fish_blinds", "--fish-blinds")):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
         for name, flag in (("site", "--site"), ("stake", "--stake"),
@@ -1046,7 +1126,12 @@ class App(ImportMixin, ttk.Frame):
                            ("format", "--format"),
                            ("session_len", "--session-len"),
                            ("session_min", "--session-min"),
-                           ("tables", "--tables"), ("tag", "--tag")):
+                           ("tables", "--tables"), ("tag", "--tag"),
+                           ("session", "--session"),
+                           ("last_sessions", "--last-sessions"),
+                           ("street_pot", "--street-pot"),
+                           ("fish_left_seats", "--fish-left-seats"),
+                           ("fish_right_seats", "--fish-right-seats")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1066,7 +1151,8 @@ class App(ImportMixin, ttk.Frame):
                 "--made": "made", "--kicker": "kicker", "--fd": "fd",
                 "--combo": "combo",
                 "--sd": "sd", "--turn-card": "turn_card",
-                "--river-card": "river_card", "--facing": "facing"}
+                "--river-card": "river_card", "--facing": "facing",
+                "--pf-facing": "pf_facing", "--fish-blinds": "fish_blinds"}
     VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
               "--deep": "deep", "--short": "short", "--since": "since",
               "--until": "until", "--where": "where", "--line": "line",
@@ -1077,13 +1163,101 @@ class App(ImportMixin, ttk.Frame):
               "--session-min": "session_min", "--tables": "tables",
               "--tag": "tag", "--size": "size", "--size-bb": "size_bb",
               "--raise-x": "raise_x", "--depth": "depth", "--spr": "spr",
-              "--high": "high", "--format": "format"}
+              "--high": "high", "--format": "format",
+              "--session": "session", "--last-sessions": "last_sessions",
+              "--street-pot": "street_pot",
+              "--fish-left-seats": "fish_left_seats",
+              "--fish-right-seats": "fish_right_seats"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
               "--actions": "actions", "--overfolds": "overfolds",
               "--graph": "graph"}
 
-    def apply_argv(self, argv):
+    def view_argv(self):
+        """
+        Everything on the screen as one command line, for a saved view.
+
+        The situation, then the tab and how it is drawn, then the players
+        last. Last because `players.parse_cohort` reads the first `--site`
+        it meets as the cohort's, and a cohort with no site of its own
+        would otherwise take the site the filter was on; `open_view` reads
+        the players from the `--cohort` on and the rest from before it.
+        """
+        view = self.nb.tab(self.nb.select(), "text")
+        argv = self.argv(cohort=False)
+        flag = {t: f for f, t in self.TAB_OF.items()}.get(view)
+        if flag:
+            argv.append(flag)
+        if view in ("report", "results", "actions", "overfolds") and (
+                self.by.get() or view == "report"):
+            argv += ["--by", self.by.get() or "position"]
+        if view == "chart":
+            if self.chart_stat():
+                argv += ["--show", self.chart_stat()]
+            if self.alternative.get():
+                argv += ["--alternative", self.alternative.get()]
+        if view == "stats" and self.picked:
+            argv += ["--range-of", self.picked]
+            if TOOK.get(self.took.get()):
+                argv += ["--alternative", TOOK[self.took.get()]]
+        return argv + self._cohort_argv()
+
+    def open_view(self, name):
+        """A saved view, onto the window: everything it had, and nothing else."""
+        argv = query.view_argv(name)
+        cut = argv.index("--cohort") if "--cohort" in argv else len(argv)
+        spec, rest = players.parse_cohort(argv[cut:])
+        # The split box keeps its choice across an assistant's handoff,
+        # which names no split; a view that had none means none.
+        self.by.set("")
+        self.apply_argv(argv[:cut] + rest, cohort_spec=spec)
+
+    def save_view(self):
+        name = simpledialog.askstring(
+            "Save this view", "A name for everything on the screen -- who, "
+                              "the filter, the tab and its choices:",
+            parent=self.master)
+        if not name or not name.strip():
+            return
+        if name.strip() in query.saved_views() and not messagebox.askyesno(
+                "Replace it?", f"There is already a view called {name!r}. "
+                               f"Replace it with this one?", parent=self.master):
+            return
+        try:
+            query.save_view(name, self.view_argv())
+        except (ValueError, SystemExit) as error:
+            messagebox.showerror("Not saved", str(error), parent=self.master)
+
+    def forget_view(self, name):
+        if messagebox.askyesno("Forget it?", f"Forget the view {name!r}? "
+                               "This cannot be undone.", parent=self.master):
+            query.forget_view(name)
+
+    def _fill_views(self, menu):
+        """The Views menu, read from the file each time it is opened."""
+        menu.delete(0, "end")
+        menu.add_command(label="Save this view…", command=self.save_view)
+        menu.add_command(label="Export the hands it selects…",
+                         command=self.export_hands)
+        known = query.saved_views()
+        if known:
+            menu.add_separator()
+        for name in known:
+            menu.add_command(label=name,
+                             command=lambda n=name: self.open_view(n))
+        if known:
+            menu.add_separator()
+            forget = tk.Menu(menu, tearoff=0, background=PANEL, foreground=INK,
+                             activebackground=ACCENT, activeforeground=BG)
+            for name in known:
+                forget.add_command(label=name,
+                                   command=lambda n=name: self.forget_view(n))
+            menu.add_cascade(label="Forget", menu=forget)
+        for name, why in query.UNREADABLE_VIEWS:
+            menu.add_command(label=f"{name} (broken: {why[:60]})",
+                             state="disabled")
+
+    def apply_argv(self, argv, cohort_spec=None):
         """
         A command line, into the window's own boxes -- the inverse of `argv`.
 
@@ -1095,8 +1269,11 @@ class App(ImportMixin, ttk.Frame):
         bar shows what was kept.
         """
         self.clear_filters()
+        if cohort_spec is not None:
+            self.cohort_spec = cohort_spec
+            self.cohort_btn.configure(text="Players: active")
         tab, argv = "stats", list(argv)
-        shown, alternative = None, ""
+        shown, alternative, range_of = None, "", None
         self.alternative.set("")
         self.of.set("the range itself")
         i = 0
@@ -1138,6 +1315,9 @@ class App(ImportMixin, ttk.Frame):
             elif a == "--alternative" and i + 1 < len(argv):
                 alternative = argv[i + 1]
                 i += 2
+            elif a == "--range-of" and i + 1 < len(argv):
+                range_of = argv[i + 1]
+                i += 2
             elif a in query.OPTIONS and i + 1 < len(argv):
                 i += 2
             else:
@@ -1147,6 +1327,14 @@ class App(ImportMixin, ttk.Frame):
                 self.of.set(BY_KEY[shown].label)
             if alternative in query.CHART_ALTERNATIVES:
                 self.alternative.set(alternative)
+        if tab == "stats":
+            self.picked = None
+            self.took.set(next(iter(TOOK)))
+        if tab == "stats" and range_of in BY_KEY:
+            self.picked = range_of
+            self.took.set(next((w for w, alt in TOOK.items()
+                                if alt == (alternative or None)),
+                               next(iter(TOOK))))
         for name, frame in self.tabs.items():
             if name == tab:
                 self.nb.select(frame)
@@ -1170,12 +1358,22 @@ class App(ImportMixin, ttk.Frame):
             self.of.pack_forget()
             self.alternative_label.pack_forget()
             self.alternative.pack_forget()
+        if view == "hands":
+            self.hand_sort_label.pack(side="left", padx=(0, 6))
+            self.hand_sort.pack(side="left")
+        else:
+            self.hand_sort_label.pack_forget()
+            self.hand_sort.pack_forget()
         if view == "stats":
             self.expression_label.pack(side="left", padx=(0, 6))
             self.expression.pack(side="left")
+            self.took_label.pack(side="left", padx=(14, 6))
+            self.took.pack(side="left")
+            self.no_reg_fish.pack(side="left", padx=(14, 0))
         else:
-            self.expression_label.pack_forget()
-            self.expression.pack_forget()
+            for w in (self.expression_label, self.expression, self.took_label,
+                      self.took, self.no_reg_fish):
+                w.pack_forget()
         try:
             argv = self.argv()
             cohort_spec, query_argv = players.parse_cohort(argv)
@@ -1201,17 +1399,28 @@ class App(ImportMixin, ttk.Frame):
             self.clear_btn.pack_forget()
         self.pending += 1
         token = self.pending
-        stat = self.expression.get() if view == "stats" else self.chart_stat()
+        # `stat` is what the view is OF, which for the hands tab is the
+        # order -- it chooses which hands are shown, so it is part of the
+        # answer and of the key it is cached under.
+        stat = (self.expression.get() if view == "stats" else
+                self.hand_sort.get() if view == "hands" else self.chart_stat())
         alternative = (self.alternative.get() or None) if view == "chart" else None
         key = (view, where, self.by.get(), stat, alternative, repr(cohort_spec))
+        self.last = (where, label, parts, cohort_spec, query_argv)
         if key in self.cache:
             self.status.configure(text="")
             self._render(self.cache[key])
+            if view == "stats":
+                self.show_stat_range()
             return
         self.status.configure(text="working…")
+        # The clicked stat's range rides on the table's own request rather
+        # than following it as a second one, because the worker runs only
+        # the newest request and would drop the table to answer the chart.
+        pick = self._range_request(where, cohort_spec) if view == "stats" else None
         self.requests.put((token, key, view, where, label, parts,
                            self.by.get(), cohort_spec, stat, alternative,
-                           query_argv))
+                           query_argv, pick))
 
     def _worker(self):
         """The one thread every query runs on; see `_work`."""
@@ -1235,10 +1444,76 @@ class App(ImportMixin, ttk.Frame):
             if token != self.pending:
                 continue
             out = self._work(token, *args)
+            if out is not None and out.get("range_key"):
+                self.cache[out["range_key"]] = {"view": "statrange",
+                                                "range": out["range"]}
             if out is not None and not out.get("error"):
                 self.cache[key] = out
                 if len(self.cache) > 64:
                     self.cache.pop(next(iter(self.cache)))
+
+    def _range_request(self, where, cohort_spec):
+        """(cache key, stat, alternative) for the clicked stat, or None."""
+        if not self.picked:
+            return None
+        took = TOOK.get(self.took.get())
+        return (("statrange", where, self.picked, took, repr(cohort_spec)),
+                self.picked, took)
+
+    def _note_on_stat(self, _event=None):
+        import notes
+        from tkinter import simpledialog
+        shown = getattr(self, "shown_stats", None)
+        chosen = self.tree["stats"].selection()
+        if not shown or "who" not in shown or not chosen \
+                or not chosen[0].startswith("stat:"):
+            return
+        key = chosen[0][len("stat:"):]
+        site, player = shown["who"]
+        text = simpledialog.askstring(
+            "note on a stat", f"{player} on {site}, {key} (empty removes):",
+            initialvalue=shown["said"].get(key, ""), parent=self)
+        if text is None:
+            return
+        notes.stat_note(self.con, site, player, key, text)
+        shown["said"] = notes.stat_notes_of(self.con, site, player)
+        tv = self.tree["stats"]
+        tv.delete(*tv.get_children())
+        self._render_stats(tv, shown)
+
+    def _picked_stat(self, _event=None):
+        chosen = self.tree["stats"].selection()
+        if not chosen or not chosen[0].startswith("stat:"):
+            return
+        key = chosen[0][len("stat:"):]
+        if key != self.picked:
+            self.picked = key
+            self.show_stat_range()
+
+    def show_stat_range(self):
+        """
+        The clicked stat's range, from the cache or from the worker.
+
+        Asked separately from the table only when the table is already
+        drawn -- a click on one of its rows, or the box beside it -- so
+        there is nothing in the queue for this request to displace.
+        """
+        if not getattr(self, "last", None):
+            return
+        where, label, parts, cohort_spec, query_argv = self.last
+        pick = self._range_request(where, cohort_spec)
+        if pick is None:
+            self.stat_chart = None
+            self._draw_chart(self.stat_note, self.stat_canvas)
+            return
+        if pick[0] in self.cache:
+            self._render(self.cache[pick[0]])
+            return
+        self.pending += 1
+        self.status.configure(text="working…")
+        self.requests.put((self.pending, pick[0], "statrange", where, label,
+                           parts, "", cohort_spec, None, None, query_argv,
+                           pick))
 
     def chart_stat(self):
         """Which stat the chart is of, or None for the range itself."""
@@ -1249,7 +1524,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None, alternative=None, filter_argv=()):
+              stat=None, alternative=None, filter_argv=(), pick=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -1278,11 +1553,23 @@ class App(ImportMixin, ttk.Frame):
                 pool_where, pool_params = query.pool_beside(con, list(filter_argv))
                 out["n"], out["rows"] = query.stats_of(con, where, pool_where,
                                                        pool_params)
+                # The same one player's notes on their stats, beside the
+                # rows they are about -- only where a name is a person.
+                one = query.one_player(con, list(filter_argv))
+                if one and one[0] in sites.named():
+                    import notes
+                    out["who"] = one
+                    out["said"] = notes.stat_notes_of(con, *one)
                 if stat in stats.EXPR_BY_KEY:
                     expression = stats.EXPR_BY_KEY[stat]
                     value, n = stats.evaluate(con, expression, where)
                     out["expression"] = (expression.label, value, n)
                     out["formula"] = expression.formula
+                if pick:
+                    out["range"] = self._stat_range(con, where, pick)
+                    out["range_key"] = pick[0]
+            elif view == "statrange":
+                out["range"] = self._stat_range(con, where, pick)
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "sessions":
@@ -1332,10 +1619,11 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
-                out["rows"] = query.hands_of(con, where, limit=500)
+                out["rows"] = query.hands_of(con, where, limit=500,
+                                             sort=stat or "date")
             elif view == "graph":
                 out["series"] = self._series(con, where)
-            if not self._any(out):
+            if view != "statrange" and not self._any(out):
                 out["why"] = query.why_empty(con, parts)
         except ValueError as e:
             out = {"view": view, "error": str(e)}
@@ -1351,6 +1639,15 @@ class App(ImportMixin, ttk.Frame):
             con.close()
         self.results.put((token, out))
         return out
+
+    @staticmethod
+    def _stat_range(con, where, pick):
+        """The chart for the stats tab's side, or the sentence instead of it."""
+        _key, stat, took = pick
+        try:
+            return query.stat_range_of(con, where, stat, took)
+        except ValueError as e:
+            return {"error": str(e)}
 
     @staticmethod
     def _any(out):
@@ -1397,6 +1694,19 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        # A cached table carries the range of whatever was clicked when it
+        # was computed; `show_stat_range` draws the current one after it.
+        current = self._range_request(self.last[0], self.last[3]) \
+            if getattr(self, "last", None) else None
+        if "range" in out and (view == "statrange" or (
+                current and out.get("range_key") == current[0])):
+            g = out["range"]
+            self.stat_chart = g if g.get("cells") else None
+            self._draw_chart(g.get("error") or (
+                None if g.get("total") else "nobody took it under this filter"),
+                self.stat_canvas)
+        if view == "statrange":
+            return
         if view == "graph":
             self.series = out.get("series")
             self.graph_ran = True
@@ -1444,16 +1754,19 @@ class App(ImportMixin, ttk.Frame):
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
     def _render_stats(self, tv, out):
+        self.shown_stats = out
         # The last two columns exist only when one player is named, because
         # only then is there a pool that is the same spot with other people
         # in it. Added rather than substituted: the interval belongs to the
         # raw rate, and a reader who wants to know what was actually seen
         # should not have to work it back out of a shrunk figure.
         pooled = bool(out["rows"]) and "pool" in out["rows"][0]
-        names = ("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
-        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ()),
-                   {"stat": "w"})
-        blank = ("", "") if pooled else ()
+        said = out.get("said") if "who" in out else None
+        names = (("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
+                 + (("note",) if said is not None else ()))
+        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ())
+                   + ((320,) if said is not None else ()), {"stat": "w", "note": "w"})
+        blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
         for r in out["rows"]:
             if r["group"] != group:
@@ -1465,7 +1778,10 @@ class App(ImportMixin, ttk.Frame):
                 # A stat the pool never had the chance to take gets no
                 # comparison. "0.0%" there would invent a population.
                 extra = (_pct(r.get("pool")), _pct(r.get("shrunk")))
-            tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+            if said is not None:
+                extra += (said.get(r["key"], ""),)
+            tv.insert("", "end", iid="stat:" + r["key"],
+                      tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
                               # A band under a point still has a size, and
                               # "±0" reads as a number that failed to print.
@@ -1572,7 +1888,8 @@ class App(ImportMixin, ttk.Frame):
         for r in rows:
             tag = ("pos",) if r["net_bb"] > 0 else ("neg",) if r["net_bb"] < 0 else ()
             hr = 60.0 * r["hands"] / r["minutes"] if r["minutes"] else 0.0
-            tv.insert("", "end", tags=tag, values=(
+            tv.insert("", "end", iid=f"session:{r['session_id']}", tags=tag,
+                      values=(
                 r["started"][:16], r["site"], f"{r['minutes']:.0f}",
                 f"{r['hands']:,}", f"{hr:.0f}", f"{r['matched']:,}", r["tables"],
                 f"{r['net_bb']:+.1f}", f"{r['ev_bb']:+.1f}",
@@ -1584,7 +1901,8 @@ class App(ImportMixin, ttk.Frame):
             f"{len(rows)} SESSIONS", "", "", f"{n:,}", "", "", "",
             f"{net:+.1f}", "", ""))
         tv.insert("", "end", tags=("note",), values=(
-            "the clock is the site's, not yours",) + ("",) * 9)
+            "the clock is the site's, not yours -- double-click a sitting "
+            "for its hands",) + ("",) * 9)
 
     def _render_range(self, tv, out):
         """
@@ -1720,6 +2038,62 @@ class App(ImportMixin, ttk.Frame):
                               "there; click a heading to sort, net bb for "
                               "the biggest wins and losses",) + ("",) * 8)
 
+    def _open_session(self, _event=None):
+        """
+        A sitting's hands, from its row: the filter becomes that sitting.
+
+        Everything else in the filter is dropped, because the row was found
+        under it and is about to be read as the whole night -- a sitting
+        opened under "river, facing a bet" would show four hands of it and
+        call that Tuesday.
+        """
+        chosen = self.tree["sessions"].selection()
+        if not chosen or not chosen[0].startswith("session:"):
+            return
+        sid = chosen[0][len("session:"):]
+        self.apply_argv(["--hero", "--session", sid, "--hands"])
+
+    def export_hands(self):
+        """
+        The hands the filter selects, as the sites wrote them, to a file.
+
+        The same hands `query.py --export` writes under the same filter,
+        cohort included: `hands_of` over the same WHERE, so the window and
+        the command line cannot come to disagree about which hands those are.
+        """
+        try:
+            cohort_spec, rest = players.parse_cohort(self.argv())
+            where, label, _parts = query.build(rest)
+        except SystemExit as e:
+            messagebox.showerror("Not exported", str(e), parent=self.master)
+            return
+        out = filedialog.asksaveasfilename(
+            parent=self.master, defaultextension=".txt",
+            initialfile="traceev-hands.txt", title="Export these hands",
+            filetypes=[("hand histories", "*.txt")])
+        if not out:
+            return
+
+        def work(say):
+            con = query.connect(DB)
+            try:
+                chosen = where
+                if cohort_spec is not None:
+                    query.select_cohort(con, cohort_spec)
+                    chosen = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
+                              "WHERE c.site = decisions.site AND "
+                              "c.player = decisions.player)")
+                ids = sorted({r[0] for r in query.hands_of(con, chosen)})
+                say(f"{len(ids):,} hands under: {label}")
+                if not ids:
+                    return "nothing to export -- the filter selects no hands"
+                written, missing = importer.export(con, ids, out, log=say)
+                return (f"done: {written:,} written"
+                        + (f", {len(missing):,} not found" if missing else ""))
+            finally:
+                con.close()
+        self._run_import("Export these hands", work)
+
     def _open_hand(self, _event):
         tv = self.tree["hands"]
         sel = tv.selection()
@@ -1728,7 +2102,7 @@ class App(ImportMixin, ttk.Frame):
         hid, seat = self._hand_ids[sel[0]]
         HandWindow(self, self.con, hid, seat)
 
-    def _draw_chart(self, message=None):
+    def _draw_chart(self, message=None, canvas=None):
         """
         The 13x13 chart, in the shape every range chart is drawn in.
 
@@ -1740,25 +2114,41 @@ class App(ImportMixin, ttk.Frame):
 
         A rate is shaded absolutely, because there 100% means something.
         """
-        c = self.chart_canvas
+        c = canvas or self.chart_canvas
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 80 or h < 80:
             return
-        g = self.chart
+        side = c is getattr(self, "stat_canvas", None)
+        g = self.stat_chart if side else self.chart
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
                           text=message or "no hand in this filter showed its "
                                           "cards, so there is no range to draw")
             return
+        # A stat's own range says first what it is a range OF: the share of
+        # the chances it was taken on, every hand counted, so "3bet 9%" and
+        # the nine percent drawn below it are read together.
+        if "took" in g:
+            k, n = g["took"]
+            c.create_text(14, 4, anchor="nw", fill=INK, font=(UI, 9),
+                          text=f"{g['stat']}: {k:,} of {n:,} chances"
+                               + (f" ({100.0 * k / n:.1f}%)" if n else "")
+                               + " -- these are those hands"
+                               + ("" if "held" not in g else
+                                  "\n" + query.held_line(g["held"])))
 
         comparison = g["mode"] == "comparison"
         rate = g["mode"] in ("rate", "comparison")
-        top, foot = 16, 112 if comparison else 52
+        top = 16 + (18 if "took" in g else 0) + (16 if "held" in g else 0)
+        foot = 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
-        self._chart_geometry = (left, top, size)
+        if side:
+            self._stat_geometry = (left, top, size)
+        else:
+            self._chart_geometry = (left, top, size)
         peak = max(1e-9, g["peak"] / max(1, g["seen"]))
         # Below this the two lines of text collide, so the value is
         # dropped and the label kept. It was set by measuring the window:
@@ -1844,11 +2234,14 @@ class App(ImportMixin, ttk.Frame):
 
     def _chart_hover(self, event):
         """A colour's sample is one pointer move away, without another query."""
-        c, g = self.chart_canvas, self.chart
+        c = getattr(event, "widget", self.chart_canvas)
+        side = c is getattr(self, "stat_canvas", None)
+        g = self.stat_chart if side else self.chart
+        geometry = "_stat_geometry" if side else "_chart_geometry"
         c.delete("hint")
-        if not g or not hasattr(self, "_chart_geometry"):
+        if not g or not hasattr(self, geometry):
             return
-        left, top, size = self._chart_geometry
+        left, top, size = getattr(self, geometry)
         if size <= 0:
             return
         i, j = int((event.y - top) // size), int((event.x - left) // size)
@@ -2636,6 +3029,21 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "what kind of player")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in WHO])
+        # Hand2Note's distance to fish and fish on the blinds. These are the
+        # table, not the pot: who was dealt in, wherever they are now.
+        self._heading(page, "where the fish sit  (seats round the table to "
+                            "the nearest one, 1 is next to me; ranges are a-b)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("fish_left_seats", "on my left, e.g. 1-2"),
+                           ("fish_right_seats", "on my right")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=6).pack(
+                side="left", padx=(6, 18))
+        self._heading(page, "a fish in the blinds  (not me)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._set_item("fish_blinds", v)))
+            for v in query.FISH_BLINDS])
         ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
                   text="A reg plays a third of hands or fewer and raises at "
                        "least one in ten. A fish is loose or passive: over a "
@@ -2667,6 +3075,12 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "facing  (what is in front of the player when they act)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("facing", v))) for v in query.FACINGS])
+        # Hand2Note's preflop ladder: the facing above, with the limpers and
+        # the callers counted. Two chosen are either one, not both.
+        self._heading(page, "preflop, in more detail  (limpers and callers counted)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v.replace("-", " "), *self._set_item("pf_facing", v)))
+            for v in query.PF_FACING])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -2926,7 +3340,8 @@ class FilterDialog(tk.Toplevel):
         row.pack(fill="x", padx=18)
         for name, text in (("deep", "at least"), ("short", "less than"),
                            ("depth", "or a range, e.g. 20-50"),
-                           ("spr", "SPR range, e.g. 1-4")):
+                           ("spr", "SPR range, e.g. 1-4"),
+                           ("street_pot", "pot as the street began, bb, e.g. 5-7")):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=8).pack(
                 side="left", padx=(6, 18))
@@ -2952,6 +3367,8 @@ class FilterDialog(tk.Toplevel):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=10).pack(
                 side="left", padx=(6, 18))
+        self._grid(page, [(lambda parent, f=f, t=t: self._pick(
+            parent, t, *self._flag_item(f))) for f, t in POSTS])
 
         self._heading(page, "dates   (yyyy-mm-dd)")
         row = ttk.Frame(page)
@@ -2969,6 +3386,13 @@ class FilterDialog(tk.Toplevel):
                                   ("session_len", "session length, min", 9),
                                   ("session_min", "minutes into it", 9),
                                   ("tables", "tables open", 6)):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
+                side="left", padx=(6, 16))
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(6, 0))
+        for name, text, width in (("last_sessions", "my last N sittings on each site", 5),
+                                  ("session", "sittings by number, e.g. 41,42", 12)):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
                 side="left", padx=(6, 16))
@@ -3323,6 +3747,13 @@ class HandWindow(tk.Toplevel):
         self.tag_entry.pack(side="left")
         self.tag_entry.bind("<Return>", lambda e: self._add_tag())
         ttk.Button(top, text="tag", command=self._add_tag).pack(side="left", padx=4)
+        # The hand as text for a forum or a coach, with every name, the
+        # hand number, the table and the date taken out -- `share_text`
+        # says what is kept. Told from the seat the hand was opened for,
+        # so a hand opened on an opponent shares it as that opponent's.
+        self.seat = seat
+        ttk.Button(top, text="copy for sharing",
+                   command=self._copy_share).pack(side="right")
         self._draw_tags()
 
         # The note on the seat this hand was opened for, when that seat is
@@ -3345,6 +3776,28 @@ class HandWindow(tk.Toplevel):
             self.note_box.pack(side="left", padx=8, fill="x", expand=True)
             self.note_box.insert("1.0", focus.get("note") or "")
             ttk.Button(row, text="save", command=self._save_note).pack(side="left")
+            # Hand2Note's templates and hand-in-a-note, under the box: a
+            # template is written into the box filled with this player's
+            # numbers, to be read and saved like anything typed, and this
+            # hand goes beside the player with the words typed next to it.
+            row = ttk.Frame(self)
+            row.pack(side="top", fill="x", padx=12, pady=(0, 6))
+            names = [n for n, _t in notes.templates(con)]
+            self.template = ttk.Combobox(row, state="readonly", width=18,
+                                         values=names)
+            if names:
+                self.template.set(names[0])
+                self.template.pack(side="left")
+                ttk.Button(row, text="insert template",
+                           command=self._insert_template).pack(side="left", padx=4)
+            self.hand_words = ttk.Entry(row, width=28)
+            self.hand_words.pack(side="left", padx=(12, 4))
+            self.hand_state = ttk.Label(row, style="Dim.TLabel")
+            ttk.Button(row, text="put this hand in the note",
+                       command=self._note_hand).pack(side="left")
+            self.hand_state.pack(side="left", padx=8)
+            if any(h == hand_id for h, _w in notes.hands_noted(con, *self.note_for)):
+                self.hand_state.configure(text="in the note")
 
         text = tk.Text(self, background=BG, foreground=INK, borderwidth=0,
                        font=mono, padx=16, pady=12, wrap="none",
@@ -3406,6 +3859,12 @@ class HandWindow(tk.Toplevel):
                            command=lambda t=t: self._drop_tag(t))
             b.pack(side="left", padx=2)
 
+    def _copy_share(self):
+        text = query.share_text(self.con, self.hand_id, self.seat)
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+
     def _add_tag(self):
         import notes
         notes.tag(self.con, self.hand_id, self.tag_entry.get())
@@ -3422,6 +3881,21 @@ class HandWindow(tk.Toplevel):
         if self.note_for:
             notes.note(self.con, *self.note_for,
                        self.note_box.get("1.0", "end"))
+
+    def _insert_template(self):
+        import notes
+        if not self.note_for or not self.template.get():
+            return
+        line = notes.filled(self.con, self.template.get(), *self.note_for)
+        had = self.note_box.get("1.0", "end").strip()
+        self.note_box.insert("end", ("\n" if had else "") + line)
+
+    def _note_hand(self):
+        import notes
+        if self.note_for:
+            notes.note_hand(self.con, *self.note_for, self.hand_id,
+                            self.hand_words.get())
+            self.hand_state.configure(text="in the note")
 
 
 def check(db_path=DB):
@@ -3484,6 +3958,18 @@ def check(db_path=DB):
         # the assistant's answers lost it on the way in.
         ({"flags": ["--pool"], "street": ["river"], "facing": ["bet"]},
          ["--pool", "--street", "river", "--facing", "bet"]),
+        # Sittings, by number and by recency.
+        ({"flags": ["--hero"], "vals": {"last_sessions": "2"}},
+         ["--hero", "--last-sessions", "2"]),
+        ({"flags": [], "vals": {"session": "3,4"}}, ["--session", "3,4"]),
+        # The preflop ladder, two rungs at once, which is an OR.
+        ({"flags": ["--pool"], "pf_facing": ["1-limp", "2-limps"]},
+         ["--pool", "--pf-facing", "1-limp,2-limps"]),
+        # The table around the player, and what was posted.
+        ({"flags": ["--hero", "--no-straddle"], "fish_blinds": ["bb"],
+          "vals": {"fish_left_seats": "1-2", "street_pot": "5-7"}},
+         ["--hero", "--no-straddle", "--fish-blinds", "bb",
+          "--fish-left-seats", "1-2", "--street-pot", "5-7"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
@@ -3546,6 +4032,147 @@ def check(db_path=DB):
     for b in broke:
         print(f"    {b}")
     fails += broke
+
+    # The stats table's side chart. A click on a row is the only way it is
+    # asked for, and the table and chart arrive by two roads -- one riding
+    # on the table's own request, one on its own -- so both are driven:
+    # the first must hand back a range under the key the second looks for,
+    # and the chart must draw from it.
+    app.picked = "threebet"
+    app.took.set(next(iter(TOOK)))
+    app.last = ("1=1", "everything", [], None, [])
+    pick = app._range_request("1=1", None)
+    both = app._work(0, "stats", "1=1", "everything", [], "", None, pick=pick)
+    app.results.get_nowait()
+    alone = app._work(0, "statrange", "1=1", "everything", [], "", None,
+                      pick=pick)
+    app.results.get_nowait()
+    g = both.get("range") or {}
+    same = (both.get("range_key") == pick[0] and alone.get("range")
+            and alone["range"].get("cells") == g.get("cells"))
+    direct = con.execute(
+        "SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat FROM decisions "
+        f"WHERE ({BY_KEY['threebet'].chance}) "
+        f"AND ({BY_KEY['threebet'].action}))").fetchone()[0]
+    print(f"a clicked stat's range, both roads  "
+          f"{'the same' if same else 'NO'}, {g.get('total', 0):,} player-hands"
+          f" of {direct:,} that 3-bet")
+    if not same or g.get("total") != direct:
+        fails.append("the stats tab's range is not the hands that took the "
+                     "stat, or differs by the road it came by")
+    # Drawn on the screen, because a canvas nobody can see is one pixel
+    # wide and `_draw_chart` rightly draws nothing on it.
+    root.geometry("1360x880")
+    root.deiconify()
+    app.nb.select(app.tabs["stats"])
+    root.update()
+    app._render({"view": "statrange", "range": g})
+    drew = len(app.stat_canvas.find_all())
+    root.withdraw()
+    refused = app._work(0, "statrange", "1=1", "", [], "", None,
+                        pick=(("k",), "vpip", "call"))
+    app.results.get_nowait()
+    print(f"and draws it   {drew} items; VPIP's call range "
+          f"{'refused' if refused['range'].get('error') else 'NOT refused'}")
+    if g.get("cells") and drew < 169:
+        fails.append("the stats tab's range is computed but not drawn")
+    if not refused["range"].get("error"):
+        fails.append("a hand-counted stat was given an alternative range")
+    # The weak share under a postflop range is `range_of`'s over the same
+    # rows, and a preflop range has none: nothing is made before the flop,
+    # and a line there would be a tier breakdown of an empty set.
+    flop = query.stat_range_of(con, "1=1", "cbet_flop")
+    held = flop.get("held")
+    want = query.range_of(con, f"({BY_KEY['cbet_flop'].chance}) AND "
+                               f"({BY_KEY['cbet_flop'].action})")
+    weak_ok = (held and abs(held["weak"] - want["weak"]) < 1e-9
+               and "held" not in g)
+    print(f"a postflop range says how much is weak  "
+          f"{(format(held['weak'], '.0f') + '%') if held else 'NO'}"
+          f"; a preflop one says nothing  {'yes' if 'held' not in g else 'NO'}")
+    if not weak_ok:
+        fails.append("the weak share beside a stat's range is missing, or "
+                     "differs from the range tab's, or drawn preflop")
+    app.picked = None
+
+    # A sitting's row opens that sitting's hands and nothing else. The row
+    # is found under a filter, and kept under it the hands tab would show a
+    # few hands of the night and be read as the whole of it.
+    app.clear_filters()
+    app.multi["street"] = {"river"}
+    listed = app._work(0, "sessions", "1=1", "", [], "", None)
+    app.results.get_nowait()
+    app._render(listed)
+    first = listed["rows"][0]["session_id"]
+    app.tree["sessions"].selection_set(f"session:{first}")
+    app._open_session()
+    opened = query.build(app.argv())[0]
+    want = query.build(["--hero", "--session", str(first)])[0]
+    on_hands = app.nb.tab(app.nb.select(), "text") == "hands"
+    print(f"a sitting's row opens its hands  "
+          f"{'yes' if opened == want and on_hands else 'NO -- ' + opened}")
+    if opened != want or not on_hands:
+        fails.append("double-clicking a sitting does not open that sitting")
+    app.clear_filters()
+
+    # A saved view has to come back as it was saved: the same rows, the same
+    # tab, the same choices on it, and the same players. Saved and opened
+    # through the window's own methods and the command line's, into a file
+    # of its own so the user's views are never touched. The first has a
+    # cohort with no site of its own beside a filter that has one, which is
+    # the case `parse_cohort` would have read wrong had the players not
+    # been written last.
+    import contextlib, io, tempfile
+    real_views = query.VIEWS
+    query.VIEWS = Path(tempfile.mkdtemp()) / "views.json"
+    states = [
+        (["--hero"], {"site": "ignition"}, {"pot": {"raised"}}, "chart",
+         ([("vpip", ">=30")], None, None, None),
+         lambda: (app.of.set(BY_KEY["threebet"].label),
+                  app.alternative.set("call"))),
+        (["--pool"], {}, {"street": {"flop"}}, "stats", None,
+         lambda: (setattr(app, "picked", "cbet_flop"),
+                  app.took.set("fold instead"))),
+        (["--hero"], {}, {}, "report", None, lambda: app.by.set("stack")),
+    ]
+    unlike = []
+    for i, (flags, vals, multi, tab, spec, extra) in enumerate(states):
+        app.clear_filters()
+        app.by.set("")
+        for f in flags:
+            app.flags[f].set(True)
+        for n, v in vals.items():
+            app.vals[n].set(v)
+        for g, v in multi.items():
+            app.multi[g] = set(v)
+        app.cohort_spec = spec
+        app.nb.select(app.tabs[tab])
+        extra()
+        before = app.view_argv()
+        where_before = query.build(players.parse_cohort(app.argv())[1])[0]
+        query.save_view(f"view {i}", before)
+        app.clear_filters()
+        app.nb.select(app.tabs["hands"])
+        app.open_view(f"view {i}")
+        after = app.view_argv()
+        where_after = query.build(players.parse_cohort(app.argv())[1])[0]
+        if (before != after or where_before != where_after
+                or app.cohort_spec != spec
+                or app.nb.tab(app.nb.select(), "text") != tab):
+            unlike.append(f"{' '.join(before)} came back as {' '.join(after)}")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                query.main(["--open", f"view {i}"])
+        except SystemExit as e:
+            unlike.append(f"--open 'view {i}' refused: {e}")
+    print(f"a saved view reopens as it was  "
+          f"{len(states) - len(unlike)}/{len(states)}")
+    for u in unlike:
+        print(f"    {u}")
+    fails += unlike
+    query.VIEWS = real_views
+    app.clear_filters()
+    app.picked = None
 
     # The dark theme is only dark if `clam` is the theme in use; the others
     # hand their drawing to Windows and ignore every colour set here.
@@ -3713,7 +4340,8 @@ def check(db_path=DB):
     probe.destroy()
 
     mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
-            "filters.json": query.SAVED, "ai.json": ask.SETTINGS}
+            "filters.json": query.SAVED, "ai.json": ask.SETTINGS,
+            "views.json": query.VIEWS}
     astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)
     print(f"the user's files sit beside it {len(mine) - len(astray)}/{len(mine)}")
     if astray:

@@ -99,8 +99,13 @@ SUMMARY_WON_RE = re.compile(r"^Seat (\d+): .*? (?:and won|collected) \(" + CUR +
 POT_RE = re.compile(r"^Total pot " + CUR + r"([\d.,]+).*?\|\s*Rake " + CUR + r"([\d.,]+)", re.M)
 # "posts small blind $0.50", "posts big blind $1", "posts the ante $0.10",
 # "posts small & big blinds $1.50" -- a returning player's out-of-turn post
-# -- and a bare "posts $1". All of it is live money in the pot.
-POST_RE = re.compile(r"^posts (?:small blind|big blind|the ante|small & big blinds|)\s*" + CUR + r"([\d.,]+)")
+# -- and a bare "posts $1". All of it is live money in the pot. A
+# straddle, "posts straddle $2", is the same kind of money: a blind the
+# player chose to post, live, and standing toward a raise like the big
+# blind's. That spelling is FPDB's (`re_PostStraddle`); no history in its
+# corpus from a site read here has one, so it is taken on that authority
+# and was a tallied unknown verb before it was known.
+POST_RE = re.compile(r"^posts (?:small blind|big blind|the ante|small & big blinds|straddle|)\s*" + CUR + r"([\d.,]+)")
 
 STREETS = {"HOLE CARDS": "preflop", "FLOP": "flop",
            "TURN": "turn", "RIVER": "river"}
@@ -149,7 +154,7 @@ def parse_hand(text, source=""):
     names_longest = sorted(by_name, key=len, reverse=True)
 
     board, actions, street, order = [], [], "preflop", 0
-    sb_seat, antes = None, {}
+    sb_seat, antes, straddle = None, {}, 0.0
     for raw in text.splitlines():
         sm = STREET_RE.match(raw)
         if sm:
@@ -202,6 +207,8 @@ def parse_hand(text, source=""):
             # $31. The app rooms run antes at every table.
             if rest.startswith("posts the ante"):
                 antes[s["seat"]] = antes.get(s["seat"], 0.0) + (_money(pm.group(1)) or 0.0)
+            if rest.startswith("posts straddle"):
+                straddle = max(straddle, _money(pm.group(1)) or 0.0)
             continue
         if rest.startswith(("shows", "mucks", "doesn't show")):
             cm = CARDS_RE.search(rest)
@@ -337,6 +344,7 @@ def parse_hand(text, source=""):
                  "pot": _money(pot_m.group(1)) if pot_m else None,
                  "rake": _money(pot_m.group(2)) if pot_m else None,
                  "jp_fee": None,
+                 "ante": max(antes.values(), default=0.0), "straddle": straddle,
                  "hero_seat": hero["seat"] if hero else None,
                  "standard": standard, "source": source,
                  "max_seats": max_seats},
