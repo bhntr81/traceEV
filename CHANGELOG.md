@@ -8,6 +8,31 @@ Newest first.
 
 ---
 
+## The actions tab reads one table -- 3 Oct 2026
+
+### Changed -- four outcome columns on `decisions`
+
+The actions tab joined every decision it read to `seats` (for the stack at
+the end of the hand), to `spots` (for showdown) and to `decisions` again
+(for the next action), and those lookups were three quarters of its time.
+`decisions` now carries what they gave: `profit_bb`, `won_pot`, `showdown`
+and `next_action`, written by `decisions.outcome` with the view's own
+arithmetic in the view's own order. The tab is now one pass over the
+filter's rows. Across the same 42 filters at 49,600 hands it took 11.1s
+and now takes 5.0s; with no filter it took 2.1s and now takes 0.6s.
+
+Its output matches the old query to the ninth decimal place for every
+action under six filters and four splits. `decisions.py --check` holds the
+columns to the joins they replaced, row for row and exactly. `bb > 0` is
+written `+bb > 0`, because the planner otherwise walked the stake index end
+to end: under `--allin` that was five times slower than the all-in index.
+
+**Your database is rebuilt once**, on the first import after this, since
+the update path refuses a database missing a column: `importer.current`
+now counts `decisions`' own columns as well as the later stages'. A rebuild
+took about 45 seconds at 12,000 hands. After that, imports are incremental
+again.
+
 ## The matchup filters have an index -- 3 Oct 2026
 
 ### Added -- `dec_matchup`, and a database that is missing an index gets it on import

@@ -521,8 +521,12 @@ def current(con):
     if not {"spots", "bets", "decisions", "players", "sessions"} <= have:
         return False
     cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
-    return set(lines.LINE_COLUMNS) | set(strength.COLUMNS) \
-        | set(players.NAMES) | set(sessions.NAMES) <= cols
+    # `decisions`' own columns too: one added to its schema since the last
+    # rebuild is on no row yet, and an update writing its rows by name would
+    # fail on it.
+    import decisions
+    return set(decisions.SCHEMA_COLUMNS) | set(lines.LINE_COLUMNS) \
+        | set(strength.COLUMNS) | set(players.NAMES) | set(sessions.NAMES) <= cols
 
 
 def update(hand_ids, db_path=DB, progress=None):
