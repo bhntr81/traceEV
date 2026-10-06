@@ -29,6 +29,22 @@ sideways, scrollbars are a thin thumb, and only the main action on a bar is
 blue. Every colour, font and spacing is in `dark`. A long table's scrollbar
 had been squeezed out of sight by its own columns; it is packed first now.
 
+## Only your hands from the Desktop -- 6 Oct 2026
+
+### Fixed -- a first import read every folder on the Desktop
+
+The program looks for hand histories in each site's own folders and in
+Downloads and the Desktop, where an export gets dropped, and it read those
+last two all the way down. On the developer's own machine the first beta's
+first import therefore read FPDB's test corpus, which sits on his Desktop
+beside this program: 670 of the 1,240 files it reported as unrecognised,
+and about a thousand hands from 2005 to 2023 at PokerStars, PartyPoker,
+Ignition, ACR, PokerBros and PokerMaster, recognised, loaded, and each
+with a stranger in the hero's seat. Downloads and the Desktop are now read
+at their top level only (`importer.shallow`); a folder of histories kept
+inside either is imported by choosing it. `importer.py --check` holds a
+Desktop with a folder of files on it to reading the top only.
+
 ## A first import that derives faster -- 6 Oct 2026
 
 ### Changed -- the indexes on `decisions` are built once, at the end
