@@ -136,12 +136,37 @@ def sniff(path):
     return None
 
 
+def shallow(folder):
+    """
+    Whether this folder is read at its top level only: Desktop and Downloads.
+
+    An export dropped there lands at the top. Whatever is in a folder ON the
+    Desktop is somebody's project, and read all the way down it was the
+    first beta's first import on the developer's own machine: FPDB's test
+    corpus, kept on the Desktop beside this program, went in with his
+    hands: 670 of the 1,240 files it called unrecognised, and its 2005 to
+    2023 PokerStars, PartyPoker and Ignition hands, each with a stranger as
+    hero, recognised and loaded.
+    """
+    try:
+        folder = folder.resolve()
+        return any(folder == Path(os.path.expandvars(d)).resolve()
+                   for d in DROPPED)
+    except OSError:
+        return False
+
+
 def files_under(paths):
-    """Every .txt beneath the given files and folders, without duplicates."""
+    """
+    Every .txt beneath the given files and folders, without duplicates.
+
+    All the way down, except in the folders `shallow` names.
+    """
     seen, out = set(), []
     for p in paths:
         p = Path(os.path.expandvars(str(p)))
-        found = sorted(p.rglob("*.txt")) if p.is_dir() else [p]
+        found = (sorted(p.glob("*.txt") if shallow(p) else p.rglob("*.txt"))
+                 if p.is_dir() else [p])
         for f in found:
             key = str(f).lower()
             if key not in seen and f.is_file():
@@ -652,6 +677,9 @@ def source_index():
     file now lives -- the check does this, and so does an export.
     """
     index = {}
+    # All the way down, Desktop included, unlike `files_under`: this finds
+    # the file a hand already came from, wherever it was imported from, and
+    # looking further costs time and never a hand that is not the user's.
     for place in (Path(os.path.expandvars(p)) for p in places()):
         if place.exists():
             for f in place.rglob("*.txt"):
@@ -726,6 +754,24 @@ def check(db_path=DB):
           f"{'yes' if wanted <= tables and rows == 0 else 'NO, missing ' + str(sorted(wanted - tables))}")
     if not wanted <= tables or rows:
         fails.append("a new database is missing tables")
+    # A Desktop is read at its top and not below, so a folder of somebody
+    # else's hands sitting on it is not imported as the user's own.
+    global DROPPED
+    with tempfile.TemporaryDirectory() as tmp:
+        desk = Path(tmp) / "Desktop"
+        (desk / "hand_samples").mkdir(parents=True)
+        (desk / "export.txt").write_text("x")
+        (desk / "hand_samples" / "corpus.txt").write_text("x")
+        kept, DROPPED = DROPPED, (str(desk),)
+        try:
+            names = [f.name for f in files_under([desk])]
+            deep = [f.name for f in files_under([desk / "hand_samples"])]
+        finally:
+            DROPPED = kept
+    ok = names == ["export.txt"] and deep == ["corpus.txt"]
+    print(f"the Desktop is read at its top  {'yes' if ok else 'NO ' + str(names)}")
+    if not ok:
+        fails.append("folders on the Desktop are read as hand histories")
     con = sqlite3.connect(db_path)
     known = con.execute(
         "SELECT source, site, COUNT(*) FROM hands WHERE source IS NOT NULL "
