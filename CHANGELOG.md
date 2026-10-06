@@ -29,6 +29,57 @@ sideways, scrollbars are a thin thumb, and only the main action on a bar is
 blue. Every colour, font and spacing is in `dark`. A long table's scrollbar
 had been squeezed out of sight by its own columns; it is packed first now.
 
+## What a c-bet was made of, beside the c-bet -- 6 Oct 2026
+
+### Added -- the hand-strength ladder for a clicked postflop stat
+
+John, trying the beta: clicking flop c-bet should show how strong those
+hands were, the way Hand2Note's popup does. The pane beside the stats
+table drew the starting hands as a 13x13 for every stat, with one line of
+strong/middle/weak under it; for a flop, turn or river stat it now draws
+the whole made-hand ladder of the hands that took it -- `range_of` over
+the same rows, so the same rows, splits, draws and seen fraction as the
+range tab, and the tiers are `strength.STRONG` and `strength.WEAK` and
+nowhere else. A click on a row opens those hands (`--made` with `--took`);
+**starting hands ▸** switches to the 13x13. A preflop stat has nothing
+made and keeps the grid. `app.py --check` clicks the biggest row of the
+flop c-bet ladder and requires as many hands as the row counts.
+
+---
+
+## The chat panel and the stats tab on a laptop screen -- 6 Oct 2026
+
+### Fixed -- a question box one pixel tall, and a table with no numbers
+
+John's first look at the beta, on his own 24,000 hands: clicking **Ask**
+opened a box "about a millimetre" tall at the bottom of the window, beside
+a wide, empty pane saying "click a stat to see the hands it was made of".
+Reproduced at 1366x728 with 150% display scaling. Three causes:
+
+The panel was packed beside the tabs, and the packer gave the tabs their
+width first, so the panel got what was left. It is now a pane of its own
+in a paned window, sized in its font rather than in pixels, with a sash.
+
+Inside it, the answer log asked for Tk's default 24 lines, taller than
+the window at that scaling, and the packer took the difference out of the
+question box: 1 pixel. The box and its button are now packed against the
+bottom first, and the log takes what is left.
+
+The stats tab's split was decided when the table had no columns yet, so
+the empty range pane took most of the width and the table showed names
+and no numbers. The table is now widened to its columns (never past 70%
+of the tab) on each render and whenever the tab changes size, and the
+empty pane says what it is for. `app.py --check` opens the panel on a
+1000x440 window and requires the whole box and the table's columns; with
+the old panel layout it reports the box at 1 pixel and fails.
+
+### Changed -- **Ask** is now **Chat with AI**
+
+The button and the panel's title, in John's words. "Ask" did not say
+that a model was on the other end.
+
+---
+
 ## Only your hands from the Desktop -- 6 Oct 2026
 
 ### Fixed -- a first import read every folder on the Desktop

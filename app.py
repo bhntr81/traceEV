@@ -1100,7 +1100,7 @@ class App(ImportMixin, ttk.Frame):
         self.shown_out, self.panes = {}, {}
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
-        ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
+        ttk.Button(bar, text="Chat with AI  ▸", command=self.toggle_ask).pack(side="right")
         # On the bar every view keeps, not only in the Help menu: a tester
         # who has something to say should not have to go looking for where
         # to say it, and most never open a menu that sounds like a manual.
@@ -1114,10 +1114,16 @@ class App(ImportMixin, ttk.Frame):
         # The answer on the left, the assistant on the right when it is
         # open. A panel rather than a window, because the point is to ask
         # about what is on screen and read the answer beside it.
-        body = ttk.Frame(self)
+        #
+        # A paned window, not two packed frames: packed, the tabs asked for
+        # their width first and the panel got whatever was left, which on a
+        # laptop at 125-150% display scaling was a sliver with its question
+        # box pushed off the bottom (John's first look at the beta, 6 Oct).
+        # As a pane it gets its own width, and a sash to drag.
+        body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
-        right.pack(side="left", fill="both", expand=True)
+        body.add(right, weight=1)
         self._views(right)
         self.ask_panel = AskPanel(body, self)
 
@@ -1279,7 +1285,13 @@ class App(ImportMixin, ttk.Frame):
         # The stats table with the range of whichever row is clicked beside
         # it: Hand2Note's statistics view, where a rate and the hands it
         # was made of are one look and not two tabs and a dropdown.
-        split = ttk.Panedwindow(self.tabs["stats"], orient="horizontal")
+        split = self.stats_split = ttk.Panedwindow(self.tabs["stats"],
+                                                   orient="horizontal")
+        # Fitted again whenever the tab changes size -- opening the Ask
+        # panel takes its width out of this one -- as well as on each render.
+        self._stats_need = 514
+        split.bind("<Configure>",
+                   lambda e: self._fit_stats_split(self._stats_need))
         split.pack(fill="both", expand=True)
         table, side = ttk.Frame(split), ttk.Frame(split)
         split.add(table, weight=3)
@@ -1298,7 +1310,13 @@ class App(ImportMixin, ttk.Frame):
         self.stat_canvas.bind("<Leave>",
                               lambda e: self.stat_canvas.delete("hint"))
         self.stat_chart, self.picked = None, None
-        self.stat_note = "click a stat to see the hands it was made of"
+        # What the pane beside the stats shows for a postflop stat: what the
+        # hands had made, or their starting hands. Strength first.
+        self.stat_view = "strength"
+        self.stat_note = ("Click a stat in the table to see the hands behind "
+                          "it here: for a flop, turn or river stat, what they "
+                          "had made on the board; for a preflop one, the "
+                          "starting hands as a 13x13 grid.")
         for name in ("actions", "overfolds", "range", "report", "results",
                      "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
@@ -2086,6 +2104,27 @@ class App(ImportMixin, ttk.Frame):
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
+    def _fit_stats_split(self, need):
+        """
+        Widen the stats table to its columns, never past 70% of the tab.
+
+        The pane beside it is empty until a stat is clicked, and the paned
+        window split the space by what each side asked for when it was
+        built -- before the table had any columns -- so the numbers were
+        cut off beside a wide, blank chart. Only ever widens: a sash the
+        user has dragged further right is theirs.
+        """
+        split = self.stats_split
+        width = split.winfo_width()
+        if width < 100:
+            return
+        target = min(need, int(width * 0.7))
+        try:
+            if split.sashpos(0) < target:
+                split.sashpos(0, target)
+        except tk.TclError:
+            pass
+
     def _render_stats(self, tv, out):
         self.shown_stats = out
         # The last two columns exist only when one player is named, because
@@ -2097,8 +2136,12 @@ class App(ImportMixin, ttk.Frame):
         said = out.get("said") if "who" in out else None
         names = (("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
                  + (("note",) if said is not None else ()))
-        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ())
-                   + ((320,) if said is not None else ()), {"stat": "w", "note": "w"})
+        widths = ((230, 90, 70, 100) + ((90, 90) if pooled else ())
+                  + ((320,) if said is not None else ()))
+        self._cols(tv, names, widths, {"stat": "w", "note": "w"})
+        if tv is getattr(self, "tree", {}).get("stats"):
+            self._stats_need = sum(widths) + 24
+            self.after_idle(lambda: self._fit_stats_split(self._stats_need))
         blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
         for r in out["rows"]:
@@ -2478,6 +2521,9 @@ class App(ImportMixin, ttk.Frame):
         if w < 80 or h < 80:
             return
         g, side, pane = self._chart_on(c)
+        if side and g and g.get("strength") and self.stat_view == "strength":
+            self._draw_strength(c, g)
+            return
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
@@ -2496,6 +2542,8 @@ class App(ImportMixin, ttk.Frame):
                                + ("" if "held" not in g else
                                   "\n" + query.held_line(g["held"])))
 
+        if side and g.get("strength"):
+            self._view_link(c, "hand strength ▸")
         comparison = g["mode"] == "comparison"
         rate = g["mode"] in ("rate", "comparison")
         top = 16 + (18 if "took" in g else 0) + (16 if "held" in g else 0)
@@ -2597,6 +2645,8 @@ class App(ImportMixin, ttk.Frame):
         g, side, pane = self._chart_on(c)
         geometry = self._geometry_of(c)
         c.delete("hint")
+        if side and g and g.get("strength") and self.stat_view == "strength":
+            return
         if not g or not geometry:
             return
         left, top, size = geometry
@@ -2631,6 +2681,92 @@ class App(ImportMixin, ttk.Frame):
                                         fill=BG, outline=EDGE, tags=("hint",))
         c.tag_lower(background, item)
 
+    def _view_link(self, c, text):
+        """The switch between a postflop range's two pictures, top right."""
+        w = c.winfo_width()
+        item = c.create_text(w - 12, 6, anchor="ne", text=text, fill=ACCENT,
+                             font=(UI, 9, "underline"))
+        self._view_link_box = c.bbox(item)
+
+    def _draw_strength(self, c, g):
+        """
+        What the hands behind a postflop stat had made, as bars.
+
+        Hand2Note's popup for a c-bet answers "with what" before it answers
+        "which starting hands", and so does this: the made-hand ladder in
+        `strength.ORDER`, each row the share of the SEEN hands that took the
+        stat, coloured by the tier `strength.STRONG` and `strength.WEAK`
+        put it in -- one line drawn in one place, as everywhere else. A
+        click on a row lists those hands; the starting hands are one click
+        away at the top right.
+        """
+        s = g["strength"]
+        w, h = c.winfo_width(), c.winfo_height()
+        k, n = g.get("took", (0, 0))
+        c.create_text(14, 6, anchor="nw", fill=INK, font=(UI, 9),
+                      width=w - 160,
+                      text=f"{g['stat']}: {k:,} of {n:,} chances"
+                           + (f" ({100.0 * k / n:.1f}%)" if n else "")
+                           + " -- what those hands had made")
+        self._view_link(c, "starting hands ▸")
+        rows = [r for r in s["rows"]]
+        lines = len(rows) + 6 + (len(s["draws"]) + 1 if s["draws"] else 0)
+        top = 34
+        step = max(14, min(22, (h - top - 40) / max(1, lines)))
+        small = step < 18
+        font = (UI, 8 if small else 9)
+        label_w, num_w = 150, 110
+        bar_x = 14 + label_w
+        bar_w = max(40, w - bar_x - num_w - 14)
+        peak = max([r["pct"] for r in rows] + [1.0])
+        self._strength_rows = []
+        y = top
+        for r in rows:
+            sub = r.get("sub")
+            colour = (BAD if r["weak"] else GOOD if r["tier"] == "strong"
+                      else WARN)
+            c.create_text(14 + (12 if sub else 0), y + step / 2, anchor="w",
+                          text=r["made"].strip(), fill=DIM if sub else INK,
+                          font=font)
+            length = bar_w * r["pct"] / peak
+            c.create_rectangle(bar_x, y + 3, bar_x + max(1, length),
+                               y + step - 3, width=0,
+                               fill=blend(PANEL, colour, 0.45 if sub else 0.9))
+            c.create_text(w - 14, y + step / 2, anchor="e", fill=INK,
+                          font=font, text=f"{r['pct']:.1f}%  {r['n']:,}")
+            if not sub:
+                self._strength_rows.append((y, y + step, r["made"]))
+            y += step
+        y += step / 2
+        for name, pct, colour, said in (
+                ("STRONG", s["strong"], GOOD, "top pair or better"),
+                ("MEDIUM", s["medium"], WARN, "middle pair"),
+                ("WEAK", s["weak"], BAD, "cannot call")):
+            c.create_text(14, y + step / 2, anchor="w", fill=colour,
+                          font=(UI, 9, "bold"), text=f"{name}  {pct:.0f}%")
+            c.create_text(bar_x, y + step / 2, anchor="w", fill=DIM, font=font,
+                          text=said)
+            y += step
+        if s["draws"]:
+            y += step / 2
+            c.create_text(14, y + step / 2, anchor="w", fill=DIM, font=font,
+                          text="and, overlapping the above:")
+            y += step
+            for d in s["draws"]:
+                c.create_text(26, y + step / 2, anchor="w", fill=DIM, font=font,
+                              text=d["label"])
+                c.create_text(w - 14, y + step / 2, anchor="e", fill=DIM,
+                              font=font, text=f"{d['pct']:.1f}%  {d['n']:,}")
+                y += step
+        share = 100.0 * s["n"] / s["total"] if s["total"] else 0.0
+        c.create_text(14, h - 8, anchor="sw", fill=DIM, font=(UI, 8),
+                      width=w - 28,
+                      text=f"{s['n']:,} of {s['total']:,} decisions had cards "
+                           f"to read ({share:.0f}%) -- this is what was SEEN"
+                           + ("" if share > 90 else
+                              ", and on ACR that is the showdown half")
+                           + ".  Click a row for its hands.")
+
     def _chart_on(self, c):
         """(chart, is the stats tab's, detached pane or None) for a canvas."""
         pane = getattr(self, "panes", {}).get(c)
@@ -2664,6 +2800,23 @@ class App(ImportMixin, ttk.Frame):
         g, side, pane = self._chart_on(c)
         geometry = self._geometry_of(c)
         last = pane["last"] if pane else getattr(self, "last", None)
+        if side and g and g.get("strength"):
+            box = getattr(self, "_view_link_box", None)
+            if box and box[0] - 4 <= event.x <= box[2] + 4 \
+                    and box[1] - 4 <= event.y <= box[3] + 4:
+                self.stat_view = ("grid" if self.stat_view == "strength"
+                                  else "strength")
+                self._draw_chart(self.stat_note, c)
+                return
+            if self.stat_view == "strength":
+                made = next((m for y0, y1, m in getattr(self, "_strength_rows", ())
+                             if y0 <= event.y < y1), None)
+                if made and last and self.picked:
+                    alternative = TOOK.get(self.took.get())
+                    self._open_hands(last, ["--made", made, "--took", self.picked
+                                            + (":" + alternative if alternative
+                                               else "")])
+                return
         if not g or not geometry or not last:
             return
         left, top, size = geometry
@@ -2675,7 +2828,6 @@ class App(ImportMixin, ttk.Frame):
         combo = query.combo_at(i, j)
         if not g["cells"].get(combo, (0, None))[0]:
             return
-        _where, _label, _parts, cohort_spec, query_argv = last
         extra = ["--combo", combo]
         if side and self.picked:
             alternative = TOOK.get(self.took.get())
@@ -2687,6 +2839,11 @@ class App(ImportMixin, ttk.Frame):
             stat = pane["stat"] if pane else self.chart_stat()
             if stat:
                 extra += ["--took", stat]
+        self._open_hands(last, extra)
+
+    def _open_hands(self, last, extra):
+        """The hands under `last`'s filter and `extra`, in a window of their own."""
+        _where, _label, _parts, cohort_spec, query_argv = last
         argv = list(query_argv) + extra
         try:
             where, label, parts = query.build(argv)
@@ -3926,7 +4083,7 @@ class AskPanel(ttk.Frame):
 
         head = ttk.Frame(self)
         head.pack(fill="x", padx=10, pady=(10, 4))
-        ttk.Label(head, text="ask the database", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="Chat with AI", style="Title.TLabel").pack(side="left")
         ttk.Button(head, text="×", width=3, command=self.toggle).pack(side="right")
         ttk.Button(head, text="AI settings", command=self._toggle_settings
                    ).pack(side="right", padx=(0, 6))
@@ -3967,10 +4124,16 @@ class AskPanel(ttk.Frame):
         self.key_status.pack(fill="x", padx=10, pady=(0, 6))
         self._load_settings()
 
+        # The question box and its button are packed against the bottom
+        # before the log, and the log asks for one line and expands: a Text
+        # asks for 24 lines by default, which at 150% scaling is taller than
+        # a laptop's window, and the packer took the difference out of the
+        # question box -- the one part of the panel that has to be there.
+        row = ttk.Frame(self)
+        row.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
         self.log = tk.Text(self, background=PANEL, foreground=INK, borderwidth=0,
                            font=(UI, 10), wrap="word", padx=10, pady=8,
-                           insertbackground=INK, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=10)
+                           insertbackground=INK, state="disabled", height=1)
         for name, colour in (("you", ACCENT), ("dim", DIM), ("bad", BAD)):
             self.log.tag_configure(name, foreground=colour)
         self.log.tag_configure("mono", font=(MONO, 9))
@@ -3984,11 +4147,10 @@ class AskPanel(ttk.Frame):
         self.entry = tk.Text(self, height=3, background=BG, foreground=INK,
                              insertbackground=INK, font=(UI, 10), wrap="word",
                              borderwidth=1)
-        self.entry.pack(fill="x", padx=10, pady=(6, 4))
+        self.entry.pack(side="bottom", fill="x", padx=10, pady=(6, 4))
         self.entry.bind("<Return>", self._enter)
         self.entry.bind("<Shift-Return>", lambda e: None)
-        row = ttk.Frame(self)
-        row.pack(fill="x", padx=10, pady=(0, 10))
+        self.log.pack(fill="both", expand=True, padx=10)
         ttk.Button(row, text="ask", style="Accent.TButton",
                    command=self.send).pack(side="left")
         ttk.Checkbutton(row, text="drive the window", variable=self.drive
@@ -4082,11 +4244,25 @@ class AskPanel(ttk.Frame):
         threading.Thread(target=work, daemon=True).start()
 
     def toggle(self):
+        body = self.master
         if self.shown:
-            self.pack_forget()
+            body.forget(self)
         else:
-            self.pack(side="right", fill="y")
+            # Wide enough for the settings rows at whatever scaling the
+            # screen uses: measured in the panel's own font, not pixels.
+            want = max(380, tkfont.nametofont("TkDefaultFont").measure("0") * 52)
+            whole = body.winfo_width()
+            if whole > 200:
+                want = min(want, int(whole * 0.4))
+            self.configure(width=want)
             self.pack_propagate(False)
+            body.add(self, weight=0)
+            body.update_idletasks()
+            if body.winfo_width() > want:
+                try:
+                    body.sashpos(0, body.winfo_width() - want)
+                except tk.TclError:
+                    pass
             self.entry.focus_set()
         self.shown = not self.shown
 
@@ -4131,7 +4307,8 @@ class AskPanel(ttk.Frame):
             self._say("\n".join("ran: python query.py " + " ".join(a) for a in ran),
                       "mono")
             self.last_ran = ran[-1]
-            self.run_btn.pack(fill="x", padx=10, pady=(0, 4))
+            self.run_btn.pack(side="bottom", fill="x", padx=10, pady=(0, 4),
+                              before=self.log)
             if self.drive.get():
                 self.app.apply_argv(self.last_ran)
         self.history = transcript
@@ -4744,6 +4921,33 @@ def check(db_path=DB):
                          f"click listed {listed}")
         if opened:
             opened.destroy()
+    # The Chat with AI panel on a small window: its question box has to be there,
+    # whole, and the stats table beside it still shows its numbers. On a
+    # laptop at 150% scaling the packed panel was a sliver with the box
+    # pushed off the bottom, and the table had lost every column but names.
+    root.deiconify()
+    root.geometry("1000x440")
+    app.nb.select(app.tabs["stats"])
+    root.update()
+    app.ask_panel.toggle()
+    root.update()
+    panel, entry = app.ask_panel, app.ask_panel.entry
+    box_ok = (entry.winfo_ismapped() and entry.winfo_height() >= 20
+              and entry.winfo_y() + entry.winfo_height() <= panel.winfo_height()
+              and panel.winfo_width() >= 300)
+    sash = app.stats_split.sashpos(0)
+    split_w = app.stats_split.winfo_width()
+    table_ok = sash >= min(app._stats_need, int(split_w * 0.7)) - 2
+    print(f"the ask box fits a small window  {'yes' if box_ok else 'NO'} "
+          f"(panel {panel.winfo_width()}px, box {entry.winfo_height()}px); "
+          f"the stats table keeps its columns  {'yes' if table_ok else 'NO'}"
+          f" ({sash} of {split_w}px)")
+    if not box_ok:
+        fails.append("the Chat with AI panel's question box is squeezed or off-screen")
+    if not table_ok:
+        fails.append("the stats table is narrower than its columns")
+    app.ask_panel.toggle()
+    root.withdraw()
     # Feedback reaches the owner: a link that addresses him, says which
     # kind of message it is, and carries the build, from a button on the
     # bar rather than only from a menu.
@@ -4761,6 +4965,54 @@ def check(db_path=DB):
     print(f"feedback is addressed and on the bar  {'yes' if mail_ok else 'NO'}")
     if not mail_ok:
         fails.append("the feedback link, its button or its copy is wrong")
+    # A postflop stat's pane draws what its hands had made, as Hand2Note's
+    # popup does, and a row of it opens those hands -- as many as the row
+    # says. Preflop there is nothing made and the pane stays the 13x13.
+    root.deiconify()
+    root.geometry("1360x880")
+    app.nb.select(app.tabs["stats"])
+    app.picked, app.stat_view = "cbet_flop", "strength"
+    app.took.set(next(iter(TOOK)))
+    app.last = ("1=1", "everything", [], None, [])
+    flop = app._work(0, "statrange", "1=1", "everything", [], "", None,
+                     pick=app._range_request("1=1", None))
+    app.results.get_nowait()
+    root.update()
+    app._render(flop)
+    root.update()
+    rows = getattr(app, "_strength_rows", [])
+    strength_ok = bool(rows) and (flop["range"].get("strength") is not None)
+    listed = want = None
+    if rows:
+        count = {r["made"]: r["n"] for r in flop["range"]["strength"]["rows"]}
+        y0, y1, made = max(rows, key=lambda r: count.get(r[2], 0))
+        want = count[made]
+        click = type("Click", (), {"widget": app.stat_canvas, "x": 300,
+                                   "y": (y0 + y1) / 2})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        app._square_hands(click)
+        item = app.requests.get_nowait() if not app.requests.empty() else None
+        if item:
+            out = app._work(*item[:1], *item[2:])
+            app.results.get_nowait()
+            app._render(out)
+            opened = [w for w in app.winfo_children()
+                      if isinstance(w, SquareHands)]
+            listed = len(opened[-1].ids) if opened else 0
+            for w in opened:
+                w.destroy()
+        strength_ok = strength_ok and listed == want
+    preflop = query.stat_range_of(con, "1=1", "threebet")
+    print(f"a postflop stat shows what its hands made  "
+          f"{'yes' if strength_ok else 'NO'} ({len(rows)} rows; "
+          f"{made if rows else '-'}: {listed} listed of {want}); "
+          f"preflop has none  {'yes' if 'strength' not in preflop else 'NO'}")
+    if not strength_ok or "strength" in preflop:
+        fails.append("the postflop strength pane is missing, or its row "
+                     "lists other hands than it counts")
+    app.picked = None
+    root.withdraw()
     # Detach: the chart tab, drawn under one filter, copied into a pane;
     # then the window moves on to another filter, and the pane must still
     # draw and click as the first. A pane that followed the window would

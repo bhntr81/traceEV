@@ -1762,6 +1762,11 @@ def stat_range_of(con, where, stat, alternative=None):
     held = range_of(con, these)
     if held["n"]:
         chart["held"] = {t: held[t] for t in ("strong", "medium", "weak", "n")}
+        # And the whole breakdown, which the window draws in place of the
+        # 13x13 for a postflop stat: what a c-bet range had made is the
+        # question Hand2Note's popup answers, and the starting hands are the
+        # second one.
+        chart["strength"] = held
     return chart
 
 
