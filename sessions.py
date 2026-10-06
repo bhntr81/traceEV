@@ -239,7 +239,7 @@ def update(con):
     return len(sessions)
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.execute("CREATE TABLE IF NOT EXISTS hand_ev ("
                 "hand_id TEXT, seat INT, ev_bb REAL, PRIMARY KEY (hand_id, seat))")
@@ -248,8 +248,9 @@ def build(db_path=DB):
 
     rows, sessions, stamps = plan(con)
     write(con, sessions, stamps)
-    index(con)
-    con.execute("ANALYZE")
+    if indexed:
+        index(con)
+        con.execute("ANALYZE")
     con.commit()
     print(f"{len(sessions):,} sessions over {len(rows):,} of your hands, "
           f"{sum(1 for s in sessions if s[5] >= 50):,} of them 50 hands or more")

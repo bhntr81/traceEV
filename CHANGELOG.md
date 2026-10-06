@@ -28,6 +28,21 @@ outlines `clam` gives everything, the chosen tab no longer jumps the row
 sideways, scrollbars are a thin thumb, and only the main action on a bar is
 blue. Every colour, font and spacing is in `dark`. A long table's scrollbar
 had been squeezed out of sight by its own columns; it is packed first now.
+## A first import that derives faster -- 6 Oct 2026
+
+### Changed -- the indexes on `decisions` are built once, at the end
+
+After an import has read the files it derives the tables every view asks
+of, and on a first import that is all of them. Five of those stages write
+onto `decisions`, and each did it under the indexes the stages before it
+had built: forty-eight by the last one, every one rewritten with every row,
+and ANALYZE run five times over. A full rebuild now asks those stages not
+to index, then builds every index once over the finished rows, with the
+sort spread over four threads, and runs ANALYZE once. At 49,600 hands the
+derive went from 100 seconds to 85. The rows and the indexes are
+identical, checked table by table; a stage run on its own still indexes
+for itself, and the incremental import, which is what every later import
+runs, never drops an index.
 
 ## The program opens on its own -- 6 Oct 2026
 
