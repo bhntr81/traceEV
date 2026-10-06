@@ -4,6 +4,15 @@ Every command, what it does, and how to read what comes back.
 
 ---
 
+## Feedback and feature requests
+
+**✉ Feedback**, on the bar beside **Chat with AI** (and in the Help menu), opens a
+small window with **Report a problem** and **Request a feature**. Each opens
+your email program with the developer's address, a subject and the build
+you are running already filled in; nothing is sent until you press send.
+Without an email program -- webmail, say -- copy the address from the same
+window. For a crash, Help > **Show the log** has what is needed.
+
 ## Loading hands
 
 One loader for every site. Each file is identified by the header its hands
@@ -291,6 +300,32 @@ split beneath it; the split's frequencies are within the action. `size`
 is also a dimension for any table: `--by size --show cbet_flop` is the
 c-bet rate by how big it was.
 
+### Limpers and callers, preflop
+
+```bash
+python query.py --pool --site ignition --pos BTN --pf-facing 1-limp,2-limps --show iso
+python query.py --hero --pf-facing raise-call --show threebet     # squeeze spots
+python query.py --pool --site ignition --pf-facing walk --by position
+```
+
+`--facing` counts raises -- unopened, open, 3bet -- so it cannot tell an
+empty pot from one with two limpers in it, or a bare open from one somebody
+has already called. `--pf-facing` is Hand2Note's preflop ladder, which can:
+
+| value | in front of the player |
+|---|---|
+| `unopened` | nobody in yet but the blinds |
+| `1-limp`, `2-limps` | one limper; two or more |
+| `1-raise` | an open nobody has called yet (limpers before it allowed) |
+| `raise-call`, `raise-2-calls` | an open and one caller; two or more |
+| `2-raises` | a 3-bet, which is `--facing 3bet` |
+| `walk` | Hand2Note's "all folded to BB": the folds in hands the big blind won without acting, since the big blind makes no decision there |
+
+Several values are alternatives, so `1-limp,2-limps` is any limped pot.
+They are read from the preflop action string, where a limp and a call are
+both `C`; `query.py --check` holds the rungs to adding back up to the
+facing they split. In the window it is a row of the filter's Actions page.
+
 ### The matchup
 
 "BTN vs BB" means the button raised and the big blind did not fold: an
@@ -384,6 +419,68 @@ A rate cell is left blank below three occurrences: one hand dealt twice is
 not a frequency. A composition cell is not, because a combo dealt twice
 really is 0.1% of the range.
 
+#### A stat, and the hands it was made of
+
+Neither chart above is "his 3-bet range". The first is every hand that
+reached the spot, folds included; the second is how *often* each combo
+3-bet, so aces 3-betting once in one chance is a full square and says
+nothing about how much of the range is aces. `--range-of` is the third:
+the hands that took the stat's action, each combo's share of them.
+
+```bash
+python query.py --pool --site ignition --chart --range-of threebet
+python query.py --pool --site ignition --chart --range-of threebet --alternative call
+```
+
+The first line printed is what the chart is a range *of*:
+
+```
+3bet: 148 of 1,318 chances (11.2%) -- the chart is those hands
+148 of 148 player-hands showed cards (100.0%)
+```
+
+After the flop a second line says what those hands had made, in the range
+tab's three tiers -- for a c-bet range, how much of it was weak:
+
+```
+cbet flop: 343 of 397 chances (86.4%) -- the chart is those hands
+on the board: strong 29%, middle pair 14%, weak 57% (of the 343 decisions with cards shown)
+```
+
+That is `range_of` over the same rows, so weak is `strength.WEAK` and the
+range tab under the same filter and `--quick cbet_flop` gives the full
+breakdown behind it. Preflop nothing has been made yet and there is no line.
+
+With `--alternative` it is the hands that did that instead on the same
+chances -- the call range beside the 3-bet range. A stat counted once per
+hand (VPIP, PFR) has no single decision that could have been a call
+instead, and is refused, as it is for `--show`.
+
+In the window this is the **stats** tab: click a row and its range is drawn
+beside the table. **range of** above the table switches between the hands
+that did it and the hands that called, folded, raised, checked or bet
+instead. Hover a square for its count. The seen fraction is printed under
+it for the same reason as above.
+
+For a flop, turn or river stat the pane first shows what those hands had
+**made** -- the made-hand ladder from sets down to high card, each row's
+share of the hands that were seen, coloured strong, middle pair or weak,
+with the draws beneath -- which is the question Hand2Note's popup answers
+for a c-bet. Click a row for its hands; **starting hands ▸** at the top
+right switches to the 13x13, and **hand strength ▸** back.
+
+**Click a square** -- here or on the chart tab -- and the hands behind it
+open in a window, latest first, each a double-click from its replay. The
+list is exactly the square's count: the filter, that combo, and on a
+stat's range the decisions that took the stat (or the action named in
+**range of**). On the command line the same list is `--took`, a filter
+like any other:
+
+```bash
+python query.py --pool --site ignition --took threebet --combo AKo --hands
+python query.py --pool --site ignition --took threebet:call --combo AJs --hands
+```
+
 ---
 
 ### Expression stats, in Hand2Note's language
@@ -465,6 +562,39 @@ REPORT** button at the foot of the filter dialog.
 `--forget` takes either a saved stat or a saved report; it refuses if you
 somehow have both under one name rather than guessing which you meant.
 
+### Saving the whole view
+
+A report is only the situation, laid over whatever tab and players are on
+the screen. A **view** is everything: who (me, the pool, a site, a player,
+the Players cohort), the filter, the tab, and the choices on it -- the
+split, the chart's stat and alternative, the stat clicked on the stats tab.
+Opening one replaces the window's state with it, which is Hand2Note's saved
+report.
+
+```bash
+python query.py --save-view "BTN 3bet pots" --pool --site ignition --pot 3bet --pos BTN --chart --show cbet_flop
+python query.py --views
+python query.py --open "BTN 3bet pots"
+python query.py --open "BTN 3bet pots" --since 2026-09-01
+```
+
+In the window it is the **Views** menu: **Save this view…**, then each saved
+one by name, and **Forget** below them. They live in `views.json` beside the
+program, separate from `filters.json`: a report joins the report box and
+must not carry columns or people, and a view must carry both. Flags typed
+after `--open NAME` narrow the view rather than replacing it. A view that no
+longer builds -- a flag renamed since -- is listed as broken rather than
+dropped.
+
+**detach** (beside **Chat with AI**, and in the Views menu) copies the tab on screen
+into a window of its own, under the filter it was drawn with, and the main
+window goes on to the next question -- the button's range beside the
+cutoff's, last month's graph beside this month's. Any tab can come off. A
+detached chart hovers and clicks like the tab's, and its squares list the
+hands under the pane's filter, not the window's; a detached hands table
+opens each hand on a double-click. **back into the window** puts the pane's
+filter and tab back in the main window and closes it.
+
 ### Sizes, depth and the game
 
 ```bash
@@ -474,6 +604,8 @@ python query.py --hero --depth 20-50 --results          # effective stack, in bi
 python query.py --hero --street flop --spr 1-4 --show cbet_flop
 python query.py --pool --site ignition --street flop --high A,K --show cbet_flop
 python query.py --hero --format ZONE --results
+python query.py --pool --site pokerstars --street flop --street-pot 5-7 --show cbet_flop
+python query.py --hero --no-straddle --no-ante --results
 ```
 
 `--size` is the bet or raise as a share of the pot in front of the
@@ -482,6 +614,18 @@ multiple of the bet it raised (3.0 is a 3x); `--depth` and `--spr` are
 ranges on the effective stack and the stack-to-pot ratio; `--high` is
 the flop's high card by rank letter; `--format` is RING, ZONE, BLITZ or
 MTT. All in the filter dialog's General tab.
+
+`--street-pot` is the pot as the street began, in big blinds, where the
+pot a bet is sized against is the pot at that decision: a flop that began
+at 5 to 7 big blinds is a single-raised pot whatever anybody did after.
+
+`--ante`, `--no-ante`, `--straddle` and `--no-straddle` are what was
+posted before the cards. A straddle is read where a site writes one --
+"posts straddle", which no site with sample files here has yet been seen
+to -- and an ante wherever it is posted. Hands imported before 4 Oct 2026
+have neither written down and match none of the four until
+`python importer.py --reread` over their folders; a filter that matches
+nothing for that reason says so.
 
 ### Hero in the pot, or out of it
 
@@ -526,6 +670,20 @@ so it comes with the count of pots it was measured on. `--sessions` has
 a hands-per-hour column. `--hands --sort won` and `--sort lost` are the
 biggest wins and losses; in the window, click any column heading to sort
 by it and again to flip, on any tab.
+
+`--sort strength` lists the hands strongest first, by what each seat held
+on the final board -- Hand2Note's showdown list under its range diagram:
+
+```bash
+python query.py --pool --site ignition --street river --facing bet --aggressive --hands --sort strength
+```
+
+The categories go in `strength.ORDER`, so a hand the board made sits under
+a real pair as it does in the range view, and the evaluator breaks ties
+inside one, so aces up comes before nines up. Hands whose cards were never
+shown go last in date order rather than being left out. In the window,
+**first by** above the hands tab chooses it, which decides which 500 hands
+are listed; a heading click only re-sorts the ones already there.
 
 The filter dialog's Cards tab has the 13x13 grid: click the combos you
 mean and they become `--combo`. The hands list shows your own line
@@ -663,6 +821,30 @@ Ranges are `a-b`, inclusive: `--hour 18-23`, `--session-len 120-300`,
 `--session-min 0-60` (the first hour of any sitting), `--tables 1-2`.
 Weekdays are names: `--weekday sat,sun`.
 
+#### Tonight, and one sitting
+
+```bash
+python query.py --hero --last-sessions 1 --results       # my last sitting on each site
+python query.py --hero --site acr --last-sessions 1 --stats
+python query.py --session 41 --hands                      # one sitting, by its number
+python query.py --session 41 --export tuesday.txt         # and its hands, as written
+```
+
+`--last-sessions N` is Hand2Note's "Today", said the way this database can
+say it honestly: the last N sittings **on each site**, each ranked by that
+site's own clock. "The last three overall" would rank one room's evening
+against another room's afternoon. Add `--site` for tonight on one room.
+`--session` takes the numbers `--sessions` prints, and selects every seat's
+decisions in those hands, since the sitting is stamped on the whole hand.
+
+In the window both are boxes on the filter's General page, beside the
+session length. On the **sessions** tab a double-click on a sitting opens
+its hands. It drops the rest of the filter, because a sitting opened under
+"river, facing a bet" would show four of its hands and read as the whole
+night. **Views ▸ Export the hands it selects…** writes the hands under the
+filter to a file, as the sites wrote them, which is `--export` from the
+window.
+
 ---
 
 ### Marking hands, and notes on players
@@ -697,6 +879,32 @@ A note is per site: a screen name on PokerStars is not the same person as
 that name on ACR, and an Ignition seat is nobody after the session -- the
 window offers a note box only where the site has names.
 
+Hand2Note's three other kinds of note:
+
+```bash
+python notes.py --template light "3-bets light, {threebet}"     # a sentence to reuse
+python notes.py --use-template pokerstars eodh light            # -> "3bet 14% (n=58) (2026-10-05)"
+python notes.py --note-hand pokerstars eodh ps-261810052519 "river overbluff"
+python notes.py --stat-note pokerstars eodh fold_to_3bet "folds only out of position"
+```
+
+A **template** is a sentence written once. `{key}` is any stat key
+`--show` takes, filled with that player's rate and its n when the template
+is used, and dated, because the note keeps what was true when it was
+written. A misspelt key is refused when the template is saved. In the
+hand window, **insert template** puts it in the note box to read before
+saving.
+
+A **hand in a note** sits beside the player with a few words, and the
+profile (`players.py NAME`, `opponents.py NAME`) lists it to open again
+with `--hand`. Only a hand the player was dealt into is accepted. In the
+hand window, **put this hand in the note** does it with whatever is typed
+beside the button.
+
+A **note on a stat** is printed under that stat's row in the profiles,
+and when the window's filter names one player it is a column of the stats
+tab: double-click a row to write one.
+
 Tags and notes live in `hands.db`, in tables of their own that nothing in
 the derivation chain touches, so a re-import never loses them. Back up
 the database and they come with it.
@@ -708,6 +916,8 @@ python query.py --hero --fish-right --results     # a fish acts before me (I hav
 python query.py --hero --fish-left --results      # a fish acts after me (they have it)
 python query.py --hero --regs-only --results      # nobody left but regs
 python query.py --hero --fish-left --pot 3bet --street flop --stats
+python query.py --hero --fish-left-seats 1-2 --results    # a fish one or two seats to my left
+python query.py --hero --pos BTN --fish-blinds any --show rfi
 ```
 
 `n_fish` and `n_reg` count who else is still in the pot; `fish_left`,
@@ -717,6 +927,16 @@ order -- the seats clockwise from the button -- and has position on you
 for the whole hand; right is everybody who acts before you. Every fish
 in the pot is on one side or the other, and `players.py --check` holds
 every row to `fish_left + fish_right = n_fish`.
+
+`--fish-left-seats` and `--fish-right-seats` are Hand2Note's distance to
+fish, and are about the table rather than the pot: how many seats round
+to the nearest fish dealt into the hand, 1 being the next seat, counting
+only seats that were dealt in. A range, so `1-2` is a fish within two
+seats. With no fish at the table there is no distance and neither
+selects the hand. `--fish-blinds` is a fish other than you in the small
+blind (`sb`), the big (`bb`), `both`, either (`any`), or `none`; several
+are alternatives. `players.py --check` holds the distances to going round
+the table and asks the blinds again from `spots`.
 
 The switches are in the window's filter dialog under "who". A class is
 only given to a player there is enough evidence about, so "a fish on my
@@ -980,6 +1200,18 @@ decisions by construction, which is 17% of the database.
 everybody still in is a reg, or at least one of them is a fish — and between
 them cover 63%. Use these unless the matchup really has to be heads up.
 
+`--no-reg-vs-fish` is Hand2Note's "exclude reg vs fish": a reg's decisions
+with a fish still in the pot drop out, and everything else stays -- the
+fish's own decisions against regs, the unknowns, the regs among regs. A reg
+isolates wider and value-bets thinner against a fish on purpose, so a reg's
+rates taken over both kinds of table describe neither. It is an ordinary
+switch, so it narrows every tab; the window has it in the filter's player
+page and as **leave out regs against fish** above the stats table.
+
+```bash
+python query.py --pool --site ignition --reg --no-reg-vs-fish --show threebet
+```
+
 Only ACR names people. An Ignition ring identity lasts as long as somebody
 stays in the seat, and Zone names nobody.
 
@@ -1129,6 +1361,20 @@ street with the pot before each decision. On Ignition every player's cards
 are there including the folded ones, because the site shows them. On ACR a
 seat reads `--` when the hand was never shown, which is different from
 having been dealt nothing.
+
+To post a hand somewhere public, add `--share`, or press **copy for
+sharing** in the hand's window, which puts the same text on the clipboard:
+
+```bash
+python query.py --hand 5331315698 --share
+```
+
+It has nobody in it. The names, the hand number, the table, the date and
+the site are gone, since any one of them finds the hand in somebody's
+database and every name with it; the players are their positions, the
+seat the hand was opened for is Hero, and every amount is in big blinds.
+Your tags and notes are never in it. The cards are as the site showed
+them, so an Ignition hand still shows the folds.
 
 ### When nothing matches
 

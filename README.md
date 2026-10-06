@@ -94,6 +94,20 @@ python query.py --site ignition --quick threebet --chart
 | PokerStars / ACR / Ignition | 9,961 / 8,284 / 4,010 |
 | named opponents with 100+ hands | 189 |
 
+## Download (beta)
+
+TraceEV is in beta, and **free during the beta; later versions may be
+paid.** The Windows program is on the
+[releases page](https://github.com/bhntr81/traceEV/releases): download
+`TraceEV-windows.exe` and run it, with no Python needed. The first time it
+opens, it asks where your poker site saves its hand histories. It is not signed,
+so Windows SmartScreen may warn about it the first time; "More info", then
+"Run anyway". A Mac and a Linux build are on the same page. Bugs and
+suggestions go in [Issues](https://github.com/bhntr81/traceEV/issues).
+
+TraceEV is not open source. No licence is granted to copy, change or
+redistribute it.
+
 ## Requirements
 
 Python 3.11 and **nothing else** — standard library only, and the database

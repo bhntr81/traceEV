@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS hands (
   hand_id TEXT PRIMARY KEY, played_at TEXT, table_id TEXT, game TEXT,
   fmt TEXT, sb REAL, bb REAL, n_players INT, board TEXT, pot REAL,
   hero_seat INT, standard INT, source TEXT, site TEXT, rake REAL,
-  max_seats INT, jp_fee REAL);
+  max_seats INT, jp_fee REAL, ante REAL, straddle REAL);
 CREATE TABLE IF NOT EXISTS seats (
   hand_id TEXT, seat INT, label TEXT, position TEXT, stack REAL,
   cards TEXT, is_hero INT, won REAL, posted REAL, invested REAL,
@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS hands_fmt ON hands(fmt, bb);
 
 HAND_COLUMNS = ("hand_id", "played_at", "table_id", "game", "fmt", "sb", "bb",
                 "n_players", "board", "pot", "hero_seat", "standard", "source",
-                "site", "rake", "max_seats", "jp_fee")
+                "site", "rake", "max_seats", "jp_fee", "ante", "straddle")
 
 
 def migrate(con):
@@ -72,9 +72,19 @@ def migrate(con):
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(hands)")}
     for col, kind in (("site", "TEXT"), ("rake", "REAL"),
-                      ("max_seats", "INT"), ("jp_fee", "REAL")):
+                      ("max_seats", "INT"), ("jp_fee", "REAL"),
+                      ("ante", "REAL"), ("straddle", "REAL")):
         if col not in cols:
             con.execute(f"ALTER TABLE hands ADD COLUMN {col} {kind}")
+    # The ante and the straddle are what the parser read in the posts,
+    # which it folds into `posted` and nowhere else, so a hand imported
+    # before these columns has them NULL -- not known, rather than zero --
+    # until `--reread`. `--ante` and `--straddle` are filters over hands
+    # (`query.py`), and these make them a seek over the few that have one.
+    con.execute("CREATE INDEX IF NOT EXISTS hands_ante ON hands(ante) "
+                "WHERE ante > 0")
+    con.execute("CREATE INDEX IF NOT EXISTS hands_straddle ON hands(straddle) "
+                "WHERE straddle > 0")
     if "site" not in cols:
         # Before a second site existed, every hand was Ignition's.
         con.execute("UPDATE hands SET site='ignition' WHERE site IS NULL")
@@ -126,12 +136,37 @@ def sniff(path):
     return None
 
 
+def shallow(folder):
+    """
+    Whether this folder is read at its top level only: Desktop and Downloads.
+
+    An export dropped there lands at the top. Whatever is in a folder ON the
+    Desktop is somebody's project, and read all the way down it was the
+    first beta's first import on the developer's own machine: FPDB's test
+    corpus, kept on the Desktop beside this program, went in with his
+    hands: 670 of the 1,240 files it called unrecognised, and its 2005 to
+    2023 PokerStars, PartyPoker and Ignition hands, each with a stranger as
+    hero, recognised and loaded.
+    """
+    try:
+        folder = folder.resolve()
+        return any(folder == Path(os.path.expandvars(d)).resolve()
+                   for d in DROPPED)
+    except OSError:
+        return False
+
+
 def files_under(paths):
-    """Every .txt beneath the given files and folders, without duplicates."""
+    """
+    Every .txt beneath the given files and folders, without duplicates.
+
+    All the way down, except in the folders `shallow` names.
+    """
     seen, out = set(), []
     for p in paths:
         p = Path(os.path.expandvars(str(p)))
-        found = sorted(p.rglob("*.txt")) if p.is_dir() else [p]
+        found = (sorted(p.glob("*.txt") if shallow(p) else p.rglob("*.txt"))
+                 if p.is_dir() else [p])
         for f in found:
             key = str(f).lower()
             if key not in seen and f.is_file():
@@ -472,6 +507,24 @@ CHAIN = (
 )
 
 
+def create(db_path=DB):
+    """
+    An empty database with every table in it, for a first launch.
+
+    A tester downloads the program and opens it with nothing beside it. The
+    window used to refuse -- "no database, load some hands first" -- and
+    print it, which a packaged build has no console to show, so the first
+    beta did nothing at all when opened, on 6 Oct 2026. Every table, derived
+    ones included, so the window's first queries find the shapes they ask
+    for and the Import menu can fill them.
+    """
+    con = sqlite3.connect(db_path)
+    migrate(con)
+    con.commit()
+    con.close()
+    rebuild(db_path)
+
+
 def rebuild(db_path=DB, progress=None):
     """
     Redo every derived table, in the order they depend on each other.
@@ -484,13 +537,38 @@ def rebuild(db_path=DB, progress=None):
     import importlib
 
     import decisions
-    for name, _what in CHAIN:
+
+    # Every stage after `decisions` rewrites columns of every row of it, and
+    # each one used to do that under the indexes the stages before it had
+    # built -- forty-eight of them by the last stage, every one rewritten
+    # with each row. So the stages that index `decisions` are asked not to,
+    # and the indexes are built once, here, over finished rows. With the
+    # threads below, the whole derive at 49,600 hands went from 100 seconds
+    # to 85. ANALYZE goes with them, once rather than five times. The
+    # indexes and statistics that come out are the same; the stages still
+    # index for themselves when run alone, and the incremental update never
+    # drops an index at all.
+    mods = [importlib.import_module(name) for name, _what in CHAIN]
+    for (name, _what), mod in zip(CHAIN, mods):
         if progress:
             progress(f"deriving {name}...")
-        importlib.import_module(name).build(db_path)
+        if hasattr(mod, "index"):
+            mod.build(db_path, indexed=False)
+        else:
+            mod.build(db_path)
     if progress:
         progress("indexing...")
-    decisions.index(db_path)
+    con = sqlite3.connect(db_path)
+    # Forty-seven indexes, and each one is a sort of half a million rows.
+    # SQLite will spread a sort over worker threads when asked, and nothing
+    # else asks: 24 seconds of indexing became 18 on four cores. A build
+    # without the threads reads this as zero and sorts on one, as before.
+    con.execute("PRAGMA threads = 4")
+    for mod in mods:
+        if hasattr(mod, "index") and mod is not decisions:
+            mod.index(con)
+    decisions.index(con=con)
+    con.close()
 
 
 # Past this share of the database, new hands are derived by a rebuild
@@ -521,8 +599,13 @@ def current(con):
     if not {"spots", "bets", "decisions", "players", "sessions"} <= have:
         return False
     cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
-    return set(lines.LINE_COLUMNS) | set(strength.COLUMNS) \
-        | set(players.NAMES) | set(sessions.NAMES) <= cols
+    # `decisions`' own columns too: one added to its schema since the last
+    # rebuild is on no row yet, and an update writing its rows by name would
+    # fail on it.
+    import decisions
+    return set(decisions.SCHEMA_COLUMNS) | set(lines.LINE_COLUMNS) \
+        | set(lines.NUM_COLUMNS) \
+        | set(strength.COLUMNS) | set(players.NAMES) | set(sessions.NAMES) <= cols
 
 
 def update(hand_ids, db_path=DB, progress=None):
@@ -548,6 +631,7 @@ def update(hand_ids, db_path=DB, progress=None):
     hands, which were committed before any of this began.
     """
     import importlib
+    import decisions
     hand_ids = list(dict.fromkeys(hand_ids))
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -565,6 +649,14 @@ def update(hand_ids, db_path=DB, progress=None):
                 progress(f"deriving {name} for {len(hand_ids)} hands...")
             importlib.import_module(name).update(con)
         con.commit()
+        # An index added to `decisions.INDEXES` since this database was last
+        # rebuilt would otherwise wait for the next rebuild, and since imports
+        # stopped rebuilding that can be never. Built once, here, after the
+        # update has committed, because creating one commits.
+        if decisions.missing(con):
+            if progress:
+                progress("adding the new indexes...")
+            decisions.index(con=con)
     except Exception:
         con.rollback()
         con.close()
@@ -585,6 +677,9 @@ def source_index():
     file now lives -- the check does this, and so does an export.
     """
     index = {}
+    # All the way down, Desktop included, unlike `files_under`: this finds
+    # the file a hand already came from, wherever it was imported from, and
+    # looking further costs time and never a hand that is not the user's.
     for place in (Path(os.path.expandvars(p)) for p in places()):
         if place.exists():
             for f in place.rglob("*.txt"):
@@ -643,6 +738,40 @@ def check(db_path=DB):
     plausible is how eight thousand hands got loaded under the wrong name.
     """
     fails = []
+    # A first launch has no database, and `create` is what gives it one. An
+    # empty one has to hold every derived table, or the window's first query
+    # fails on a missing table instead of showing an empty answer.
+    with tempfile.TemporaryDirectory() as tmp:
+        fresh = Path(tmp) / "hands.db"
+        create(fresh)
+        empty = sqlite3.connect(fresh)
+        tables = {r[0] for r in empty.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        rows = empty.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+        empty.close()
+    wanted = {"hands", "seats", "actions", "spots", "decisions", "sessions"}
+    print(f"a first launch gets every table  "
+          f"{'yes' if wanted <= tables and rows == 0 else 'NO, missing ' + str(sorted(wanted - tables))}")
+    if not wanted <= tables or rows:
+        fails.append("a new database is missing tables")
+    # A Desktop is read at its top and not below, so a folder of somebody
+    # else's hands sitting on it is not imported as the user's own.
+    global DROPPED
+    with tempfile.TemporaryDirectory() as tmp:
+        desk = Path(tmp) / "Desktop"
+        (desk / "hand_samples").mkdir(parents=True)
+        (desk / "export.txt").write_text("x")
+        (desk / "hand_samples" / "corpus.txt").write_text("x")
+        kept, DROPPED = DROPPED, (str(desk),)
+        try:
+            names = [f.name for f in files_under([desk])]
+            deep = [f.name for f in files_under([desk / "hand_samples"])]
+        finally:
+            DROPPED = kept
+    ok = names == ["export.txt"] and deep == ["corpus.txt"]
+    print(f"the Desktop is read at its top  {'yes' if ok else 'NO ' + str(names)}")
+    if not ok:
+        fails.append("folders on the Desktop are read as hand histories")
     con = sqlite3.connect(db_path)
     known = con.execute(
         "SELECT source, site, COUNT(*) FROM hands WHERE source IS NOT NULL "

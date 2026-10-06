@@ -100,6 +100,15 @@ LINE_COLUMNS = ("pre", "flop", "turn", "river",
                 "pre_sz", "flop_sz", "turn_sz", "river_sz",
                 "line", "sized", "node", "node_sz", "own", "own_node")
 
+# The pot as the street began, in big blinds: Hand2Note's "initial pot",
+# on every decision of the street. `pot_bb` is the pot at the decision, so
+# a check-raise sees a bigger pot than the check before it, and "a flop
+# that began at 20bb" -- a 3-bet pot without saying so, or a limped one
+# that was not -- cannot be asked of it. The street's first decision has
+# it; this carries it to the rest. Here rather than in `decisions.py`
+# because it is a fact about the betting walked in order, which is what
+# this module walks.
+NUM_COLUMNS = ("street_pot",)
 
 def letter(action, agg):
     """
@@ -155,6 +164,9 @@ def migrate(con):
     for name in LINE_COLUMNS:
         if name not in cols:
             con.execute(f"ALTER TABLE decisions ADD COLUMN {name} TEXT")
+    for name in NUM_COLUMNS:
+        if name not in cols:
+            con.execute(f"ALTER TABLE decisions ADD COLUMN {name} REAL")
     con.commit()
 
 
@@ -210,8 +222,8 @@ def strings_for(acts):
 def rows_for(con, where="1=1"):
     """The line columns for every decision matching `where`, keyed to it."""
     acts_by = {}
-    for r in con.execute("SELECT hand_id, n, seat, street, action, agg, pot_frac "
-                         f"FROM decisions WHERE {where} ORDER BY hand_id, n"):
+    for r in con.execute("SELECT hand_id, n, seat, street, action, agg, pot_frac, "
+                         f"pot_bb FROM decisions WHERE {where} ORDER BY hand_id, n"):
         acts_by.setdefault(r["hand_id"], []).append(r)
 
     rows = []
@@ -221,9 +233,13 @@ def rows_for(con, where="1=1"):
         line_sz = "/".join(sized[s] for s in order)
         street_cols = (tuple(plain.get(s, "") for s in STREETS)
                        + tuple(sized.get(s, "") for s in STREETS))
+        began = {}
+        for a in acts:
+            began.setdefault(a["street"], a["pot_bb"])
         for a, (node, node_sz), (own, own_node) in zip(acts, nodes, own_rows):
             rows.append(street_cols + (line, line_sz, node, node_sz,
-                                       own, own_node, hid, a["n"]))
+                                       own, own_node, began[a["street"]],
+                                       hid, a["n"]))
     return acts_by, rows
 
 
@@ -232,14 +248,15 @@ def stage(con, rows):
     con.execute("DROP TABLE IF EXISTS temp.staged")
     con.execute("CREATE TEMP TABLE staged (" +
                 ", ".join(f"{c} TEXT" for c in LINE_COLUMNS) +
+                ", " + ", ".join(f"{c} REAL" for c in NUM_COLUMNS) +
                 ", hand_id TEXT, n INT)")
     con.executemany(
         "INSERT INTO staged VALUES ("
-        + ",".join("?" * (len(LINE_COLUMNS) + 2)) + ")", rows)
+        + ",".join("?" * (len(LINE_COLUMNS) + len(NUM_COLUMNS) + 2)) + ")", rows)
     con.execute("CREATE INDEX temp.staged_key ON staged(hand_id, n)")
     con.execute(
         "UPDATE decisions SET "
-        + ", ".join(f"{c} = staged.{c}" for c in LINE_COLUMNS)
+        + ", ".join(f"{c} = staged.{c}" for c in LINE_COLUMNS + NUM_COLUMNS)
         + " FROM staged WHERE decisions.hand_id = staged.hand_id "
           "AND decisions.n = staged.n")
     con.execute("DROP TABLE temp.staged")
@@ -258,7 +275,7 @@ def update(con):
     return len(rows)
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     migrate(con)
@@ -274,7 +291,16 @@ def build(db_path=DB):
         con.execute(f"DROP INDEX IF EXISTS dec_{col}")
 
     stage(con, rows)
+    if indexed:
+        index(con)
+        con.execute("ANALYZE")
+    con.commit()
+    print(f"{len(acts_by):,} hands, {len(rows):,} decisions")
+    return len(rows)
 
+
+def index(con):
+    """The indexes on the line columns of `decisions`."""
     # The whole argument for strings rather than a graph is that a prefix
     # match is an index seek. Without these it is a scan of every row, which
     # works, and is slow in a way nobody would connect to a missing index --
@@ -287,10 +313,11 @@ def build(db_path=DB):
     # prefix to seek on and the index would be built and never read.
     for col in INDEXED:
         con.execute(f"CREATE INDEX IF NOT EXISTS dec_{col} ON decisions({col})")
-    con.execute("ANALYZE")
-    con.commit()
-    print(f"{len(acts_by):,} hands, {len(rows):,} decisions")
-    return len(rows)
+    # A range of pots, so the street comes second: "a flop that began
+    # between 5 and 7 big blinds" seeks the range and reads the street off
+    # the index.
+    con.execute("CREATE INDEX IF NOT EXISTS dec_street_pot "
+                "ON decisions(street_pot, street)")
 
 
 def common(db_path=DB, street="flop", limit=15, where="1=1"):
@@ -409,6 +436,41 @@ def check(db_path=DB):
           f"{'lowercase reaches the same rows' if normalise('xbmc') == 'XBmC' else 'BROKEN'}")
     if normalise("xbmc") != "XBmC":
         fails.append("normalise does not fix a lowercase pattern")
+
+    # 6. The pot a street began with. Preflop it is what was posted before
+    #    anybody acted -- blinds, antes, a straddle, a dead blind -- which
+    #    the parser sums into `seats.posted` without ever seeing a pot, so
+    #    it is a second road to the same number. After that a street can
+    #    only begin with more than the last one did, and every decision on
+    #    a street shares the figure. Tournaments are left out, as from every
+    #    money check, since their histories can begin mid-hand. Within 0.02
+    #    of a big blind, because `pot_bb` is stored rounded.
+    posts = con.execute(
+        "SELECT COUNT(*), SUM(ABS(d.street_pot - p.posted / d.bb) > 0.02) "
+        "FROM (SELECT hand_id, street_pot, bb FROM decisions WHERE "
+        "street = 'preflop' AND fmt <> 'MTT' AND bb > 0 GROUP BY hand_id) d "
+        "JOIN (SELECT hand_id, SUM(posted) posted FROM seats GROUP BY hand_id) p "
+        "USING (hand_id)").fetchone()
+    shrank = con.execute(
+        "SELECT COUNT(*) FROM (SELECT hand_id, street, MAX(street_pot) top, "
+        "MIN(street_pot) low FROM decisions GROUP BY hand_id, street) a "
+        "JOIN (SELECT hand_id, street, MIN(street_pot) low FROM decisions "
+        "GROUP BY hand_id, street) b USING (hand_id) WHERE "
+        "(a.street, b.street) IN (VALUES ('preflop', 'flop'), ('flop', 'turn'), "
+        "('turn', 'river')) AND b.low < a.top - 1e-9").fetchone()[0]
+    split = con.execute(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM decisions GROUP BY hand_id, street "
+        "HAVING COUNT(DISTINCT street_pot) > 1 OR COUNT(street_pot) < COUNT(*))"
+        ).fetchone()[0]
+    print(f"preflop pot = what was posted     {posts[0] - (posts[1] or 0):,}/{posts[0]:,}")
+    print(f"a street never begins smaller     {'yes' if not shrank else f'NO, {shrank} hands'}")
+    print(f"one starting pot per street       {'yes' if not split else f'NO, {split} streets'}")
+    if posts[1]:
+        fails.append(f"{posts[1]} hands whose preflop pot is not what was posted")
+    if shrank:
+        fails.append(f"{shrank} streets that began smaller than the one before")
+    if split:
+        fails.append(f"{split} streets with more than one starting pot")
 
     print()
     print("FAIL: " + "; ".join(fails) if fails else "PASS")

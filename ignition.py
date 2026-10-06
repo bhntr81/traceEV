@@ -180,7 +180,7 @@ def parse_hand(text, source=""):
     # The blinds as the hand posted them, for a file whose name has lost
     # the stakes; and whether the cards are out yet, because nothing before
     # the deal is a decision.
-    blinds, dealt = {}, False
+    blinds, dealt, ante = {}, False, 0.0
     # What each seat has put in on the current street, blinds included. The
     # 2012 client wrote a raise as one figure, the street total -- "Raises
     # $24" from a small blind with $4 in is $20 added -- and the amount
@@ -256,6 +256,14 @@ def parse_hand(text, source=""):
             # A dead post is the small blind's worth thrown away plus a live
             # big blind, and only the live part stands toward a raise "to".
             live = put - blinds.get("sb", 0.0) if rest.startswith("Posts dead") else put
+            # An ante is in the pot and not in front of the player, so it never
+            # stands toward a raise "to": counted on the street, a raise to
+            # 600 from a seat that anted 50 came out as 550 put in. The
+            # Stars parser had this bug and lost it in Run 19; this one
+            # kept it, unseen, because only tournaments ante and the money
+            # test leaves them out.
+            if rest.startswith("Ante chip"):
+                ante, live = max(ante, put), 0.0
             street_in[seat["seat"]] = street_in.get(seat["seat"], 0.0) + live
             forced = rest.startswith("All-in")
             if "Big" in rest[:20] or (forced and label == "Big Blind"):
@@ -374,6 +382,8 @@ def parse_hand(text, source=""):
                  "n_players": len(seats), "board": " ".join(board),
                  "pot": pot,
                  "rake": _money(pm.group(2)) if pm and pm.group(2) else None,
+                 # Ignition has no straddle.
+                 "ante": ante, "straddle": 0.0,
                  "hero_seat": hero_seat, "standard": int(standard),
                  "source": source},
         "seats": seats,

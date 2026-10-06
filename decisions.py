@@ -89,6 +89,15 @@ CREATE TABLE decisions (
   -- seat that has an opponent, and 0 on hero's own rows.
   hero_in INT,
 
+  -- what came of it, for the actions view: the stack at the end of the
+  -- hand less the stack before this action, in big blinds (Hand2Note's
+  -- Action Profit, so a fold is 0); whether the seat won any of the pot;
+  -- whether it went to showdown; and the next action on the same street,
+  -- by whoever took it, NULL when the street ended here. They were joins
+  -- to `seats`, `spots` and this table again for every decision the view
+  -- read, three quarters of its time.
+  profit_bb REAL, won_pot INT, showdown INT, next_action TEXT,
+
   PRIMARY KEY (hand_id, n));
 """
 
@@ -183,7 +192,23 @@ CREATE INDEX IF NOT EXISTS dec_size
 CREATE INDEX IF NOT EXISTS dec_runout
     ON decisions(tn_over, tn_pair, tn_flush, tn_straight,
                  rv_over, rv_pair, rv_flush, rv_straight, street);
+-- The pot's matchup, which four smart reports and the window's "against"
+-- box filter on. Without it `--matchup BTN,BB` was answered from dec_vs on
+-- its `position IN (...)` half -- a third of the table fetched a row at a
+-- time, twice the cost of reading it straight through -- and the plan check
+-- passed it, because that is still an index. 50,000 hands, stats and range
+-- together: 0.54s -> 0.10s for BTN/BB, 0.73s -> 0.24s for SB/BB.
+CREATE INDEX IF NOT EXISTS dec_matchup ON decisions(matchup);
 """
+
+
+def missing(con):
+    """The indexes above that this database does not have yet."""
+    import re
+    want = re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", INDEXES)
+    have = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    return [name for name in want if name not in have]
 
 
 def index(db_path=DB, con=None):
@@ -272,7 +297,7 @@ def board_to(board, street):
     return " ".join(cards[:{"preflop": 0, "flop": 3, "turn": 4, "river": 5}[street]])
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
@@ -290,13 +315,16 @@ def build(db_path=DB):
     # and the two would drift apart the first time either changed.
     who = {(r[0], r[1]): r[2]
            for r in con.execute("SELECT hand_id, seat, player FROM spots")}
+    showdown = {(r[0], r[1]): r[2]
+                for r in con.execute("SELECT hand_id, seat, wtsd FROM spots")}
 
-    rows = derive(hands, seats_by, acts_by, who)
+    rows = derive(hands, seats_by, acts_by, who, showdown)
     n = len(con.execute("SELECT * FROM decisions LIMIT 0").description)
     con.executemany(
         "INSERT INTO decisions VALUES ({})".format(",".join("?" * n)), rows)
     con.commit()
-    index(con=con)
+    if indexed:
+        index(con=con)
     con.close()
     return len(rows)
 
@@ -324,11 +352,13 @@ def update(con):
     for r in con.execute("SELECT * FROM actions WHERE hand_id IN "
                          "(SELECT hand_id FROM dirty) ORDER BY hand_id, n"):
         acts_by.setdefault(r["hand_id"], []).append(dict(r))
-    who = {(r[0], r[1]): r[2] for r in con.execute(
-        "SELECT hand_id, seat, player FROM spots "
-        "WHERE hand_id IN (SELECT hand_id FROM dirty)")}
+    who, showdown = {}, {}
+    for r in con.execute("SELECT hand_id, seat, player, wtsd FROM spots "
+                         "WHERE hand_id IN (SELECT hand_id FROM dirty)"):
+        who[(r[0], r[1])] = r[2]
+        showdown[(r[0], r[1])] = r[3]
 
-    rows = derive(hands, seats_by, acts_by, who)
+    rows = derive(hands, seats_by, acts_by, who, showdown)
     n = len(SCHEMA_COLUMNS)
     con.executemany(
         "INSERT INTO decisions ({}) VALUES ({})".format(
@@ -336,7 +366,39 @@ def update(con):
     return len(rows)
 
 
-def derive(hands, seats_by, acts_by, who):
+_N, _STREET, _BB, _STACK, _ACTION = (
+    SCHEMA_COLUMNS.index(c) for c in ("n", "street", "bb", "stack_before", "action"))
+
+
+def outcome(by_n, r, seat, showdown):
+    """
+    `profit_bb`, `won_pot`, `showdown` and `next_action` for one row.
+
+    The arithmetic is the actions view's own, term for term and in the same
+    order -- `(stack + won - posted - invested) - stack_before`, over the big
+    blind -- because the view used to work it out in SQL from the same
+    values, and an average that moved in its last digit when the work moved
+    here would be a number nobody could account for. Anything missing gives
+    NULL, as the SQL did, and the view skips those rows as it always has.
+    The next action is the decision numbered one more, as the self-join had
+    it, not merely the next row: a gap in the numbering was a street over.
+    `showdown` is NULL only for a seat `spots` has no row for, which the
+    view's inner join to `spots` used to leave out, and still does.
+    """
+    parts = (seat.get("stack"), seat.get("won"), seat.get("posted"),
+             seat.get("invested"), r[_STACK], r[_BB])
+    profit = None
+    if None not in parts and parts[5] > 0:
+        stack, won, posted, invested, before, bb = parts
+        profit = ((stack + won - posted - invested) - before) / bb
+    following = by_n.get(r[_N] + 1)
+    nxt = (following[_ACTION] if following is not None
+           and following[_STREET] == r[_STREET] else None)
+    won = seat.get("won")
+    return (profit, int(won is not None and won > 0), showdown, nxt)
+
+
+def derive(hands, seats_by, acts_by, who, showdown):
     """One row per decision in these hands, in the schema's column order."""
     rows = []
     for h in hands:
@@ -569,6 +631,7 @@ def derive(hands, seats_by, acts_by, who):
             if opener in by_seat and other in by_seat:
                 matchup = f"{by_seat[opener]['position']}/{by_seat[other]['position']}"
                 pair = (opener, other)
+        by_n = {r[_N]: r for r in hand_rows}
         for r in hand_rows:
             seat_of_row = r[3]                      # seat is the fourth column
             # For the two seats of the matchup: is the OTHER one hero. The
@@ -579,7 +642,9 @@ def derive(hands, seats_by, acts_by, who):
                 other_is_hero = int(any(by_seat[x].get("is_hero")
                                         for x in pair if x != seat_of_row))
             rows.append(r + (matchup, other_is_hero, r_x.get(r[1]),
-                             h_in.get(r[1])))
+                             h_in.get(r[1]))
+                        + outcome(by_n, r, by_seat[seat_of_row],
+                                  showdown.get((hid, seat_of_row))))
     return rows
 
 
@@ -750,6 +815,28 @@ def check(db_path=DB):
     print(f"  raises with a multiple  {n_rx:>7}   ({tiny} under 1x)")
     if tiny:
         fails.append("raise_x")
+
+    # The four outcome columns against the joins they replaced, row for row.
+    # The actions view read them through those joins until 3 Oct 2026, and
+    # a column that disagreed with them would move every profit and every
+    # next-action count it prints while looking exactly as plausible.
+    off = con.execute("""
+        SELECT COUNT(*) FROM decisions d
+        JOIN seats se ON se.hand_id = d.hand_id AND se.seat = d.seat
+        LEFT JOIN spots sp ON sp.hand_id = d.hand_id AND sp.seat = d.seat
+        LEFT JOIN decisions n2 ON n2.hand_id = d.hand_id AND n2.n = d.n + 1
+                              AND n2.street = d.street
+        WHERE NOT (
+              d.profit_bb IS (CASE WHEN d.bb > 0 THEN
+                  ((se.stack + se.won - se.posted - se.invested)
+                   - d.stack_before) / d.bb END)
+          AND d.won_pot = (CASE WHEN se.won > 0 THEN 1 ELSE 0 END)
+          AND d.showdown IS sp.wtsd
+          AND d.next_action IS n2.action)""").fetchone()[0]
+    print(f"  outcome columns agree with their joins  "
+          f"{n_dec - off}/{n_dec}")
+    if off:
+        fails.append("outcome columns")
 
     con.close()
     print()

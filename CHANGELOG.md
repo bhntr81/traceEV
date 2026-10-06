@@ -8,6 +8,526 @@ Newest first.
 
 ---
 
+## A sharper, plainer window -- 6 Oct 2026
+
+### Changed -- text drawn at the screen's real resolution on Windows
+
+The program never told Windows it understood display scaling, so at 125%
+or 150% -- what most laptops ship with -- Windows drew it at 100% and
+stretched the picture, and every letter was soft. `crisp` now says so
+before the first window opens. Fonts follow the real resolution on their
+own; sizes written in pixels (window sizes, table columns, row heights) are
+multiplied by the scaling in `dark`, and the charts keep their text at the
+size their layout was drawn for until they measure it.
+
+### Changed -- one look, set in one place
+
+The menu bar was drawn by Windows, white across the top of a dark window;
+it is now drawn in the window. Buttons, boxes and tabs lost the bevelled
+outlines `clam` gives everything, the chosen tab no longer jumps the row
+sideways, scrollbars are a thin thumb, and only the main action on a bar is
+blue. Every colour, font and spacing is in `dark`. A long table's scrollbar
+had been squeezed out of sight by its own columns; it is packed first now.
+
+## What a c-bet was made of, beside the c-bet -- 6 Oct 2026
+
+### Added -- the hand-strength ladder for a clicked postflop stat
+
+John, trying the beta: clicking flop c-bet should show how strong those
+hands were, the way Hand2Note's popup does. The pane beside the stats
+table drew the starting hands as a 13x13 for every stat, with one line of
+strong/middle/weak under it; for a flop, turn or river stat it now draws
+the whole made-hand ladder of the hands that took it -- `range_of` over
+the same rows, so the same rows, splits, draws and seen fraction as the
+range tab, and the tiers are `strength.STRONG` and `strength.WEAK` and
+nowhere else. A click on a row opens those hands (`--made` with `--took`);
+**starting hands ▸** switches to the 13x13. A preflop stat has nothing
+made and keeps the grid. `app.py --check` clicks the biggest row of the
+flop c-bet ladder and requires as many hands as the row counts.
+
+---
+
+## The chat panel and the stats tab on a laptop screen -- 6 Oct 2026
+
+### Fixed -- a question box one pixel tall, and a table with no numbers
+
+John's first look at the beta, on his own 24,000 hands: clicking **Ask**
+opened a box "about a millimetre" tall at the bottom of the window, beside
+a wide, empty pane saying "click a stat to see the hands it was made of".
+Reproduced at 1366x728 with 150% display scaling. Three causes:
+
+The panel was packed beside the tabs, and the packer gave the tabs their
+width first, so the panel got what was left. It is now a pane of its own
+in a paned window, sized in its font rather than in pixels, with a sash.
+
+Inside it, the answer log asked for Tk's default 24 lines, taller than
+the window at that scaling, and the packer took the difference out of the
+question box: 1 pixel. The box and its button are now packed against the
+bottom first, and the log takes what is left.
+
+The stats tab's split was decided when the table had no columns yet, so
+the empty range pane took most of the width and the table showed names
+and no numbers. The table is now widened to its columns (never past 70%
+of the tab) on each render and whenever the tab changes size, and the
+empty pane says what it is for. `app.py --check` opens the panel on a
+1000x440 window and requires the whole box and the table's columns; with
+the old panel layout it reports the box at 1 pixel and fails.
+
+### Changed -- **Ask** is now **Chat with AI**
+
+The button and the panel's title, in John's words. "Ask" did not say
+that a model was on the other end.
+
+---
+
+## Only your hands from the Desktop -- 6 Oct 2026
+
+### Fixed -- a first import read every folder on the Desktop
+
+The program looks for hand histories in each site's own folders and in
+Downloads and the Desktop, where an export gets dropped, and it read those
+last two all the way down. On the developer's own machine the first beta's
+first import therefore read FPDB's test corpus, which sits on his Desktop
+beside this program: 670 of the 1,240 files it reported as unrecognised,
+and about a thousand hands from 2005 to 2023 at PokerStars, PartyPoker,
+Ignition, ACR, PokerBros and PokerMaster, recognised, loaded, and each
+with a stranger in the hero's seat. Downloads and the Desktop are now read
+at their top level only (`importer.shallow`); a folder of histories kept
+inside either is imported by choosing it. `importer.py --check` holds a
+Desktop with a folder of files on it to reading the top only.
+
+## A first import that derives faster -- 6 Oct 2026
+
+### Changed -- the indexes on `decisions` are built once, at the end
+
+After an import has read the files it derives the tables every view asks
+of, and on a first import that is all of them. Five of those stages write
+onto `decisions`, and each did it under the indexes the stages before it
+had built: forty-eight by the last one, every one rewritten with every row,
+and ANALYZE run five times over. A full rebuild now asks those stages not
+to index, then builds every index once over the finished rows, with the
+sort spread over four threads, and runs ANALYZE once. At 49,600 hands the
+derive went from 100 seconds to 85. The rows and the indexes are
+identical, checked table by table; a stage run on its own still indexes
+for itself, and the incremental import, which is what every later import
+runs, never drops an index.
+
+## The program opens on its own -- 6 Oct 2026
+
+### Fixed -- a first launch with no database did nothing
+
+The first beta, v0.1.0-beta, did nothing when a tester opened it. With no
+`hands.db` beside it the program printed "no database -- load some hands
+first" and quit, and a windowed build has no console to print to, so
+nothing appeared at all. A first launch now makes an empty database
+(`importer.create`), opens the window and offers to import: the hand
+histories it finds in the usual places, or a folder picker when it finds
+none. `importer.py --check` holds a new database to having every table, so
+the window's first queries find empty tables and not missing ones. The
+build workflow now opens the packaged program in an empty folder on Windows
+and Linux and fails if it does not start. Until now nothing had launched
+what it shipped.
+
+## Feedback from inside the program -- 5 Oct 2026
+
+### Added -- a Feedback button, to the developer's email
+
+For the beta's testers: **✉ Feedback** on the bar, beside **Ask**, and in
+the Help menu. It opens the tester's own email program addressed to the
+developer, with a subject saying problem or feature request and the build
+and operating system in the body -- the two questions a reply would
+otherwise have to ask first. It does not send mail itself, because sending
+would need a mail password or an API key in the program, and the
+repository is public. The address is printed with a copy button too: a
+computer with no email program set up does nothing at all on a mailto
+link, and says nothing either. `app.py --check` reads the link back and
+copies the address.
+
+---
+
+## Panes off the main window -- 5 Oct 2026
+
+### Added -- detach any tab, and put it back
+
+**detach**, beside **Ask** and in the Views menu, copies the tab on screen
+into a window of its own under the filter it was drawn with. Hand2Note's
+panes come off so two answers can be read side by side, and a copy that
+followed the window's filter would show what the tab shows and compare
+nothing, so a pane keeps its own. It is drawn by the tab's own code from
+the answer the tab already had: no query, and no way for the two to differ.
+A detached chart hovers and clicks like the tab's, and a square lists the
+hands under the pane's filter; **back into the window** restores the pane's
+filter and tab in the main window and closes it.
+
+The renderers note what they drew for the tab's own clicks -- the stats
+tab's player, the hands tab's rows -- and a pane drawn through them puts
+those back, or a double-click on the hands tab would open the pane's hands.
+`app.py --check` detaches a chart drawn on the button, moves the window to
+everything, and clicks a square of the pane: it must ask for the button's
+hands. It does; pointed at the window's filter instead, the check fails.
+
+Not a docking layout: panes do not tile inside the main window and are
+not kept between runs. A saved view is the way to keep a whole window.
+
+---
+
+## A square of a range opens its hands -- 5 Oct 2026
+
+### Added -- click a square, get the hands; `--took`
+
+Hand2Note's range map opens onto the hands behind each square, and the
+question a reader has once a range's shape has answered the first one is
+"which ace-king was it". A click on any square of the chart tab, or of the
+range beside the stats table, now opens those hands in a window of their
+own, each one a double-click from its replay. The window says what filter
+they were found under, because a list of nine hands reads as "his ace-king"
+when it is his ace-king 3-betting from the button last month.
+
+The hands are the filter's, cut to the combo, and on a stat's range cut
+again to the decisions that took the stat -- or the action taken instead,
+whichever the box beside the table says. That second cut is a filter of its
+own, **`--took STAT`** (`--took threebet:call` for the calls on the same
+chances), so `query.py --took threebet --combo AKo --hands` is the same
+list on the command line. Both it and the range are `query.took_where`, and
+`query.py --check` holds every square of two stats' ranges to the number of
+hands the click lists. `--took` joins `--aggressive` and `--allin` among
+the flags a saved stat may not be defined over: a chance that already
+contains its own action reads 100% for ever.
+
+On the chart tab with a stat chosen, a square is coloured by the share that
+took the stat, and its click lists the ones that did. A click opens a
+window rather than writing `--combo` into the filter, because the chart is
+still being read and a click should not change what it is a chart of.
+
+---
+
+## The sittings filters have an index -- 5 Oct 2026
+
+### Added -- `dec_sid`, on `decisions(session_id)`
+
+"This sitting" and "my last five sittings" ask for session ids, and the
+only index carrying the id had it third, behind the length and minutes
+that the session-length filters need first. `--last-sessions` therefore
+read that index end to end: 0.3 to 0.5s a tab at 50,000 hands. With an
+index led by the id it is about 0.01s, under every view and combined with
+`--hero` or a street. `sessions.py --check` now requires a session filter
+to seek it. It is built with the other session indexes in `sessions.index`
+and not in `decisions.INDEXES`, because `decisions.build` makes a table
+without the session columns and indexes it before they exist. An existing
+database gets it on its next import, without a rebuild.
+
+---
+
+## Notes: templates, a hand in a note, a note on a stat -- 5 Oct 2026
+
+### Added -- Hand2Note's three other kinds of note
+
+A **template** is a sentence saved once (`notes.py --template`) and added
+to any player's note (`--use-template`, or **insert template** in the hand
+window). `{threebet}` and every other stat key is filled with that
+player's rate when it is used -- "3bet 14% (n=58)", never a bare
+percentage -- and the line is dated, because a note records a read made
+on what was true then; one that recomputed itself would put today's number
+under last month's judgement. A key that is no stat is refused when the
+template is saved rather than turning up as a literal `{fold_to_3bat}` at
+the table.
+
+A **hand in a note** (`--note-hand`, or **put this hand in the note**) is
+a hand id beside the player with a few words, listed in both profiles. It
+has to be a hand the player was dealt into, checked against `spots`.
+
+A **note on a stat** (`--stat-note`) is printed under that stat's row in
+`players.py NAME`, beside it in `opponents.py NAME`, and is a column of
+the stats tab when the filter names one player on one site; a
+double-click writes one. `query.one_player` is now the one place that
+decides "one player on one site", for this and for `pool_beside`.
+
+Three tables beside `notes`, created on demand and outside the
+derivation, so no rebuild touches them. `notes.py --check` round-trips
+each, refuses a misspelt template, a hand the player was not in and a
+note on a stat that does not exist, and fills a template from the real
+engine.
+
+---
+
+## The table and the posts: five filters that needed columns -- 4 Oct 2026
+
+The rest of the 24 Sep audit's filter gaps, each of which needed something
+recorded that was not. **Every one adds a column, so a database from
+before this rebuilds once on its next import** (`importer.current` sees
+the columns missing), and the ante and the straddle need
+`python importer.py --reread` over the folders the hands came from,
+since they are read from the history text.
+
+### Added -- `--fish-left-seats`, `--fish-right-seats`: distance to fish
+
+`fish_left` has said which side a fish in the pot sits on since 17 Sep;
+Hand2Note's filter is how many seats away, of the table and not the pot.
+`players.py` now writes `fish_dist_left` and `fish_dist_right` on every
+decision: seats round to the nearest fish dealt in, empty and sitting-out
+chairs not counted, NULL with no fish there. Ranges, like the other
+numeric filters. `players.py --check` asks it two ways from SQL: with one
+fish at the table the two distances go round it exactly (1,995 of 1,995
+on the corpus), and a fish one seat away really is in the next seat up or
+down -- the half that catches left and right swapped, which the sum
+cannot see, and did catch when the sides were swapped on purpose.
+
+### Added -- `--fish-blinds sb|bb|both|any|none`
+
+Hand2Note's "fish on blinds", for the steal it is worth widening. A
+column, `fish_blinds`, of which blinds a fish other than the player is
+in, written by the same walk and checked against a join on `spots`.
+
+### Added -- `--street-pot`: the pot as the street began
+
+Hand2Note's "initial pot". `pot_bb` is the pot at the decision, so it
+cannot say "a flop that began at 20bb". `lines.py` writes `street_pot`,
+the first decision's pot carried to every decision on the street, and
+`lines.py --check` holds it to what was posted (991 of 991 hands
+preflop, a second road to the number through `seats.posted`), to never
+shrinking from one street to the next, and to one figure per street.
+
+### Added -- `--ante`, `--no-ante`, `--straddle`, `--no-straddle`
+
+The parsers fold every post into `seats.posted`, so nothing recorded
+whether a hand had either. `hands` has `ante` and `straddle` now, from the
+posts, and the filters are subqueries over it with partial indexes, as
+`--tag` is. A hand imported before has them NULL, matches none of the
+four rather than counting as "no ante", and `why_empty` names the
+`--reread` that fixes it.
+
+The PokerStars parser now reads "posts straddle $X". That spelling is
+FPDB's own parser's; no history from a site read here has one in its
+corpus, so a synthetic straddled hand in `fixtures/synthetic/` stands in
+for it in the CI database and proves the money adds up. Before this the
+line was a tallied unknown verb and the hand failed the money test. That
+hand also moves two counts in the preflop ladder's check by one.
+
+### Fixed -- an ante counted toward a raise on ACR, Ignition and PartyPoker
+
+The Stars parser lost this bug in Run 19: an ante is in the pot, not in
+front of the player, so a raise "to" X from a seat that anted put in X.
+The other three parsers kept it, counting the ante as the street's money
+already in. Only tournaments ante there, and tournaments are outside the
+money test, so nothing saw it. Over FPDB's tournament files it changes
+one hand: Ignition 2647092083 (2012, a raise written as its street total)
+recorded the raiser's money in as 1,095 against an all-in of 1,175 it
+matched, and now records 1,175.
+
+---
+
+## Gaps from the 24 Sep audit: preflop ladder, hands by strength, sharing a hand -- 4 Oct 2026
+
+### Added -- `--pf-facing`, Hand2Note's preflop ladder
+
+Two of the gaps the 24 Sep audit verified as missing: "limpers count" and
+"all folded to BB" as preflop facings. `facing` counts raises, so an empty
+pot and a pot with two limpers were the same spot, and so were a bare
+open and an open already called -- the squeeze, which is played nothing
+like it. `--pf-facing` adds unopened, 1-limp, 2-limps, 1-raise,
+raise-call, raise-2-calls, 2-raises and walk, OR-ed when several are
+named.
+
+Built without a column. `node` already holds the table's preflop action up
+to the decision, one letter each, and `lines.letter` writes every limp and
+call as C, all-in or not -- so the count of C before the first R is the
+limpers and after it the callers. Each rung seeks `dec_spot` on street and
+facing first. `query.py --check` holds the ladder to adding back up: on
+the corpus, 3,118 unopened decisions are 2,443 + 450 + 225, and 1,865
+opens are 1,561 + 250 + 54.
+
+### Added -- hands strongest first
+
+Another of the 24 Sep gaps: Hand2Note lists the showdown hands under its
+range diagram sorted by strength. `--hands --sort strength`, and **first
+by** above the window's hands tab, order them by `strength.classify` on
+the seat's cards and the whole board, in `strength.ORDER`'s categories with
+the evaluator's tuple breaking ties. The ordering is done in Python after
+the query, over every matching hand rather than the latest 500, since the
+strongest hands of a filter are rarely its newest. `query.py --check`
+holds the order to the categories, the unshown hands to the end (93 of 730
+river hands on the corpus), and the count to the unsorted list's.
+
+### Added -- a hand to share, with nobody in it
+
+The third of the 24 Sep gaps. `--hand ID --share`, and **copy for
+sharing** in the hand window, write the hand as text with the names, the
+hand number, the table, the date and the site left out -- any one of them
+finds the hand again, and every player in it. Seats are positions, the
+seat the hand was opened for is Hero, amounts are big blinds. A full
+table records three seats as UTG, so repeats are numbered in the order
+they first act, UTG to UTG+3, or "UTG calls" would not say who. Hand2Note
+can also hide the showdown; this keeps the cards the site showed, since a
+hand posted for advice without the villain's cards asks a different
+question. `query.py --check` shares the first hand of every site and
+looks for every seat's label and identity, the hand number, the table and
+the day in the text: none on any of six.
+
+---
+
+## Tonight's sitting, one sitting, and its hands -- 3 Oct 2026
+
+### Added -- `--last-sessions N` and `--session N,M`
+
+Hand2Note's session view has "Today" and opens a session's hands. Here
+the sittings have been in `sessions` since 18 Sep, and nothing could
+select one. `--session` takes the numbers `--sessions` prints.
+`--last-sessions N` is the last N sittings on each site, ranked by that
+site's own clock. "Today" itself is not offered, because whose today it is
+depends on a clock nothing here records. "The last N overall" would rank
+one room's timestamps against another's, which `sessions.py` has never
+done. Both reach the window as boxes on the filter's General page, and a
+double-click on a row of the sessions tab opens that sitting on its own.
+
+`sessions_of` now applies the filter to `decisions` inside its join rather
+than across it. A filter naming `session_id` is the first that names a
+column `sessions` also has, and the outer form raised "ambiguous column
+name" for it.
+
+Both read the `dec_session` index end to end rather than seeking it, since
+`session_id` is its last column. At 490k decisions that is a narrow scan.
+An index led by `session_id` would make it a seek, but it belongs to
+`sessions.py`'s build, so it is left for that code's owner to add.
+
+### Added -- export from the window
+
+**Views ▸ Export the hands it selects…** is `--export` from the window. It
+runs `importer.export` on a worker over the same `hands_of` the command
+line uses, cohort included, and says how many hands were written and how
+many files had moved.
+
+---
+
+## Saved views -- 3 Oct 2026
+
+### Added -- save the whole window under a name, and open it again
+
+Hand2Note saves a report as everything on the screen and reopens it as it
+was. Here a report (`filters.json`) has only ever been the situation,
+on purpose: it joins the report box and is laid over any tab and any
+players, so a report that carried `--show` or a cohort would rewrite every
+view it was opened in. A view is the other object. It keeps who, the
+filter, the tab and the choices on it, and opening it replaces the window's
+state rather than adding to it.
+
+One argv in `views.json`, in the vocabulary both front ends already speak:
+`query.py --save-view NAME ...`, `--views`, `--open NAME [more flags]`, and
+the window's **Views** menu read and write the same entries.
+
+The players are written last, for a reason found while writing the check.
+`players.parse_cohort` takes the first `--site` it meets as the cohort's,
+so a Players filter with no site of its own, saved in front of a filter
+on Ignition, came back with the site moved into the cohort and the site
+box empty. `app.py --check` saves three views and opens each through the
+window and through the command line. It requires the same argv, the same
+WHERE, the same players and the same tab, and it fails 2/3 with the order
+reversed.
+
+---
+
+## A stat and the hands it was made of -- 3 Oct 2026
+
+### Added -- the stats tab draws the range of the row you click
+
+Hand2Note's statistics view is a list of rates with the 13x13 of whichever
+one is clicked beside it: "3-bet 9%" and then the nine percent itself. The
+stats tab is now that. Click a row and the hands that took the stat's
+action are drawn beside the table, each combo's share of them, under a
+line saying what share of the chances they are. **range of** above the
+table swaps them for the hands that called, folded, raised, checked or bet
+instead on the same chances.
+
+Neither chart the program already drew was this. The chart tab's
+composition is every hand that reached the spot, folds included, and its
+per-stat chart is how often each combo took the action -- aces 3-betting
+once in one chance fill a square there and say nothing about how much of
+the 3-bet range is aces. `query.stat_range_of` is the new one, and on the
+command line it is `--chart --range-of KEY [--alternative ACTION]`. It is
+`chart_of` over the rows where the chance arose and the action was taken,
+so it counts player-hands once and carries the seen fraction like every
+other chart. `app.py --check` holds it to the hands that 3-bet counted
+directly, by both roads it reaches the window.
+
+### Added -- how much of a postflop range is weak, beside it
+
+Hand2Note prints a weak percentage beside a betting range, the "how often
+is this a bluff" number. The range tab has had the same three tiers since
+`strength.WEAK`, but only for the hands that reached a spot. A clicked
+postflop stat now gets one line under its heading, `strong / middle pair /
+weak` over the hands that took it, from `range_of` over the same rows, so
+the line between weak and strong is still drawn in one place only. The
+closed 12 Sep branch let each bar be flipped to weak by right-click. That
+is left out on purpose: the project's rule is that disagreeing with the
+line is a line changed in `strength.WEAK`, not a different answer per click.
+
+### Added -- `--no-reg-vs-fish`
+
+Hand2Note's "exclude reg vs fish", as a switch: a reg's decisions with a
+fish in the pot drop out and everything else stays. It is written with
+COALESCE, because a seat with no class is NULL and `NOT` over a NULL is
+NULL -- the plain form dropped every unclassified decision along with the
+ones it meant to. The corpus CI builds from has three regs and none of them
+ever sat with a fish, so there it keeps everything; `query.py --check`
+accepts that only after asking for the rows it should drop and finding
+none, and proves the switch on four hand-made seats instead.
+
+### Fixed -- the check that every filter narrows had stopped checking
+
+`query.py --check` tests that each filter selects something and not
+everything. The second half compared against `total`, which a loop added
+above it on 25 Sep reused for the hero's hand count -- so "selects every
+decision in the table" had not been caught since. Every existing filter
+passes with it restored; the new switch was the first thing it caught.
+
+---
+
+## The actions tab reads one table -- 3 Oct 2026
+
+### Changed -- four outcome columns on `decisions`
+
+The actions tab joined every decision it read to `seats` (for the stack at
+the end of the hand), to `spots` (for showdown) and to `decisions` again
+(for the next action), and those lookups were three quarters of its time.
+`decisions` now carries what they gave: `profit_bb`, `won_pot`, `showdown`
+and `next_action`, written by `decisions.outcome` with the view's own
+arithmetic in the view's own order. The tab is now one pass over the
+filter's rows. Across the same 42 filters at 49,600 hands it took 11.1s
+and now takes 5.0s; with no filter it took 2.1s and now takes 0.6s.
+
+Its output matches the old query to the ninth decimal place for every
+action under six filters and four splits. `decisions.py --check` holds the
+columns to the joins they replaced, row for row and exactly. `bb > 0` is
+written `+bb > 0`, because the planner otherwise walked the stake index end
+to end: under `--allin` that was five times slower than the all-in index.
+
+**Your database is rebuilt once**, on the first import after this, since
+the update path refuses a database missing a column: `importer.current`
+now counts `decisions`' own columns as well as the later stages'. A rebuild
+took about 45 seconds at 12,000 hands. After that, imports are incremental
+again.
+
+---
+
+## The matchup filters have an index -- 3 Oct 2026
+
+### Added -- `dec_matchup`, and a database that is missing an index gets it on import
+
+`--matchup BTN,BB`, which four smart reports and the window's "against" box
+use, had no index of its own. SQLite answered it from `dec_vs` through the
+`position IN (...)` half of the filter, which fetches a third of the table
+a row at a time, twice the cost of a plain scan. The plan check passed it,
+because that is still an index. At 50,000 hands the stats and range tabs
+together took 0.54s for BTN/BB and now take 0.10s. For SB/BB they took 0.73s
+and now take 0.24s. `query.py --check` now requires `--matchup` to use the
+new index.
+
+Since imports stopped rebuilding, a new entry in `decisions.INDEXES` would
+reach an existing database only on its next rebuild, which might never
+come. `importer.update` now builds any missing indexes once, after its
+transaction commits.
+
+---
+
 ## The HUD's next-hand line -- 4 Oct 2026
 
 ### Added -- each box ends with the player's position next hand, and its stats

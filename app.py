@@ -34,13 +34,16 @@ hands are from; every file is identified by reading it.
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
+import platform
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox, ttk
+from urllib.parse import quote
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
 
@@ -62,6 +65,12 @@ HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
         else Path(__file__).parent)
 DB = HERE / "hands.db"
 query.DB = DB
+# Where testers' feedback and feature requests go: the owner's own address,
+# given for exactly this. The window opens the tester's email program with
+# it filled in rather than sending anything itself, because sending would
+# need a mail password or an API key in the program, and the repository is
+# public -- a key in it is a key for everybody.
+FEEDBACK_TO = "john.brandon.h86@gmail.com"
 # The saved stats are the user's as much as the database is, so they sit
 # beside it rather than beside the code -- which, frozen, is a directory
 # PyInstaller deletes on the way out. Loading them again here is what puts
@@ -70,6 +79,7 @@ query.DB = DB
 stats.DB = DB
 stats.load_custom(HERE / "stats.json")
 query.SAVED = HERE / "filters.json"
+query.VIEWS = HERE / "views.json"
 # The assistant's provider, key and model are the user's in the same way,
 # and `ask`'s own comment says they live beside the program -- but its path
 # was the last one still measured from the code. Frozen, that is the
@@ -83,8 +93,14 @@ ask.SETTINGS = HERE / "ai.json"
 # One palette, so a colour is changed in one place. The line colours are the
 # same four the graph has always used.
 BG, PANEL, EDGE = "#14161a", "#1b1e24", "#2a2f38"
-INK, DIM, ACCENT = "#d8dbe0", "#8b929c", "#4c9aff"
-GOOD, BAD, WARN = "#22a35a", "#d1443c", "#b8892a"
+INK, DIM, ACCENT = "#e3e6eb", "#8b929c", "#4c9aff"
+GOOD, BAD, WARN = "#22a35a", "#d1443c", "#d6a23a"
+# The surfaces a control sits on, lightest last: a field (a box to type or
+# choose in, and an ordinary button), the same under the mouse, and the row
+# that is selected. Text on the accent colour is dark, since white on that
+# blue is a contrast of 2.9 and dark is 7.
+FIELD, HOVER, SELECT = "#232831", "#2d333e", "#24344d"
+ACCENT_HOVER, ON_ACCENT = "#6aaeff", "#0b1424"
 LINE = {"total": "#22a35a", "showdown": "#2f7fd6",
         "nonshowdown": "#d1443c", "allin_ev": "#e0b020"}
 # Painted in this order, so the headline is the one on top. Drawing them in
@@ -156,11 +172,18 @@ WHO = [("--reg", "the player is a reg"), ("--fish", "the player is a fish"),
        ("--fish-left", "a fish on my left (acts after me)"),
        ("--fish-right", "a fish on my right (acts before me)"),
        ("--reg-left", "a reg on my left"),
-       ("--reg-right", "a reg on my right")]
+       ("--reg-right", "a reg on my right"),
+       ("--no-reg-vs-fish", "leave out regs' hands against fish")]
 SITUATIONS = [("--ip", "in position"), ("--oop", "out of position"),
               ("--pfa", "was the raiser"), ("--vs-pfa", "facing the raiser"),
               ("--multiway", "multiway"), ("--headsup", "heads up"),
               ("--allin", "all-in")]
+# What the chart beside the stats table is a range of, by the words in its
+# box: the stat's own action, or one of `query.CHART_ALTERNATIVES` taken
+# instead on the same chances.
+TOOK = {"the hands that did it": None, "call instead": "call",
+        "fold instead": "fold", "raise instead": "raise",
+        "check instead": "check", "bet instead": "bet"}
 # Turning one of these on turns its opposite off, or the filter selects
 # nothing and looks broken rather than contradictory.
 OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
@@ -168,7 +191,13 @@ OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--headsup": "--multiway",
              "--reg": "--fish", "--fish": "--reg",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
-             "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero"}
+             "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero",
+             "--ante": "--no-ante", "--no-ante": "--ante",
+             "--straddle": "--no-straddle", "--no-straddle": "--straddle"}
+# What was posted before the cards. Each has its opposite, because the
+# usual question is "my cash numbers without the straddled hands in them".
+POSTS = [("--ante", "antes"), ("--no-ante", "no ante"),
+         ("--straddle", "a straddle"), ("--no-straddle", "no straddle")]
 
 
 def pick_fonts():
@@ -235,78 +264,290 @@ def dark_titlebar(window):
         pass
 
 
+def crisp():
+    """
+    Ask Windows for real pixels, before the first window exists.
+
+    A program that does not say it understands display scaling is drawn at
+    96 dots to the inch and then stretched by Windows to fit, and stretched
+    text is blurred text: at 125% or 150%, which is what most laptops ship
+    with, every letter in the window was soft. Saying so lets Tk read the
+    real resolution and draw fonts at it, which is the whole of the fix for
+    the text -- but only for sizes given in points. Pixel sizes, which is
+    what every `geometry` and row height here is written in, stay the size
+    they were and come out small, and `dark` scales those.
+
+    Must run before `tk.Tk()`, because Windows fixes a process's answer the
+    first time it draws a window. Wrapped, because an old Windows without
+    `shcore` falls back to the older call and one without either keeps the
+    blur rather than refusing to start.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+# How many screen pixels this display uses for one of the 96-to-the-inch
+# pixels every size in this file was written in: 1.0 at 100%, 1.5 at 150%.
+# Set by `dark` from the scaling Tk measured, and 1.0 until then.
+ZOOM = 1.0
+
+
+def px(n):
+    """A size written for a 100% display, in this display's pixels."""
+    return int(round(n * ZOOM))
+
+
+def _zoom_geometry():
+    """
+    Every window's `geometry("WxH")` in this display's pixels, in one place.
+
+    Fifteen windows give their size in pixels. Changing each call site would
+    put the same arithmetic in fifteen places for the first one added to
+    forget; wrapping Tk's own method does it for all of them, and clamps to
+    the screen, because a 1360x880 window at 150% is 2040 pixels wide and a
+    laptop is not.
+    """
+    if getattr(tk.Wm, "_unzoomed_geometry", None):
+        return
+    plain_geometry, plain_minsize = tk.Wm.wm_geometry, tk.Wm.wm_minsize
+
+    def geometry(self, spec=None):
+        if spec and ZOOM != 1.0:
+            size = re.match(r"(\d+)x(\d+)(.*)$", spec)
+            if size:
+                w = min(px(int(size.group(1))), self.winfo_screenwidth() - 40)
+                h = min(px(int(size.group(2))), self.winfo_screenheight() - 80)
+                spec = f"{w}x{h}{size.group(3)}"
+        return plain_geometry(self, spec)
+
+    def minsize(self, width=None, height=None):
+        if width is not None and height is not None and ZOOM != 1.0:
+            width = min(px(width), self.winfo_screenwidth() - 40)
+            height = min(px(height), self.winfo_screenheight() - 80)
+        return plain_minsize(self, width, height)
+
+    tk.Wm.wm_geometry = tk.Wm.geometry = geometry
+    tk.Wm.wm_minsize = tk.Wm.minsize = minsize
+    tk.Wm._unzoomed_geometry = plain_geometry
+
+    # The charts are laid out in pixels -- a combo's name seven above the
+    # middle of its square and its share eight below -- and their text in
+    # points, so at 150% the text grew and the gaps did not and the two lines
+    # of every square printed over each other. Until each chart measures its
+    # text, its text is held at the size the layout was drawn for: as large
+    # as it was before, now sharp rather than stretched.
+    plain_text = tk.Canvas.create_text
+
+    def create_text(self, *args, **kw):
+        font = kw.get("font")
+        if ZOOM != 1.0 and isinstance(font, tuple) and len(font) > 1 \
+                and isinstance(font[1], (int, float)) and font[1] > 0:
+            kw["font"] = (font[0], -round(font[1] * 96 / 72)) + font[2:]
+        return plain_text(self, *args, **kw)
+
+    tk.Canvas.create_text = create_text
+
+
 def dark(root):
-    """Make Tk dark, which it does not want to be."""
+    """
+    Make Tk dark, which it does not want to be, and make it one design.
+
+    Every colour, font and spacing the widgets use is set here, so the look
+    is changed in one place and a window built anywhere else inherits it.
+    The fonts are the named ones Tk's own widgets fall back on, so a label
+    nobody gave a font is in the same face as the ones that were.
+    """
+    global ZOOM
     pick_fonts()
+    # Tk's scaling is points to pixels: 96/72 at 100%, 2.0 at 150%.
+    ZOOM = max(1.0, float(root.tk.call("tk", "scaling")) * 72 / 96)
+    _zoom_geometry()
+    # Nine points for the controls, which is what Windows uses for its own;
+    # the tables, which are what the window is for, are a point larger.
+    for name, size, weight in (("TkDefaultFont", 9, "normal"),
+                               ("TkTextFont", 9, "normal"),
+                               ("TkMenuFont", 9, "normal"),
+                               ("TkHeadingFont", 9, "bold"),
+                               ("TkTooltipFont", 9, "normal")):
+        try:
+            tkfont.nametofont(name).configure(family=UI, size=size,
+                                              weight=weight)
+        except tk.TclError:
+            pass
+    body = tkfont.Font(family=UI, size=9)
     style = ttk.Style(root)
     # `clam` draws its own widgets. `vista` and `winnative` delegate to the
     # operating system, which draws them light whatever it is told.
     style.theme_use("clam")
     root.configure(background=BG)
-    style.configure(".", background=BG, foreground=INK, fieldbackground=PANEL,
-                    bordercolor=EDGE, lightcolor=EDGE, darkcolor=EDGE,
-                    troughcolor=BG, focuscolor=ACCENT, insertcolor=INK)
+    # Borders the colour of what they sit on, so a control is a shape and
+    # not an outline: `clam` draws a light bevel on everything by default,
+    # and a window of bevelled boxes is most of what made this one look
+    # like 1998.
+    style.configure(".", background=BG, foreground=INK, fieldbackground=FIELD,
+                    bordercolor=EDGE, lightcolor=BG, darkcolor=BG,
+                    troughcolor=BG, focuscolor=ACCENT, insertcolor=INK,
+                    selectbackground=SELECT, selectforeground=INK,
+                    font=(UI, 9))
     style.configure("TFrame", background=BG)
     style.configure("Panel.TFrame", background=PANEL)
     style.configure("TLabel", background=BG, foreground=INK)
     style.configure("Dim.TLabel", background=BG, foreground=DIM)
-    style.configure("Tag.TButton", padding=(4, 0))
+    style.configure("Tag.TButton", padding=(px(4), 0))
     style.configure("Head.TLabel", background=BG, foreground=DIM,
-                    font=(UI, 8, "bold"))
+                    font=(UI, 9, "bold"))
     style.configure("Title.TLabel", background=BG, foreground=INK,
-                    font=(UI, 11, "bold"))
+                    font=(UI, 12, "bold"))
     # The subject line -- WHO the window is about -- is the largest text
     # on it, because it was the hardest thing to find.
     style.configure("Subject.TLabel", background=BG, foreground=INK,
                     font=(UI, 15, "bold"))
     style.configure("Warn.TLabel", background=BG, foreground=WARN,
-                    font=(UI, 10, "bold"))
-    style.configure("On.TButton", background=ACCENT, foreground="#08111f",
-                    font=(UI, 11, "bold"), padding=(14, 6))
-    style.map("On.TButton", background=[("active", "#5ea6ff")])
-    style.configure("Off.TButton", background=PANEL, foreground=DIM,
-                    font=(UI, 11), padding=(14, 6))
-    style.configure("TCheckbutton", background=BG, foreground=DIM)
-    style.map("TCheckbutton",
-              foreground=[("selected", ACCENT), ("active", INK)],
-              background=[("active", BG)])
-    style.configure("TButton", background=PANEL, foreground=INK,
-                    bordercolor=EDGE, focusthickness=0, padding=(10, 4))
-    style.map("TButton", background=[("active", EDGE)])
-    style.configure("Accent.TButton", background=ACCENT, foreground="#08111f",
-                    bordercolor=ACCENT, padding=(14, 5))
-    style.map("Accent.TButton", background=[("active", "#5ea6ff")])
-    style.configure("Big.TNotebook.Tab", padding=(20, 9),
                     font=(UI, 10))
-    style.configure("TEntry", fieldbackground=PANEL, foreground=INK,
-                    bordercolor=EDGE, insertcolor=INK)
-    style.configure("TCombobox", fieldbackground=PANEL, background=PANEL,
-                    foreground=INK, arrowcolor=DIM, bordercolor=EDGE)
-    style.map("TCombobox", fieldbackground=[("readonly", PANEL)],
-              foreground=[("readonly", INK)])
+    # ME and THE POOL are a pair of switches, so they are drawn as one
+    # control: the lit one filled, the other the colour of a field.
+    style.configure("On.TButton", background=ACCENT, foreground=ON_ACCENT,
+                    bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                    font=(UI, 10, "bold"), padding=(px(16), px(6)))
+    style.map("On.TButton", background=[("active", ACCENT_HOVER)],
+              bordercolor=[("active", ACCENT_HOVER)])
+    style.configure("Off.TButton", background=FIELD, foreground=DIM,
+                    bordercolor=FIELD, lightcolor=FIELD, darkcolor=FIELD,
+                    font=(UI, 10, "bold"), padding=(px(16), px(6)))
+    style.map("Off.TButton", background=[("active", HOVER)],
+              foreground=[("active", INK)], bordercolor=[("active", HOVER)])
+    style.configure("TCheckbutton", background=BG, foreground=DIM,
+                    indicatorbackground=FIELD, indicatorforeground=ACCENT,
+                    indicatormargin=(0, 0, px(6), 0))
+    style.map("TCheckbutton",
+              foreground=[("selected", INK), ("active", INK)],
+              background=[("active", BG)],
+              indicatorbackground=[("selected", FIELD)])
+    style.configure("TButton", background=FIELD, foreground=INK,
+                    bordercolor=FIELD, lightcolor=FIELD, darkcolor=FIELD,
+                    focusthickness=0, padding=(px(12), px(5)))
+    style.map("TButton", background=[("active", HOVER), ("disabled", BG)],
+              bordercolor=[("active", HOVER), ("disabled", EDGE)],
+              foreground=[("disabled", DIM)])
+    style.configure("Accent.TButton", background=ACCENT, foreground=ON_ACCENT,
+                    bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                    font=(UI, 9, "bold"), padding=(px(14), px(5)))
+    style.map("Accent.TButton", background=[("active", ACCENT_HOVER)],
+              bordercolor=[("active", ACCENT_HOVER)])
+    style.configure("Big.TNotebook.Tab", padding=(px(20), px(9)),
+                    font=(UI, 10))
+    style.configure("TEntry", fieldbackground=FIELD, foreground=INK,
+                    bordercolor=EDGE, lightcolor=FIELD, darkcolor=FIELD,
+                    insertcolor=INK, padding=(px(6), px(4)))
+    style.map("TEntry", bordercolor=[("focus", ACCENT)])
+    style.configure("TCombobox", fieldbackground=FIELD, background=FIELD,
+                    foreground=INK, arrowcolor=DIM, bordercolor=FIELD,
+                    lightcolor=FIELD, darkcolor=FIELD,
+                    padding=(px(6), px(3)), arrowsize=px(12))
+    style.map("TCombobox", fieldbackground=[("readonly", FIELD)],
+              foreground=[("readonly", INK)],
+              background=[("active", HOVER)],
+              bordercolor=[("focus", ACCENT), ("active", HOVER)],
+              arrowcolor=[("active", INK)],
+              selectbackground=[("readonly", FIELD)],
+              selectforeground=[("readonly", INK)])
+    style.configure("TSpinbox", fieldbackground=FIELD, background=FIELD,
+                    foreground=INK, arrowcolor=DIM, bordercolor=FIELD,
+                    lightcolor=FIELD, darkcolor=FIELD)
     # The dropdown LIST inside a combobox is a Tk listbox, not a ttk widget,
     # so ttk styling never reaches it and it has to be coloured by option.
-    root.option_add("*TCombobox*Listbox.background", PANEL)
+    root.option_add("*TCombobox*Listbox.background", FIELD)
     root.option_add("*TCombobox*Listbox.foreground", INK)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-    root.option_add("*TCombobox*Listbox.selectForeground", BG)
-    style.configure("TNotebook", background=BG, bordercolor=EDGE)
+    root.option_add("*TCombobox*Listbox.selectForeground", ON_ACCENT)
+    root.option_add("*TCombobox*Listbox.font", body)
+    root.option_add("*TCombobox*Listbox.borderWidth", 0)
+    # Menus, and the plain Tk widgets a few dialogs still use, take their
+    # colours from the option database too; set once here, they stop
+    # arriving grey-on-white wherever somebody forgot to pass them.
+    for pattern, value in (("*Menu.background", PANEL),
+                           ("*Menu.foreground", INK),
+                           ("*Menu.activeBackground", ACCENT),
+                           ("*Menu.activeForeground", ON_ACCENT),
+                           ("*Menu.relief", "flat"),
+                           ("*Menu.borderWidth", 0),
+                           ("*Menu.font", body),
+                           ("*Listbox.background", FIELD),
+                           ("*Listbox.foreground", INK),
+                           ("*Listbox.selectBackground", ACCENT),
+                           ("*Listbox.selectForeground", ON_ACCENT),
+                           ("*Listbox.highlightThickness", 0),
+                           ("*Text.highlightThickness", 1),
+                           ("*Text.highlightBackground", EDGE),
+                           ("*Text.highlightColor", ACCENT)):
+        root.option_add(pattern, value)
+    # Tabs as a row of words with the chosen one lifted, not as a row of
+    # bordered boxes; and the same size whether chosen or not, because
+    # `clam` grows the chosen tab by two pixels and the whole row jumped
+    # sideways on every click.
+    style.configure("TNotebook", background=BG, bordercolor=EDGE,
+                    lightcolor=BG, darkcolor=BG, tabmargins=(0, 0, 0, 0))
     style.configure("TNotebook.Tab", background=BG, foreground=DIM,
-                    padding=(14, 6), bordercolor=EDGE)
-    style.map("TNotebook.Tab", background=[("selected", PANEL)],
-              foreground=[("selected", INK)])
+                    padding=(px(14), px(7)), bordercolor=BG,
+                    lightcolor=BG, darkcolor=BG, font=(UI, 10))
+    style.map("TNotebook.Tab",
+              background=[("selected", PANEL), ("active", HOVER)],
+              foreground=[("selected", INK), ("active", INK)],
+              bordercolor=[("selected", EDGE)],
+              lightcolor=[("selected", PANEL)],
+              darkcolor=[("selected", PANEL)],
+              padding=[("selected", (px(14), px(7)))],
+              expand=[("selected", (0, 0, 0, 0))])
+    rows = tkfont.Font(family=UI, size=10).metrics("linespace")
     style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
-                    foreground=INK, bordercolor=EDGE, rowheight=22)
-    style.configure("Treeview.Heading", background=BG, foreground=DIM,
-                    relief="flat", font=(UI, 8, "bold"))
-    style.map("Treeview.Heading", background=[("active", EDGE)])
-    style.map("Treeview", background=[("selected", "#233047")],
+                    foreground=INK, bordercolor=PANEL, lightcolor=PANEL,
+                    darkcolor=PANEL, font=(UI, 10),
+                    rowheight=rows + px(8))
+    style.configure("Treeview.Heading", background=PANEL, foreground=DIM,
+                    relief="flat", bordercolor=PANEL, lightcolor=PANEL,
+                    darkcolor=PANEL, font=(UI, 9, "bold"),
+                    padding=(px(6), px(6)))
+    style.map("Treeview.Heading", background=[("active", HOVER)],
+              foreground=[("active", INK)])
+    style.map("Treeview", background=[("selected", SELECT)],
               foreground=[("selected", INK)])
     style.configure("TSeparator", background=EDGE)
-    style.configure("Vertical.TScrollbar", background=PANEL,
-                    troughcolor=BG, bordercolor=BG, arrowcolor=DIM)
-    style.configure("Horizontal.TScrollbar", background=PANEL,
-                    troughcolor=BG, bordercolor=BG, arrowcolor=DIM)
+    style.configure("Bar.TFrame", background=PANEL)
+    style.configure("Bar.TMenubutton", background=PANEL, foreground=INK,
+                    bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL,
+                    arrowsize=0, padding=(px(12), px(5)), font=(UI, 9))
+    style.layout("Bar.TMenubutton", [
+        ("Menubutton.border", {"sticky": "nswe", "children": [
+            ("Menubutton.padding", {"sticky": "nswe", "children": [
+                ("Menubutton.label", {"sticky": ""})]})]})])
+    style.map("Bar.TMenubutton", background=[("active", HOVER),
+                                             ("pressed", HOVER)])
+    style.configure("TPanedwindow", background=BG)
+    style.configure("Sash", sashthickness=px(6), gripcount=0,
+                    background=BG, bordercolor=BG, lightcolor=BG, darkcolor=BG)
+    # Thin scrollbars with no arrows: a thumb on a track the colour of the
+    # panel, as every program written this decade has them.
+    for orient in ("Vertical", "Horizontal"):
+        style.layout(f"{orient}.TScrollbar", [
+            (f"{orient}.Scrollbar.trough", {"sticky": "nswe", "children": [
+                (f"{orient}.Scrollbar.thumb",
+                 {"expand": "1", "sticky": "nswe"})]})])
+        style.configure(f"{orient}.TScrollbar", background=EDGE,
+                        troughcolor=PANEL, bordercolor=PANEL,
+                        lightcolor=EDGE, darkcolor=EDGE, gripcount=0,
+                        arrowsize=px(10), width=px(10))
+        style.map(f"{orient}.TScrollbar",
+                  background=[("active", DIM), ("pressed", DIM)],
+                  lightcolor=[("active", DIM), ("pressed", DIM)],
+                  darkcolor=[("active", DIM), ("pressed", DIM)])
     return style
 
 
@@ -365,13 +606,55 @@ class Progress(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
 
+class MenuBar(ttk.Frame):
+    """
+    The menu bar, drawn in the window rather than by the operating system.
+
+    Windows draws a program's menu bar itself and ignores every colour Tk
+    passes it, so a dark window arrived with a white strip across its top --
+    the first thing anybody saw, and the thing that most made it look
+    unfinished. A row of buttons that each open the same menu is drawn by
+    Tk and so is dark. It answers `add_cascade` as a `tk.Menu` does, so the
+    menus are built the same way whichever of the two is holding them.
+    """
+
+    def __init__(self, root):
+        super().__init__(root, style="Bar.TFrame")
+        self.root = root
+
+    def add_cascade(self, label, menu):
+        ttk.Menubutton(self, text=label, menu=menu, width=0,
+                       style="Bar.TMenubutton").pack(side="left")
+
+    def show(self, before):
+        self.pack(fill="x", before=before)
+        ttk.Separator(self.root).pack(fill="x", before=before)
+
+
+class NativeMenuBar(tk.Menu):
+    """
+    On a Mac the menu bar is not in the window at all, and the system's is
+    used there, because a menu inside the window is what would look wrong.
+    """
+
+    def __init__(self, root):
+        super().__init__(root, borderwidth=0)
+        self.root = root
+
+    def show(self, before):
+        self.root.configure(menu=self)
+
+
+def menu_bar(root):
+    aqua = root.tk.call("tk", "windowingsystem") == "aqua"
+    return (NativeMenuBar if aqua else MenuBar)(root)
+
+
 class ImportMixin:
     """Everything the Import menu does. Kept apart because none of it is UI."""
 
     def _menu(self, root):
-        bar = tk.Menu(root, background=PANEL, foreground=INK,
-                      activebackground=ACCENT, activeforeground=BG,
-                      borderwidth=0)
+        bar = menu_bar(root)
         m = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
         m.add_command(label="Import new hands", command=self.import_new)
@@ -382,6 +665,13 @@ class ImportMixin:
         m.add_command(label="Import a file…", command=self.import_file)
         m.add_command(label="Merge another database…", command=self.import_db)
         bar.add_cascade(label="Import", menu=m)
+
+        # Read from the file each time it opens, so a view saved a moment
+        # ago is in it without the menu having been told.
+        v = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                    activebackground=ACCENT, activeforeground=BG)
+        v.configure(postcommand=lambda: self._fill_views(v))
+        bar.add_cascade(label="Views", menu=v)
 
         u = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
@@ -396,11 +686,13 @@ class ImportMixin:
 
         h = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
+        h.add_command(label="Send feedback or a feature request…",
+                      command=self.feedback)
         h.add_command(label="Show the log…", command=self.show_log)
         h.add_command(label="Open the log folder",
                       command=lambda: open_folder(diag.LOG.parent))
         bar.add_cascade(label="Help", menu=h)
-        root.configure(menu=bar)
+        bar.show(before=self)
 
     def update_now(self):
         """
@@ -432,6 +724,9 @@ class ImportMixin:
             f"Commit: {update.head() or 'unknown'}\n"
             f"Repository: {update.remote_repo()}\n\n"
             f"The database is at:\n{DB}")
+
+    def feedback(self):
+        Feedback(self)
 
     def show_log(self):
         win = tk.Toplevel(self.master)
@@ -508,6 +803,34 @@ class ImportMixin:
             return
         paths = [p["path"] for p in found]
         self._run_import("importing", lambda say: self._do_load(paths, say))
+
+    def first_run(self):
+        """
+        What a new tester sees: an offer to find their hands, or to choose them.
+
+        The database was made empty a moment ago, so every tab is blank, and
+        a blank window with an Import menu somewhere at the top is not an
+        instruction. This asks once, at the moment there is nothing else the
+        program can usefully do.
+        """
+        found = importer.scan()
+        if found:
+            summary = "\n".join(importer.describe(p) for p in found)
+            if messagebox.askyesno(
+                    "Welcome to TraceEV",
+                    "TraceEV reads the hand histories your poker site saves. "
+                    "It found these:\n\n" + summary
+                    + "\n\nImport them now?"):
+                paths = [p["path"] for p in found]
+                self._run_import("importing",
+                                 lambda say: self._do_load(paths, say))
+            return
+        messagebox.showinfo(
+            "Welcome to TraceEV",
+            "TraceEV reads the hand histories your poker site saves, and "
+            "found none in the usual places.\n\nChoose the folder your site "
+            "saves them in. You can import more later from the Import menu.")
+        self.import_folder()
 
     def import_new(self):
         """
@@ -600,7 +923,8 @@ class App(ImportMixin, ttk.Frame):
                       "pot": set(), "board": set(), "quick": set(),
                       "made": set(), "kicker": set(), "fd": set(),
                       "sd": set(), "turn_card": set(), "river_card": set(),
-                      "facing": set(), "combo": set()}
+                      "facing": set(), "combo": set(), "pf_facing": set(),
+                      "fish_blinds": set()}
         # The filter's values live here rather than on the widgets, because
         # the widgets belong to a dialog that is destroyed every time it is
         # closed and the filter is not.
@@ -611,7 +935,8 @@ class App(ImportMixin, ttk.Frame):
                       "pre", "flop", "turn", "river",
                       "hour", "weekday", "session_len", "session_min",
                       "tables", "tag", "size", "size_bb", "raise_x", "depth",
-                      "spr", "high", "format")}
+                      "spr", "high", "format", "session", "last_sessions",
+                      "street_pot", "fish_left_seats", "fish_right_seats")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
 
@@ -772,18 +1097,33 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box.bind("<<ComboboxSelected>>",
                              lambda _e: self.refresh())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
+        self.shown_out, self.panes = {}, {}
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
-        ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
+        ttk.Button(bar, text="Chat with AI  ▸", command=self.toggle_ask).pack(side="right")
+        # On the bar every view keeps, not only in the Help menu: a tester
+        # who has something to say should not have to go looking for where
+        # to say it, and most never open a menu that sounds like a manual.
+        self.feedback_btn = ttk.Button(bar, text="✉  Feedback",
+                                       command=self.feedback)
+        self.feedback_btn.pack(side="right", padx=(0, 6))
+        ttk.Button(bar, text="detach", command=self.detach).pack(
+            side="right", padx=(0, 6))
         ttk.Separator(self).pack(fill="x")
 
         # The answer on the left, the assistant on the right when it is
         # open. A panel rather than a window, because the point is to ask
         # about what is on screen and read the answer beside it.
-        body = ttk.Frame(self)
+        #
+        # A paned window, not two packed frames: packed, the tabs asked for
+        # their width first and the panel got whatever was left, which on a
+        # laptop at 125-150% display scaling was a sliver with its question
+        # box pushed off the bottom (John's first look at the beta, 6 Oct).
+        # As a pane it gets its own width, and a sash to drag.
+        body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
-        right.pack(side="left", fill="both", expand=True)
+        body.add(right, weight=1)
         self._views(right)
         self.ask_panel = AskPanel(body, self)
 
@@ -902,6 +1242,31 @@ class App(ImportMixin, ttk.Frame):
         self.expression_label = ttk.Label(bar, text="expression",
                                           style="Dim.TLabel")
 
+        # Which hands the chart beside the stats table draws: the ones that
+        # took the clicked stat's action, or the ones that did something
+        # else on the same chances -- the call range beside the 3-bet range.
+        self.took = ttk.Combobox(bar, state="readonly", width=16,
+                                 values=list(TOOK))
+        self.took.set(next(iter(TOOK)))
+        self.took.bind("<<ComboboxSelected>>", lambda e: self.show_stat_range())
+        self.took_label = ttk.Label(bar, text="range of", style="Dim.TLabel")
+        # Hand2Note keeps this beside its statistics rather than among the
+        # filters, because it is the switch people flip while reading them.
+        # It is an ordinary switch all the same, and the filter dialog
+        # offers it too.
+        self.no_reg_fish = ttk.Checkbutton(
+            bar, text="leave out regs against fish",
+            variable=self.flags["--no-reg-vs-fish"], command=self.refresh)
+
+        # The order of the hands tab. A heading click sorts what is shown;
+        # this decides which 500 are shown, and the strongest hands of a
+        # filter are rarely among its latest.
+        self.hand_sort = ttk.Combobox(bar, state="readonly", width=10,
+                                      values=list(query.SORTS))
+        self.hand_sort.set("date")
+        self.hand_sort.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.hand_sort_label = ttk.Label(bar, text="first by", style="Dim.TLabel")
+
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(0, 10))
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.refresh())
@@ -917,7 +1282,42 @@ class App(ImportMixin, ttk.Frame):
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
         self.tree = {}
-        for name in ("stats", "actions", "overfolds", "range", "report", "results",
+        # The stats table with the range of whichever row is clicked beside
+        # it: Hand2Note's statistics view, where a rate and the hands it
+        # was made of are one look and not two tabs and a dropdown.
+        split = self.stats_split = ttk.Panedwindow(self.tabs["stats"],
+                                                   orient="horizontal")
+        # Fitted again whenever the tab changes size -- opening the Ask
+        # panel takes its width out of this one -- as well as on each render.
+        self._stats_need = px(514)
+        split.bind("<Configure>",
+                   lambda e: self._fit_stats_split(self._stats_need))
+        split.pack(fill="both", expand=True)
+        table, side = ttk.Frame(split), ttk.Frame(split)
+        split.add(table, weight=3)
+        split.add(side, weight=2)
+        self.tree["stats"] = self._table(table)
+        self.tree["stats"].bind("<<TreeviewSelect>>", self._picked_stat)
+        # A double-click writes a note on that stat, when the table is one
+        # named player's -- Hand2Note's notes on a stat.
+        self.tree["stats"].bind("<Double-1>", self._note_on_stat)
+        self.stat_canvas = tk.Canvas(side, bg=BG, highlightthickness=0)
+        self.stat_canvas.pack(fill="both", expand=True)
+        self.stat_canvas.bind("<Configure>", lambda e: self._draw_chart(
+            self.stat_note, self.stat_canvas))
+        self.stat_canvas.bind("<Motion>", self._chart_hover)
+        self.stat_canvas.bind("<Button-1>", self._square_hands)
+        self.stat_canvas.bind("<Leave>",
+                              lambda e: self.stat_canvas.delete("hint"))
+        self.stat_chart, self.picked = None, None
+        # What the pane beside the stats shows for a postflop stat: what the
+        # hands had made, or their starting hands. Strength first.
+        self.stat_view = "strength"
+        self.stat_note = ("Click a stat in the table to see the hands behind "
+                          "it here: for a flop, turn or river stat, what they "
+                          "had made on the board; for a preflop one, the "
+                          "starting hands as a 13x13 grid.")
+        for name in ("actions", "overfolds", "range", "report", "results",
                      "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
         self.canvas = tk.Canvas(self.tabs["graph"], bg=BG, highlightthickness=0)
@@ -936,8 +1336,11 @@ class App(ImportMixin, ttk.Frame):
         self.chart_canvas.pack(fill="both", expand=True)
         self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
         self.chart_canvas.bind("<Motion>", self._chart_hover)
+        self.chart_canvas.bind("<Button-1>", self._square_hands)
         self.chart_canvas.bind("<Leave>", lambda e: self.chart_canvas.delete("hint"))
         self.chart = None
+        self.tree["sessions"].bind("<Double-1>", self._open_session)
+        self.tree["sessions"].bind("<Return>", self._open_session)
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
 
@@ -947,8 +1350,11 @@ class App(ImportMixin, ttk.Frame):
         tv = ttk.Treeview(wrap, show="headings", selectmode="browse")
         vs = ttk.Scrollbar(wrap, orient="vertical", command=tv.yview)
         tv.configure(yscrollcommand=vs.set)
-        tv.pack(side="left", fill="both", expand=True)
+        # The scrollbar first: the packer serves in order, and a table whose
+        # columns ask for more than the pane has took all of it and left the
+        # scrollbar none, so a long table had no visible way down.
         vs.pack(side="right", fill="y")
+        tv.pack(side="left", fill="both", expand=True)
         tv.tag_configure("group", foreground=DIM)
         tv.tag_configure("thin", foreground=WARN)
         tv.tag_configure("pos", foreground=GOOD)
@@ -995,22 +1401,28 @@ class App(ImportMixin, ttk.Frame):
         (self.multi[group].add if var.get() else self.multi[group].discard)(value)
         self.refresh()
 
-    def argv(self):
+    def _cohort_argv(self):
+        if self.cohort_spec is None:
+            return []
+        conditions, site, klass, durable = self.cohort_spec
+        argv = ["--cohort"]
+        flags = {"fold_to_threebet": "--fold-to-threebet"}
+        for field, value in conditions:
+            argv += [flags.get(field, "--" + field), value]
+        if site:
+            argv += ["--site", site]
+        if klass:
+            argv += ["--class", klass]
+        if durable is not None:
+            argv += ["--durable", str(durable)]
+        return argv
+
+    def argv(self, cohort=True):
         """The window's state as the argument list `query.build` understands."""
         argv = query.preset_argv(self.preset.get()) if self.preset.get() else []
         argv += [fl for fl, v in self.flags.items() if v.get()]
-        if self.cohort_spec is not None:
-            conditions, site, klass, durable = self.cohort_spec
-            argv.append("--cohort")
-            flags = {"fold_to_threebet": "--fold-to-threebet"}
-            for field, value in conditions:
-                argv += [flags.get(field, "--" + field), value]
-            if site:
-                argv += ["--site", site]
-            if klass:
-                argv += ["--class", klass]
-            if durable is not None:
-                argv += ["--durable", str(durable)]
+        if cohort:
+            argv += self._cohort_argv()
         # "Against" is the pot's matchup, in the user's words: BTN vs BB is
         # any time the button raised and the big blind did not fold. With
         # no "my position" chosen it is every seat's pots against those.
@@ -1028,7 +1440,9 @@ class App(ImportMixin, ttk.Frame):
                             ("fd", "--fd"), ("sd", "--sd"),
                             ("turn_card", "--turn-card"),
                             ("river_card", "--river-card"),
-                            ("facing", "--facing")):
+                            ("facing", "--facing"),
+                            ("pf_facing", "--pf-facing"),
+                            ("fish_blinds", "--fish-blinds")):
             if self.multi.get(group):
                 argv += [flag, ",".join(sorted(self.multi[group]))]
         for name, flag in (("site", "--site"), ("stake", "--stake"),
@@ -1046,7 +1460,12 @@ class App(ImportMixin, ttk.Frame):
                            ("format", "--format"),
                            ("session_len", "--session-len"),
                            ("session_min", "--session-min"),
-                           ("tables", "--tables"), ("tag", "--tag")):
+                           ("tables", "--tables"), ("tag", "--tag"),
+                           ("session", "--session"),
+                           ("last_sessions", "--last-sessions"),
+                           ("street_pot", "--street-pot"),
+                           ("fish_left_seats", "--fish-left-seats"),
+                           ("fish_right_seats", "--fish-right-seats")):
             v = self.vals[name].get().strip()
             if not v or v.startswith("any "):
                 continue
@@ -1066,7 +1485,8 @@ class App(ImportMixin, ttk.Frame):
                 "--made": "made", "--kicker": "kicker", "--fd": "fd",
                 "--combo": "combo",
                 "--sd": "sd", "--turn-card": "turn_card",
-                "--river-card": "river_card", "--facing": "facing"}
+                "--river-card": "river_card", "--facing": "facing",
+                "--pf-facing": "pf_facing", "--fish-blinds": "fish_blinds"}
     VAL_OF = {"--site": "site", "--stake": "stake", "--player": "player",
               "--deep": "deep", "--short": "short", "--since": "since",
               "--until": "until", "--where": "where", "--line": "line",
@@ -1077,13 +1497,103 @@ class App(ImportMixin, ttk.Frame):
               "--session-min": "session_min", "--tables": "tables",
               "--tag": "tag", "--size": "size", "--size-bb": "size_bb",
               "--raise-x": "raise_x", "--depth": "depth", "--spr": "spr",
-              "--high": "high", "--format": "format"}
+              "--high": "high", "--format": "format",
+              "--session": "session", "--last-sessions": "last_sessions",
+              "--street-pot": "street_pot",
+              "--fish-left-seats": "fish_left_seats",
+              "--fish-right-seats": "fish_right_seats"}
     TAB_OF = {"--stats": "stats", "--results": "results", "--hands": "hands",
               "--range": "range", "--chart": "chart", "--sessions": "sessions",
               "--actions": "actions", "--overfolds": "overfolds",
               "--graph": "graph"}
 
-    def apply_argv(self, argv):
+    def view_argv(self):
+        """
+        Everything on the screen as one command line, for a saved view.
+
+        The situation, then the tab and how it is drawn, then the players
+        last. Last because `players.parse_cohort` reads the first `--site`
+        it meets as the cohort's, and a cohort with no site of its own
+        would otherwise take the site the filter was on; `open_view` reads
+        the players from the `--cohort` on and the rest from before it.
+        """
+        view = self.nb.tab(self.nb.select(), "text")
+        argv = self.argv(cohort=False)
+        flag = {t: f for f, t in self.TAB_OF.items()}.get(view)
+        if flag:
+            argv.append(flag)
+        if view in ("report", "results", "actions", "overfolds") and (
+                self.by.get() or view == "report"):
+            argv += ["--by", self.by.get() or "position"]
+        if view == "chart":
+            if self.chart_stat():
+                argv += ["--show", self.chart_stat()]
+            if self.alternative.get():
+                argv += ["--alternative", self.alternative.get()]
+        if view == "stats" and self.picked:
+            argv += ["--range-of", self.picked]
+            if TOOK.get(self.took.get()):
+                argv += ["--alternative", TOOK[self.took.get()]]
+        return argv + self._cohort_argv()
+
+    def open_view(self, name):
+        """A saved view, onto the window: everything it had, and nothing else."""
+        argv = query.view_argv(name)
+        cut = argv.index("--cohort") if "--cohort" in argv else len(argv)
+        spec, rest = players.parse_cohort(argv[cut:])
+        # The split box keeps its choice across an assistant's handoff,
+        # which names no split; a view that had none means none.
+        self.by.set("")
+        self.apply_argv(argv[:cut] + rest, cohort_spec=spec)
+
+    def save_view(self):
+        name = simpledialog.askstring(
+            "Save this view", "A name for everything on the screen -- who, "
+                              "the filter, the tab and its choices:",
+            parent=self.master)
+        if not name or not name.strip():
+            return
+        if name.strip() in query.saved_views() and not messagebox.askyesno(
+                "Replace it?", f"There is already a view called {name!r}. "
+                               f"Replace it with this one?", parent=self.master):
+            return
+        try:
+            query.save_view(name, self.view_argv())
+        except (ValueError, SystemExit) as error:
+            messagebox.showerror("Not saved", str(error), parent=self.master)
+
+    def forget_view(self, name):
+        if messagebox.askyesno("Forget it?", f"Forget the view {name!r}? "
+                               "This cannot be undone.", parent=self.master):
+            query.forget_view(name)
+
+    def _fill_views(self, menu):
+        """The Views menu, read from the file each time it is opened."""
+        menu.delete(0, "end")
+        menu.add_command(label="Save this view…", command=self.save_view)
+        menu.add_command(label="Detach this tab into a window",
+                         command=self.detach)
+        menu.add_command(label="Export the hands it selects…",
+                         command=self.export_hands)
+        known = query.saved_views()
+        if known:
+            menu.add_separator()
+        for name in known:
+            menu.add_command(label=name,
+                             command=lambda n=name: self.open_view(n))
+        if known:
+            menu.add_separator()
+            forget = tk.Menu(menu, tearoff=0, background=PANEL, foreground=INK,
+                             activebackground=ACCENT, activeforeground=BG)
+            for name in known:
+                forget.add_command(label=name,
+                                   command=lambda n=name: self.forget_view(n))
+            menu.add_cascade(label="Forget", menu=forget)
+        for name, why in query.UNREADABLE_VIEWS:
+            menu.add_command(label=f"{name} (broken: {why[:60]})",
+                             state="disabled")
+
+    def apply_argv(self, argv, cohort_spec=None):
         """
         A command line, into the window's own boxes -- the inverse of `argv`.
 
@@ -1095,8 +1605,11 @@ class App(ImportMixin, ttk.Frame):
         bar shows what was kept.
         """
         self.clear_filters()
+        if cohort_spec is not None:
+            self.cohort_spec = cohort_spec
+            self.cohort_btn.configure(text="Players: active")
         tab, argv = "stats", list(argv)
-        shown, alternative = None, ""
+        shown, alternative, range_of = None, "", None
         self.alternative.set("")
         self.of.set("the range itself")
         i = 0
@@ -1138,6 +1651,9 @@ class App(ImportMixin, ttk.Frame):
             elif a == "--alternative" and i + 1 < len(argv):
                 alternative = argv[i + 1]
                 i += 2
+            elif a == "--range-of" and i + 1 < len(argv):
+                range_of = argv[i + 1]
+                i += 2
             elif a in query.OPTIONS and i + 1 < len(argv):
                 i += 2
             else:
@@ -1147,6 +1663,14 @@ class App(ImportMixin, ttk.Frame):
                 self.of.set(BY_KEY[shown].label)
             if alternative in query.CHART_ALTERNATIVES:
                 self.alternative.set(alternative)
+        if tab == "stats":
+            self.picked = None
+            self.took.set(next(iter(TOOK)))
+        if tab == "stats" and range_of in BY_KEY:
+            self.picked = range_of
+            self.took.set(next((w for w, alt in TOOK.items()
+                                if alt == (alternative or None)),
+                               next(iter(TOOK))))
         for name, frame in self.tabs.items():
             if name == tab:
                 self.nb.select(frame)
@@ -1170,12 +1694,22 @@ class App(ImportMixin, ttk.Frame):
             self.of.pack_forget()
             self.alternative_label.pack_forget()
             self.alternative.pack_forget()
+        if view == "hands":
+            self.hand_sort_label.pack(side="left", padx=(0, 6))
+            self.hand_sort.pack(side="left")
+        else:
+            self.hand_sort_label.pack_forget()
+            self.hand_sort.pack_forget()
         if view == "stats":
             self.expression_label.pack(side="left", padx=(0, 6))
             self.expression.pack(side="left")
+            self.took_label.pack(side="left", padx=(14, 6))
+            self.took.pack(side="left")
+            self.no_reg_fish.pack(side="left", padx=(14, 0))
         else:
-            self.expression_label.pack_forget()
-            self.expression.pack_forget()
+            for w in (self.expression_label, self.expression, self.took_label,
+                      self.took, self.no_reg_fish):
+                w.pack_forget()
         try:
             argv = self.argv()
             cohort_spec, query_argv = players.parse_cohort(argv)
@@ -1201,17 +1735,28 @@ class App(ImportMixin, ttk.Frame):
             self.clear_btn.pack_forget()
         self.pending += 1
         token = self.pending
-        stat = self.expression.get() if view == "stats" else self.chart_stat()
+        # `stat` is what the view is OF, which for the hands tab is the
+        # order -- it chooses which hands are shown, so it is part of the
+        # answer and of the key it is cached under.
+        stat = (self.expression.get() if view == "stats" else
+                self.hand_sort.get() if view == "hands" else self.chart_stat())
         alternative = (self.alternative.get() or None) if view == "chart" else None
         key = (view, where, self.by.get(), stat, alternative, repr(cohort_spec))
+        self.last = (where, label, parts, cohort_spec, query_argv)
         if key in self.cache:
             self.status.configure(text="")
             self._render(self.cache[key])
+            if view == "stats":
+                self.show_stat_range()
             return
         self.status.configure(text="working…")
+        # The clicked stat's range rides on the table's own request rather
+        # than following it as a second one, because the worker runs only
+        # the newest request and would drop the table to answer the chart.
+        pick = self._range_request(where, cohort_spec) if view == "stats" else None
         self.requests.put((token, key, view, where, label, parts,
                            self.by.get(), cohort_spec, stat, alternative,
-                           query_argv))
+                           query_argv, pick))
 
     def _worker(self):
         """The one thread every query runs on; see `_work`."""
@@ -1235,10 +1780,76 @@ class App(ImportMixin, ttk.Frame):
             if token != self.pending:
                 continue
             out = self._work(token, *args)
+            if out is not None and out.get("range_key"):
+                self.cache[out["range_key"]] = {"view": "statrange",
+                                                "range": out["range"]}
             if out is not None and not out.get("error"):
                 self.cache[key] = out
                 if len(self.cache) > 64:
                     self.cache.pop(next(iter(self.cache)))
+
+    def _range_request(self, where, cohort_spec):
+        """(cache key, stat, alternative) for the clicked stat, or None."""
+        if not self.picked:
+            return None
+        took = TOOK.get(self.took.get())
+        return (("statrange", where, self.picked, took, repr(cohort_spec)),
+                self.picked, took)
+
+    def _note_on_stat(self, _event=None):
+        import notes
+        from tkinter import simpledialog
+        shown = getattr(self, "shown_stats", None)
+        chosen = self.tree["stats"].selection()
+        if not shown or "who" not in shown or not chosen \
+                or not chosen[0].startswith("stat:"):
+            return
+        key = chosen[0][len("stat:"):]
+        site, player = shown["who"]
+        text = simpledialog.askstring(
+            "note on a stat", f"{player} on {site}, {key} (empty removes):",
+            initialvalue=shown["said"].get(key, ""), parent=self)
+        if text is None:
+            return
+        notes.stat_note(self.con, site, player, key, text)
+        shown["said"] = notes.stat_notes_of(self.con, site, player)
+        tv = self.tree["stats"]
+        tv.delete(*tv.get_children())
+        self._render_stats(tv, shown)
+
+    def _picked_stat(self, _event=None):
+        chosen = self.tree["stats"].selection()
+        if not chosen or not chosen[0].startswith("stat:"):
+            return
+        key = chosen[0][len("stat:"):]
+        if key != self.picked:
+            self.picked = key
+            self.show_stat_range()
+
+    def show_stat_range(self):
+        """
+        The clicked stat's range, from the cache or from the worker.
+
+        Asked separately from the table only when the table is already
+        drawn -- a click on one of its rows, or the box beside it -- so
+        there is nothing in the queue for this request to displace.
+        """
+        if not getattr(self, "last", None):
+            return
+        where, label, parts, cohort_spec, query_argv = self.last
+        pick = self._range_request(where, cohort_spec)
+        if pick is None:
+            self.stat_chart = None
+            self._draw_chart(self.stat_note, self.stat_canvas)
+            return
+        if pick[0] in self.cache:
+            self._render(self.cache[pick[0]])
+            return
+        self.pending += 1
+        self.status.configure(text="working…")
+        self.requests.put((self.pending, pick[0], "statrange", where, label,
+                           parts, "", cohort_spec, None, None, query_argv,
+                           pick))
 
     def chart_stat(self):
         """Which stat the chart is of, or None for the range itself."""
@@ -1249,7 +1860,7 @@ class App(ImportMixin, ttk.Frame):
         return None
 
     def _work(self, token, view, where, label, parts, dim, cohort_spec,
-              stat=None, alternative=None, filter_argv=()):
+              stat=None, alternative=None, filter_argv=(), pick=None):
         """
         Every query runs here, never on the interface thread.
 
@@ -1278,11 +1889,23 @@ class App(ImportMixin, ttk.Frame):
                 pool_where, pool_params = query.pool_beside(con, list(filter_argv))
                 out["n"], out["rows"] = query.stats_of(con, where, pool_where,
                                                        pool_params)
+                # The same one player's notes on their stats, beside the
+                # rows they are about -- only where a name is a person.
+                one = query.one_player(con, list(filter_argv))
+                if one and one[0] in sites.named():
+                    import notes
+                    out["who"] = one
+                    out["said"] = notes.stat_notes_of(con, *one)
                 if stat in stats.EXPR_BY_KEY:
                     expression = stats.EXPR_BY_KEY[stat]
                     value, n = stats.evaluate(con, expression, where)
                     out["expression"] = (expression.label, value, n)
                     out["formula"] = expression.formula
+                if pick:
+                    out["range"] = self._stat_range(con, where, pick)
+                    out["range_key"] = pick[0]
+            elif view == "statrange":
+                out["range"] = self._stat_range(con, where, pick)
             elif view == "range":
                 out.update(query.range_of(con, where))
             elif view == "sessions":
@@ -1332,10 +1955,14 @@ class App(ImportMixin, ttk.Frame):
                 pairs = query.matching_seats(con, where)
                 out["totals"] = query.results_of(con, pairs) if pairs else None
             elif view == "hands":
+                out["rows"] = query.hands_of(con, where, limit=500,
+                                             sort=stat or "date")
+            elif view == "square":
                 out["rows"] = query.hands_of(con, where, limit=500)
+                out["label"], out["argv"] = label, list(filter_argv)
             elif view == "graph":
                 out["series"] = self._series(con, where)
-            if not self._any(out):
+            if view != "statrange" and not self._any(out):
                 out["why"] = query.why_empty(con, parts)
         except ValueError as e:
             out = {"view": view, "error": str(e)}
@@ -1351,6 +1978,15 @@ class App(ImportMixin, ttk.Frame):
             con.close()
         self.results.put((token, out))
         return out
+
+    @staticmethod
+    def _stat_range(con, where, pick):
+        """The chart for the stats tab's side, or the sentence instead of it."""
+        _key, stat, took = pick
+        try:
+            return query.stat_range_of(con, where, stat, took)
+        except ValueError as e:
+            return {"error": str(e)}
 
     @staticmethod
     def _any(out):
@@ -1397,17 +2033,42 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        # What each tab last drew, and under what, for Detach: a pane is a
+        # copy of an answer already on the screen, so it costs no query and
+        # cannot come out different from the tab it was taken from.
+        if view not in ("statrange", "square") and getattr(self, "last", None):
+            self.shown_out[view] = (out, self.last, self.chart_stat(),
+                                    self.by.get())
+        # A cached table carries the range of whatever was clicked when it
+        # was computed; `show_stat_range` draws the current one after it.
+        current = self._range_request(self.last[0], self.last[3]) \
+            if getattr(self, "last", None) else None
+        if "range" in out and (view == "statrange" or (
+                current and out.get("range_key") == current[0])):
+            g = out["range"]
+            self.stat_chart = g if g.get("cells") else None
+            self._draw_chart(g.get("error") or (
+                None if g.get("total") else "nobody took it under this filter"),
+                self.stat_canvas)
+        if view == "statrange":
+            return
         if view == "graph":
             self.series = out.get("series")
             self.graph_ran = True
             self._draw_graph(out.get("why") or out.get("error"))
+            return
+        if view == "square":
+            SquareHands(self, out)
             return
         if view == "chart":
             self.chart = out if (out.get("cells") or
                                  (out.get("mode") == "comparison" and out.get("total"))) else None
             self._draw_chart(out.get("why") or out.get("error"))
             return
-        tv = self.tree[view]
+        self._render_into(self.tree[view], view, out)
+
+    def _render_into(self, tv, view, out):
+        """One table view's answer into a Treeview, the tab's or a pane's."""
         tv.delete(*tv.get_children())
         if out.get("error") or (out.get("why") and view != "report"):
             tv.configure(columns=("msg",))
@@ -1438,22 +2099,53 @@ class App(ImportMixin, ttk.Frame):
             side = anchors.get(c, "e")
             tv.heading(c, text=c, anchor=side,
                        command=lambda tv=tv, c=c: self._sort_by(tv, c))
-            tv.column(c, width=widths[i], minwidth=widths[i],
+            tv.column(c, width=px(widths[i]), minwidth=px(widths[i]),
                       anchor=side, stretch=False)
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
+    def _fit_stats_split(self, need):
+        """
+        Widen the stats table to its columns, never past 70% of the tab.
+
+        The pane beside it is empty until a stat is clicked, and the paned
+        window split the space by what each side asked for when it was
+        built -- before the table had any columns -- so the numbers were
+        cut off beside a wide, blank chart. Only ever widens: a sash the
+        user has dragged further right is theirs.
+        """
+        split = self.stats_split
+        width = split.winfo_width()
+        if width < 100:
+            return
+        target = min(need, int(width * 0.7))
+        try:
+            if split.sashpos(0) < target:
+                split.sashpos(0, target)
+        except tk.TclError:
+            pass
+
     def _render_stats(self, tv, out):
+        self.shown_stats = out
         # The last two columns exist only when one player is named, because
         # only then is there a pool that is the same spot with other people
         # in it. Added rather than substituted: the interval belongs to the
         # raw rate, and a reader who wants to know what was actually seen
         # should not have to work it back out of a shrunk figure.
         pooled = bool(out["rows"]) and "pool" in out["rows"][0]
-        names = ("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
-        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ()),
-                   {"stat": "w"})
-        blank = ("", "") if pooled else ()
+        said = out.get("said") if "who" in out else None
+        names = (("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
+                 + (("note",) if said is not None else ()))
+        widths = ((230, 90, 70, 100) + ((90, 90) if pooled else ())
+                  + ((320,) if said is not None else ()))
+        self._cols(tv, names, widths, {"stat": "w", "note": "w"})
+        if tv is getattr(self, "tree", {}).get("stats"):
+            # In screen pixels, as `_cols` lays the columns out: the sash
+            # is measured in those, and at 150% an unscaled total left the
+            # last column cut off again.
+            self._stats_need = px(sum(widths) + 24)
+            self.after_idle(lambda: self._fit_stats_split(self._stats_need))
+        blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
         for r in out["rows"]:
             if r["group"] != group:
@@ -1465,7 +2157,10 @@ class App(ImportMixin, ttk.Frame):
                 # A stat the pool never had the chance to take gets no
                 # comparison. "0.0%" there would invent a population.
                 extra = (_pct(r.get("pool")), _pct(r.get("shrunk")))
-            tv.insert("", "end", tags=("thin",) if r["n"] < 30 else (),
+            if said is not None:
+                extra += (said.get(r["key"], ""),)
+            tv.insert("", "end", iid="stat:" + r["key"],
+                      tags=("thin",) if r["n"] < 30 else (),
                       values=(r["label"], f"{r['pct']:.1f}%",
                               # A band under a point still has a size, and
                               # "±0" reads as a number that failed to print.
@@ -1572,7 +2267,8 @@ class App(ImportMixin, ttk.Frame):
         for r in rows:
             tag = ("pos",) if r["net_bb"] > 0 else ("neg",) if r["net_bb"] < 0 else ()
             hr = 60.0 * r["hands"] / r["minutes"] if r["minutes"] else 0.0
-            tv.insert("", "end", tags=tag, values=(
+            tv.insert("", "end", iid=f"session:{r['session_id']}", tags=tag,
+                      values=(
                 r["started"][:16], r["site"], f"{r['minutes']:.0f}",
                 f"{r['hands']:,}", f"{hr:.0f}", f"{r['matched']:,}", r["tables"],
                 f"{r['net_bb']:+.1f}", f"{r['ev_bb']:+.1f}",
@@ -1584,7 +2280,8 @@ class App(ImportMixin, ttk.Frame):
             f"{len(rows)} SESSIONS", "", "", f"{n:,}", "", "", "",
             f"{net:+.1f}", "", ""))
         tv.insert("", "end", tags=("note",), values=(
-            "the clock is the site's, not yours",) + ("",) * 9)
+            "the clock is the site's, not yours -- double-click a sitting "
+            "for its hands",) + ("",) * 9)
 
     def _render_range(self, tv, out):
         """
@@ -1697,14 +2394,15 @@ class App(ImportMixin, ttk.Frame):
             "one hand's result has a standard deviation near 11.7bb, so the "
             "error on a win rate is about 1170/√n", ""))
 
-    def _render_hands(self, tv, out):
+    def _fill_hands(self, tv, rows):
+        """`hands_of`'s rows into a table; returns each row's (hand, seat)."""
         self._cols(tv, ("when", "site", "bb", "pos", "hand", "my line",
                         "net bb", "board", "tags"),
                    (140, 90, 60, 60, 70, 150, 90, 170, 160),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
                     "my line": "w", "board": "w", "tags": "w"})
-        self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in out["rows"]:
+        ids = {}
+        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in rows:
             iid = tv.insert("", "end", values=(
                 (when or "")[:16], site, f"{bb:g}" if bb else "",
                 pos or "", combo or "–", own or "",
@@ -1712,13 +2410,93 @@ class App(ImportMixin, ttk.Frame):
                 board or "", ", ".join(marks)),
                 tags=("pos",) if (net or 0) > 0 else
                      ("neg",) if (net or 0) < 0 else ())
-            self._hand_ids[iid] = (hid, seat)
+            ids[iid] = (hid, seat)
+        return ids
+
+    def _render_hands(self, tv, out):
+        self._hand_ids = self._fill_hands(tv, out["rows"])
         if out["rows"]:
             tv.insert("", "end", values=("",) * 9)
             tv.insert("", "end", tags=("note",),
                       values=("double-click a hand to replay it, and tag it "
                               "there; click a heading to sort, net bb for "
                               "the biggest wins and losses",) + ("",) * 8)
+
+    def _open_session(self, _event=None):
+        """
+        A sitting's hands, from its row: the filter becomes that sitting.
+
+        Everything else in the filter is dropped, because the row was found
+        under it and is about to be read as the whole night -- a sitting
+        opened under "river, facing a bet" would show four hands of it and
+        call that Tuesday.
+        """
+        chosen = self.tree["sessions"].selection()
+        if not chosen or not chosen[0].startswith("session:"):
+            return
+        sid = chosen[0][len("session:"):]
+        self.apply_argv(["--hero", "--session", sid, "--hands"])
+
+    def detach(self):
+        """
+        The tab on screen, copied into a window of its own.
+
+        Hand2Note's panes come off the main window so that two answers can
+        be read side by side -- the button's range beside the cutoff's, last
+        month's graph beside this month's. The copy keeps the filter it was
+        made under, and the main window goes on to the next question: a
+        pane that followed the filter would show the same thing as the tab
+        and compare nothing.
+        """
+        view = self.nb.tab(self.nb.select(), "text")
+        shown = self.shown_out.get(view)
+        if not shown:
+            messagebox.showinfo("Nothing to detach",
+                                f"The {view} tab has not drawn anything yet.",
+                                parent=self.master)
+            return
+        Pane(self, view, *shown)
+
+    def export_hands(self):
+        """
+        The hands the filter selects, as the sites wrote them, to a file.
+
+        The same hands `query.py --export` writes under the same filter,
+        cohort included: `hands_of` over the same WHERE, so the window and
+        the command line cannot come to disagree about which hands those are.
+        """
+        try:
+            cohort_spec, rest = players.parse_cohort(self.argv())
+            where, label, _parts = query.build(rest)
+        except SystemExit as e:
+            messagebox.showerror("Not exported", str(e), parent=self.master)
+            return
+        out = filedialog.asksaveasfilename(
+            parent=self.master, defaultextension=".txt",
+            initialfile="traceev-hands.txt", title="Export these hands",
+            filetypes=[("hand histories", "*.txt")])
+        if not out:
+            return
+
+        def work(say):
+            con = query.connect(DB)
+            try:
+                chosen = where
+                if cohort_spec is not None:
+                    query.select_cohort(con, cohort_spec)
+                    chosen = (f"({where}) AND EXISTS (SELECT 1 FROM _cohort c "
+                              "WHERE c.site = decisions.site AND "
+                              "c.player = decisions.player)")
+                ids = sorted({r[0] for r in query.hands_of(con, chosen)})
+                say(f"{len(ids):,} hands under: {label}")
+                if not ids:
+                    return "nothing to export -- the filter selects no hands"
+                written, missing = importer.export(con, ids, out, log=say)
+                return (f"done: {written:,} written"
+                        + (f", {len(missing):,} not found" if missing else ""))
+            finally:
+                con.close()
+        self._run_import("Export these hands", work)
 
     def _open_hand(self, _event):
         tv = self.tree["hands"]
@@ -1728,7 +2506,7 @@ class App(ImportMixin, ttk.Frame):
         hid, seat = self._hand_ids[sel[0]]
         HandWindow(self, self.con, hid, seat)
 
-    def _draw_chart(self, message=None):
+    def _draw_chart(self, message=None, canvas=None):
         """
         The 13x13 chart, in the shape every range chart is drawn in.
 
@@ -1740,25 +2518,47 @@ class App(ImportMixin, ttk.Frame):
 
         A rate is shaded absolutely, because there 100% means something.
         """
-        c = self.chart_canvas
+        c = canvas or self.chart_canvas
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 80 or h < 80:
             return
-        g = self.chart
+        g, side, pane = self._chart_on(c)
+        if side and g and g.get("strength") and self.stat_view == "strength":
+            self._draw_strength(c, g)
+            return
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
                           text=message or "no hand in this filter showed its "
                                           "cards, so there is no range to draw")
             return
+        # A stat's own range says first what it is a range OF: the share of
+        # the chances it was taken on, every hand counted, so "3bet 9%" and
+        # the nine percent drawn below it are read together.
+        if "took" in g:
+            k, n = g["took"]
+            c.create_text(14, 4, anchor="nw", fill=INK, font=(UI, 9),
+                          text=f"{g['stat']}: {k:,} of {n:,} chances"
+                               + (f" ({100.0 * k / n:.1f}%)" if n else "")
+                               + " -- these are those hands"
+                               + ("" if "held" not in g else
+                                  "\n" + query.held_line(g["held"])))
 
+        if side and g.get("strength"):
+            self._view_link(c, "hand strength ▸")
         comparison = g["mode"] == "comparison"
         rate = g["mode"] in ("rate", "comparison")
-        top, foot = 16, 112 if comparison else 52
+        top = 16 + (18 if "took" in g else 0) + (16 if "held" in g else 0)
+        foot = 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
-        self._chart_geometry = (left, top, size)
+        if pane:
+            pane["geometry"] = (left, top, size)
+        elif side:
+            self._stat_geometry = (left, top, size)
+        else:
+            self._chart_geometry = (left, top, size)
         peak = max(1e-9, g["peak"] / max(1, g["seen"]))
         # Below this the two lines of text collide, so the value is
         # dropped and the label kept. It was set by measuring the window:
@@ -1844,11 +2644,15 @@ class App(ImportMixin, ttk.Frame):
 
     def _chart_hover(self, event):
         """A colour's sample is one pointer move away, without another query."""
-        c, g = self.chart_canvas, self.chart
+        c = getattr(event, "widget", self.chart_canvas)
+        g, side, pane = self._chart_on(c)
+        geometry = self._geometry_of(c)
         c.delete("hint")
-        if not g or not hasattr(self, "_chart_geometry"):
+        if side and g and g.get("strength") and self.stat_view == "strength":
             return
-        left, top, size = self._chart_geometry
+        if not g or not geometry:
+            return
+        left, top, size = geometry
         if size <= 0:
             return
         i, j = int((event.y - top) // size), int((event.x - left) // size)
@@ -1868,6 +2672,8 @@ class App(ImportMixin, ttk.Frame):
                 text += "\nThin sample; colours hidden."
         else:
             text += " matching opportunities"
+        if n:
+            text += "\nclick for these hands"
         x = max(4, min(event.x + 14, c.winfo_width() - 300))
         y = max(4, min(event.y + 14, c.winfo_height() - 100))
         item = c.create_text(x + 6, y + 6, anchor="nw", text=text, fill=INK,
@@ -1878,20 +2684,200 @@ class App(ImportMixin, ttk.Frame):
                                         fill=BG, outline=EDGE, tags=("hint",))
         c.tag_lower(background, item)
 
+    def _view_link(self, c, text):
+        """The switch between a postflop range's two pictures, top right."""
+        w = c.winfo_width()
+        item = c.create_text(w - 12, 6, anchor="ne", text=text, fill=ACCENT,
+                             font=(UI, 9, "underline"))
+        self._view_link_box = c.bbox(item)
+
+    def _draw_strength(self, c, g):
+        """
+        What the hands behind a postflop stat had made, as bars.
+
+        Hand2Note's popup for a c-bet answers "with what" before it answers
+        "which starting hands", and so does this: the made-hand ladder in
+        `strength.ORDER`, each row the share of the SEEN hands that took the
+        stat, coloured by the tier `strength.STRONG` and `strength.WEAK`
+        put it in -- one line drawn in one place, as everywhere else. A
+        click on a row lists those hands; the starting hands are one click
+        away at the top right.
+        """
+        s = g["strength"]
+        w, h = c.winfo_width(), c.winfo_height()
+        k, n = g.get("took", (0, 0))
+        c.create_text(14, 6, anchor="nw", fill=INK, font=(UI, 9),
+                      width=w - 160,
+                      text=f"{g['stat']}: {k:,} of {n:,} chances"
+                           + (f" ({100.0 * k / n:.1f}%)" if n else "")
+                           + " -- what those hands had made")
+        self._view_link(c, "starting hands ▸")
+        rows = [r for r in s["rows"]]
+        lines = len(rows) + 6 + (len(s["draws"]) + 1 if s["draws"] else 0)
+        top = 34
+        step = max(14, min(22, (h - top - 40) / max(1, lines)))
+        small = step < 18
+        font = (UI, 8 if small else 9)
+        label_w, num_w = 150, 110
+        bar_x = 14 + label_w
+        bar_w = max(40, w - bar_x - num_w - 14)
+        peak = max([r["pct"] for r in rows] + [1.0])
+        self._strength_rows = []
+        y = top
+        for r in rows:
+            sub = r.get("sub")
+            colour = (BAD if r["weak"] else GOOD if r["tier"] == "strong"
+                      else WARN)
+            c.create_text(14 + (12 if sub else 0), y + step / 2, anchor="w",
+                          text=r["made"].strip(), fill=DIM if sub else INK,
+                          font=font)
+            length = bar_w * r["pct"] / peak
+            c.create_rectangle(bar_x, y + 3, bar_x + max(1, length),
+                               y + step - 3, width=0,
+                               fill=blend(PANEL, colour, 0.45 if sub else 0.9))
+            c.create_text(w - 14, y + step / 2, anchor="e", fill=INK,
+                          font=font, text=f"{r['pct']:.1f}%  {r['n']:,}")
+            if not sub:
+                self._strength_rows.append((y, y + step, r["made"]))
+            y += step
+        y += step / 2
+        for name, pct, colour, said in (
+                ("STRONG", s["strong"], GOOD, "top pair or better"),
+                ("MEDIUM", s["medium"], WARN, "middle pair"),
+                ("WEAK", s["weak"], BAD, "cannot call")):
+            c.create_text(14, y + step / 2, anchor="w", fill=colour,
+                          font=(UI, 9, "bold"), text=f"{name}  {pct:.0f}%")
+            c.create_text(bar_x, y + step / 2, anchor="w", fill=DIM, font=font,
+                          text=said)
+            y += step
+        if s["draws"]:
+            y += step / 2
+            c.create_text(14, y + step / 2, anchor="w", fill=DIM, font=font,
+                          text="and, overlapping the above:")
+            y += step
+            for d in s["draws"]:
+                c.create_text(26, y + step / 2, anchor="w", fill=DIM, font=font,
+                              text=d["label"])
+                c.create_text(w - 14, y + step / 2, anchor="e", fill=DIM,
+                              font=font, text=f"{d['pct']:.1f}%  {d['n']:,}")
+                y += step
+        share = 100.0 * s["n"] / s["total"] if s["total"] else 0.0
+        c.create_text(14, h - 8, anchor="sw", fill=DIM, font=(UI, 8),
+                      width=w - 28,
+                      text=f"{s['n']:,} of {s['total']:,} decisions had cards "
+                           f"to read ({share:.0f}%) -- this is what was SEEN"
+                           + ("" if share > 90 else
+                              ", and on ACR that is the showdown half")
+                           + ".  Click a row for its hands.")
+
+    def _chart_on(self, c):
+        """(chart, is the stats tab's, detached pane or None) for a canvas."""
+        pane = getattr(self, "panes", {}).get(c)
+        if pane:
+            return pane["g"], False, pane
+        side = c is getattr(self, "stat_canvas", None)
+        return (self.stat_chart if side else self.chart), side, None
+
+    def _geometry_of(self, c):
+        _g, side, pane = self._chart_on(c)
+        if pane:
+            return pane.get("geometry")
+        return getattr(self, "_stat_geometry" if side else "_chart_geometry",
+                       None)
+
+    def _square_hands(self, event):
+        """
+        A square of a chart, clicked: the hands it was drawn from.
+
+        Hand2Note's range opens onto its hands, and a square is the question
+        a reader actually has -- "which ace-king was it" -- once the shape
+        has answered the first one. The hands are the filter's, cut to that
+        combo, and on a stat's range cut again to the decisions that took
+        the stat (or the action taken instead), so the list is exactly the
+        count printed on the square; `query.py --check` holds the two to
+        that. Opened in a window of its own rather than written into the
+        filter, because the chart is still being read and a click should
+        not change what it is a chart of.
+        """
+        c = event.widget
+        g, side, pane = self._chart_on(c)
+        geometry = self._geometry_of(c)
+        last = pane["last"] if pane else getattr(self, "last", None)
+        if side and g and g.get("strength"):
+            box = getattr(self, "_view_link_box", None)
+            if box and box[0] - 4 <= event.x <= box[2] + 4 \
+                    and box[1] - 4 <= event.y <= box[3] + 4:
+                self.stat_view = ("grid" if self.stat_view == "strength"
+                                  else "strength")
+                self._draw_chart(self.stat_note, c)
+                return
+            if self.stat_view == "strength":
+                made = next((m for y0, y1, m in getattr(self, "_strength_rows", ())
+                             if y0 <= event.y < y1), None)
+                if made and last and self.picked:
+                    alternative = TOOK.get(self.took.get())
+                    self._open_hands(last, ["--made", made, "--took", self.picked
+                                            + (":" + alternative if alternative
+                                               else "")])
+                return
+        if not g or not geometry or not last:
+            return
+        left, top, size = geometry
+        if size <= 0:
+            return
+        i, j = int((event.y - top) // size), int((event.x - left) // size)
+        if not (0 <= i < 13 and 0 <= j < 13):
+            return
+        combo = query.combo_at(i, j)
+        if not g["cells"].get(combo, (0, None))[0]:
+            return
+        extra = ["--combo", combo]
+        if side and self.picked:
+            alternative = TOOK.get(self.took.get())
+            extra += ["--took", self.picked
+                      + (":" + alternative if alternative else "")]
+        elif not side and g["mode"] != "composition":
+            # A rate's square is coloured by the share that took it, and
+            # the ones that did are the hands worth opening.
+            stat = pane["stat"] if pane else self.chart_stat()
+            if stat:
+                extra += ["--took", stat]
+        self._open_hands(last, extra)
+
+    def _open_hands(self, last, extra):
+        """The hands under `last`'s filter and `extra`, in a window of their own."""
+        _where, _label, _parts, cohort_spec, query_argv = last
+        argv = list(query_argv) + extra
+        try:
+            where, label, parts = query.build(argv)
+        except SystemExit as e:
+            messagebox.showerror("No hands", str(e), parent=self)
+            return
+        key = ("square", where, repr(cohort_spec))
+        if key in self.cache:
+            self._render(self.cache[key])
+            return
+        self.pending += 1
+        self.status.configure(text="working…")
+        self.requests.put((self.pending, key, "square", where, label, parts,
+                           "", cohort_spec, None, None, argv, None))
+
     # ---- the graph, drawn rather than served ---------------------------
-    def _draw_graph(self, message=None):
-        c = self.canvas
+    def _draw_graph(self, message=None, canvas=None, series=None):
+        """The main graph, or with `canvas` and `series` a detached one."""
+        c = canvas or self.canvas
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50:
             return
-        s = self.series
+        s = series if canvas is not None else self.series
+        ran = canvas is not None or self.graph_ran
         if not s:
             idle = "the graph is drawn once the filter has run"
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10),
                           text=message or (
                               "fewer than two of your hands match -- a line "
-                              "needs two points" if self.graph_ran else idle))
+                              "needs two points" if ran else idle))
             return
         L, R, T, B = 70, 210, 30, 40
         n = len(s["total"])
@@ -2636,6 +3622,21 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "what kind of player")
         self._grid(page, [(lambda parent, f=f, t=t: self._pick(
             parent, t, *self._flag_item(f))) for f, t in WHO])
+        # Hand2Note's distance to fish and fish on the blinds. These are the
+        # table, not the pot: who was dealt in, wherever they are now.
+        self._heading(page, "where the fish sit  (seats round the table to "
+                            "the nearest one, 1 is next to me; ranges are a-b)")
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18)
+        for name, text in (("fish_left_seats", "on my left, e.g. 1-2"),
+                           ("fish_right_seats", "on my right")):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=6).pack(
+                side="left", padx=(6, 18))
+        self._heading(page, "a fish in the blinds  (not me)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v, *self._set_item("fish_blinds", v)))
+            for v in query.FISH_BLINDS])
         ttk.Label(page, style="Dim.TLabel", wraplength=980, justify="left",
                   text="A reg plays a third of hands or fewer and raises at "
                        "least one in ten. A fish is loose or passive: over a "
@@ -2667,6 +3668,12 @@ class FilterDialog(tk.Toplevel):
         self._heading(page, "facing  (what is in front of the player when they act)")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("facing", v))) for v in query.FACINGS])
+        # Hand2Note's preflop ladder: the facing above, with the limpers and
+        # the callers counted. Two chosen are either one, not both.
+        self._heading(page, "preflop, in more detail  (limpers and callers counted)")
+        self._grid(page, [(lambda parent, v=v: self._pick(
+            parent, v.replace("-", " "), *self._set_item("pf_facing", v)))
+            for v in query.PF_FACING])
         self._heading(page, "flop texture")
         self._grid(page, [(lambda parent, v=v: self._pick(
             parent, v, *self._set_item("board", v)))
@@ -2926,7 +3933,8 @@ class FilterDialog(tk.Toplevel):
         row.pack(fill="x", padx=18)
         for name, text in (("deep", "at least"), ("short", "less than"),
                            ("depth", "or a range, e.g. 20-50"),
-                           ("spr", "SPR range, e.g. 1-4")):
+                           ("spr", "SPR range, e.g. 1-4"),
+                           ("street_pot", "pot as the street began, bb, e.g. 5-7")):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=8).pack(
                 side="left", padx=(6, 18))
@@ -2952,6 +3960,8 @@ class FilterDialog(tk.Toplevel):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=10).pack(
                 side="left", padx=(6, 18))
+        self._grid(page, [(lambda parent, f=f, t=t: self._pick(
+            parent, t, *self._flag_item(f))) for f, t in POSTS])
 
         self._heading(page, "dates   (yyyy-mm-dd)")
         row = ttk.Frame(page)
@@ -2969,6 +3979,13 @@ class FilterDialog(tk.Toplevel):
                                   ("session_len", "session length, min", 9),
                                   ("session_min", "minutes into it", 9),
                                   ("tables", "tables open", 6)):
+            ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
+            ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
+                side="left", padx=(6, 16))
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=18, pady=(6, 0))
+        for name, text, width in (("last_sessions", "my last N sittings on each site", 5),
+                                  ("session", "sittings by number, e.g. 41,42", 12)):
             ttk.Label(row, text=text, style="Dim.TLabel").pack(side="left")
             ttk.Entry(row, textvariable=self.app.vals[name], width=width).pack(
                 side="left", padx=(6, 16))
@@ -3069,7 +4086,7 @@ class AskPanel(ttk.Frame):
 
         head = ttk.Frame(self)
         head.pack(fill="x", padx=10, pady=(10, 4))
-        ttk.Label(head, text="ask the database", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="Chat with AI", style="Title.TLabel").pack(side="left")
         ttk.Button(head, text="×", width=3, command=self.toggle).pack(side="right")
         ttk.Button(head, text="AI settings", command=self._toggle_settings
                    ).pack(side="right", padx=(0, 6))
@@ -3110,10 +4127,16 @@ class AskPanel(ttk.Frame):
         self.key_status.pack(fill="x", padx=10, pady=(0, 6))
         self._load_settings()
 
+        # The question box and its button are packed against the bottom
+        # before the log, and the log asks for one line and expands: a Text
+        # asks for 24 lines by default, which at 150% scaling is taller than
+        # a laptop's window, and the packer took the difference out of the
+        # question box -- the one part of the panel that has to be there.
+        row = ttk.Frame(self)
+        row.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
         self.log = tk.Text(self, background=PANEL, foreground=INK, borderwidth=0,
                            font=(UI, 10), wrap="word", padx=10, pady=8,
-                           insertbackground=INK, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=10)
+                           insertbackground=INK, state="disabled", height=1)
         for name, colour in (("you", ACCENT), ("dim", DIM), ("bad", BAD)):
             self.log.tag_configure(name, foreground=colour)
         self.log.tag_configure("mono", font=(MONO, 9))
@@ -3127,11 +4150,10 @@ class AskPanel(ttk.Frame):
         self.entry = tk.Text(self, height=3, background=BG, foreground=INK,
                              insertbackground=INK, font=(UI, 10), wrap="word",
                              borderwidth=1)
-        self.entry.pack(fill="x", padx=10, pady=(6, 4))
+        self.entry.pack(side="bottom", fill="x", padx=10, pady=(6, 4))
         self.entry.bind("<Return>", self._enter)
         self.entry.bind("<Shift-Return>", lambda e: None)
-        row = ttk.Frame(self)
-        row.pack(fill="x", padx=10, pady=(0, 10))
+        self.log.pack(fill="both", expand=True, padx=10)
         ttk.Button(row, text="ask", style="Accent.TButton",
                    command=self.send).pack(side="left")
         ttk.Checkbutton(row, text="drive the window", variable=self.drive
@@ -3225,11 +4247,25 @@ class AskPanel(ttk.Frame):
         threading.Thread(target=work, daemon=True).start()
 
     def toggle(self):
+        body = self.master
         if self.shown:
-            self.pack_forget()
+            body.forget(self)
         else:
-            self.pack(side="right", fill="y")
+            # Wide enough for the settings rows at whatever scaling the
+            # screen uses: measured in the panel's own font, not pixels.
+            want = max(380, tkfont.nametofont("TkDefaultFont").measure("0") * 52)
+            whole = body.winfo_width()
+            if whole > 200:
+                want = min(want, int(whole * 0.4))
+            self.configure(width=want)
             self.pack_propagate(False)
+            body.add(self, weight=0)
+            body.update_idletasks()
+            if body.winfo_width() > want:
+                try:
+                    body.sashpos(0, body.winfo_width() - want)
+                except tk.TclError:
+                    pass
             self.entry.focus_set()
         self.shown = not self.shown
 
@@ -3274,7 +4310,8 @@ class AskPanel(ttk.Frame):
             self._say("\n".join("ran: python query.py " + " ".join(a) for a in ran),
                       "mono")
             self.last_ran = ran[-1]
-            self.run_btn.pack(fill="x", padx=10, pady=(0, 4))
+            self.run_btn.pack(side="bottom", fill="x", padx=10, pady=(0, 4),
+                              before=self.log)
             if self.drive.get():
                 self.app.apply_argv(self.last_ran)
         self.history = transcript
@@ -3288,6 +4325,211 @@ class AskPanel(ttk.Frame):
         if not self.last_ran:
             return
         self.app.apply_argv(self.last_ran)
+
+
+def feedback_mail(kind):
+    """
+    A mailto: link to FEEDBACK_TO for a problem or a feature request.
+
+    The subject says which, and the body carries what a reply would
+    otherwise have to ask for first: which build, on what computer. The
+    commit is unknown in a packaged build, which has no git beside it, so
+    it says it is one instead.
+    """
+    build = update.head() or ("a packaged build" if getattr(sys, "frozen", False)
+                              else "unknown")
+    subject = f"TraceEV {kind}"
+    body = ("\n\n\n-- \n"
+            f"TraceEV build: {build}\n"
+            f"Computer: {platform.system()} {platform.release()}, "
+            f"Python {platform.python_version()}\n")
+    if kind == "problem":
+        body = ("What happened, and what did you expect?\n" + body
+                + "If it crashed, Help > Show the log has the details.\n")
+    else:
+        body = "What would you like TraceEV to do?\n" + body
+    return (f"mailto:{FEEDBACK_TO}?subject={quote(subject)}"
+            f"&body={quote(body)}")
+
+
+class Feedback(tk.Toplevel):
+    """
+    Feedback and feature requests, to the owner's email.
+
+    Two buttons open the tester's own email program with the address, a
+    subject and the build filled in; nothing is sent until they press send
+    there. The address is printed with a copy button as well, because a
+    computer with no email program set up opens nothing on a mailto: link
+    and gives no error, and webmail users are most testers.
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.title("Feedback and feature requests")
+        self.configure(background=BG)
+        self.geometry("520x260")
+        self.transient(app.master)
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=18, pady=14)
+        ttk.Label(body, text="Found a problem, or want TraceEV to do something "
+                             "it doesn't? It goes straight to the developer.",
+                  wraplength=480, justify="left").pack(anchor="w")
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(14, 10))
+        ttk.Button(row, text="Report a problem", style="Accent.TButton",
+                   command=lambda: self.write("problem")).pack(side="left")
+        ttk.Button(row, text="Request a feature",
+                   command=lambda: self.write("feature request")).pack(
+            side="left", padx=(8, 0))
+        ttk.Label(body, text="Your email program opens with this filled in; "
+                             "nothing is sent until you press send there. "
+                             "No email program? Write to:",
+                  style="Dim.TLabel", wraplength=480,
+                  justify="left").pack(anchor="w")
+        addr = ttk.Frame(body)
+        addr.pack(anchor="w", pady=(6, 0))
+        ttk.Label(addr, text=FEEDBACK_TO).pack(side="left")
+        self.copied = ttk.Label(addr, text="", style="Dim.TLabel")
+        ttk.Button(addr, text="copy address", command=self.copy).pack(
+            side="left", padx=(10, 0))
+        self.copied.pack(side="left", padx=(8, 0))
+
+    def write(self, kind):
+        webbrowser.open(feedback_mail(kind))
+
+    def copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(FEEDBACK_TO)
+        self.copied.configure(text="copied")
+
+
+class Pane(tk.Toplevel):
+    """
+    One tab's answer in a window of its own, under the filter it was made in.
+
+    Drawn by the tab's own code from the answer the tab already had, so a
+    pane and the tab it came from cannot disagree. A chart pane is a chart
+    like the tab's: hover for counts, click a square for its hands, under
+    the pane's filter and not the window's. **back into the window** puts
+    that filter and tab back in the main window and closes the pane.
+    """
+
+    def __init__(self, app, view, out, last, stat, by):
+        super().__init__(app)
+        self.app, self.view, self.last, self.by = app, view, last, by
+        self.configure(background=BG)
+        label = last[1] + (f", cohort: {players.describe_cohort(last[3])}"
+                           if last[3] is not None else "")
+        self.title(f"{view} · {label}"[:120])
+        self.geometry("900x620")
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        ttk.Label(top, text=f"{view} -- {label}"
+                  + (f", by {by}" if view in ("report", "results", "actions",
+                                              "overfolds") and by else ""),
+                  style="Dim.TLabel", wraplength=700,
+                  justify="left").pack(side="left")
+        ttk.Button(top, text="back into the window",
+                   command=self.dock).pack(side="right")
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.canvas = None
+        if view in ("chart", "graph"):
+            c = self.canvas = tk.Canvas(body, bg=BG, highlightthickness=0)
+            c.pack(fill="both", expand=True)
+            if view == "chart":
+                g = out if (out.get("cells") or (out.get("mode") == "comparison"
+                                                 and out.get("total"))) else None
+                app.panes[c] = {"g": g, "last": last, "stat": stat}
+                message = out.get("why") or out.get("error")
+                c.bind("<Configure>", lambda e: app._draw_chart(message, c))
+                c.bind("<Motion>", app._chart_hover)
+                c.bind("<Leave>", lambda e: c.delete("hint"))
+                c.bind("<Button-1>", app._square_hands)
+            else:
+                c.bind("<Configure>", lambda e: app._draw_graph(
+                    out.get("why") or out.get("error"), c, out.get("series")))
+        else:
+            self.tv = app._table(body)
+            # The tab's renderers keep a note of what they drew, for the
+            # tab's own clicks; a pane must not leave its answer there, or
+            # a double-click on the tab would open the pane's hands.
+            kept = (getattr(app, "shown_stats", None),
+                    getattr(app, "_hand_ids", {}))
+            try:
+                app._render_into(self.tv, view, out)
+                self.ids = getattr(app, "_hand_ids", {}) if view == "hands" else {}
+            finally:
+                app.shown_stats, app._hand_ids = kept
+            if self.ids:
+                self.tv.bind("<Double-1>", self._open)
+                self.tv.bind("<Return>", self._open)
+        self.bind("<Destroy>", self._gone)
+
+    def _open(self, _event=None):
+        sel = self.tv.selection()
+        if sel and sel[0] in self.ids:
+            HandWindow(self.app, self.app.con, *self.ids[sel[0]])
+
+    def _gone(self, event):
+        if event.widget is self and self.canvas is not None:
+            self.app.panes.pop(self.canvas, None)
+
+    def dock(self):
+        _w, _l, _p, cohort_spec, query_argv = self.last
+        argv = list(query_argv)
+        if self.by and self.view in ("report", "results"):
+            argv += ["--by", self.by]
+        self.app.apply_argv(argv, cohort_spec)
+        if self.view in ("actions", "overfolds") and self.by is not None:
+            self.app.by.set(self.by)
+        self.app.nb.select(self.app.tabs[self.view])
+        self.app.refresh()
+        self.destroy()
+
+
+class SquareHands(tk.Toplevel):
+    """
+    The hands behind one square of a chart, each one double-clicked open.
+
+    The filter they were found under is written along the top, because a
+    list of nine hands is read as "his ace-king" and it is his ace-king
+    3-betting from the button in the last month, or whatever else the
+    filter was, and nothing else on the screen would say so.
+    """
+
+    def __init__(self, master, out):
+        super().__init__(master)
+        self.configure(background=BG)
+        rows = out.get("rows") or []
+        self.title(f"{len(rows):,} hands" if rows else "no hands")
+        self.geometry("1000x420")
+        self.master_app, self.con = master, master.con
+        said = out.get("label", "")
+        if len(rows) >= 500:
+            said += " -- the latest 500"
+        ttk.Label(self, text=said, style="Dim.TLabel", wraplength=960,
+                  justify="left").pack(anchor="w", padx=12, pady=(10, 4))
+        frame = ttk.Frame(self)
+        frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.tv = master._table(frame)
+        if out.get("error") or not rows:
+            self.tv.configure(columns=("msg",))
+            self.tv.column("msg", width=900, anchor="w")
+            self.tv.insert("", "end", tags=("neg",), values=(
+                out.get("error") or "nothing matches",))
+            if out.get("why"):
+                self.tv.insert("", "end", values=(out["why"],), tags=("note",))
+            self.ids = {}
+            return
+        self.ids = master._fill_hands(self.tv, rows)
+        self.tv.bind("<Double-1>", self._open)
+        self.tv.bind("<Return>", self._open)
+
+    def _open(self, _event=None):
+        sel = self.tv.selection()
+        if sel and sel[0] in self.ids:
+            HandWindow(self.master_app, self.con, *self.ids[sel[0]])
 
 
 class HandWindow(tk.Toplevel):
@@ -3323,6 +4565,13 @@ class HandWindow(tk.Toplevel):
         self.tag_entry.pack(side="left")
         self.tag_entry.bind("<Return>", lambda e: self._add_tag())
         ttk.Button(top, text="tag", command=self._add_tag).pack(side="left", padx=4)
+        # The hand as text for a forum or a coach, with every name, the
+        # hand number, the table and the date taken out -- `share_text`
+        # says what is kept. Told from the seat the hand was opened for,
+        # so a hand opened on an opponent shares it as that opponent's.
+        self.seat = seat
+        ttk.Button(top, text="copy for sharing",
+                   command=self._copy_share).pack(side="right")
         self._draw_tags()
 
         # The note on the seat this hand was opened for, when that seat is
@@ -3345,6 +4594,28 @@ class HandWindow(tk.Toplevel):
             self.note_box.pack(side="left", padx=8, fill="x", expand=True)
             self.note_box.insert("1.0", focus.get("note") or "")
             ttk.Button(row, text="save", command=self._save_note).pack(side="left")
+            # Hand2Note's templates and hand-in-a-note, under the box: a
+            # template is written into the box filled with this player's
+            # numbers, to be read and saved like anything typed, and this
+            # hand goes beside the player with the words typed next to it.
+            row = ttk.Frame(self)
+            row.pack(side="top", fill="x", padx=12, pady=(0, 6))
+            names = [n for n, _t in notes.templates(con)]
+            self.template = ttk.Combobox(row, state="readonly", width=18,
+                                         values=names)
+            if names:
+                self.template.set(names[0])
+                self.template.pack(side="left")
+                ttk.Button(row, text="insert template",
+                           command=self._insert_template).pack(side="left", padx=4)
+            self.hand_words = ttk.Entry(row, width=28)
+            self.hand_words.pack(side="left", padx=(12, 4))
+            self.hand_state = ttk.Label(row, style="Dim.TLabel")
+            ttk.Button(row, text="put this hand in the note",
+                       command=self._note_hand).pack(side="left")
+            self.hand_state.pack(side="left", padx=8)
+            if any(h == hand_id for h, _w in notes.hands_noted(con, *self.note_for)):
+                self.hand_state.configure(text="in the note")
 
         text = tk.Text(self, background=BG, foreground=INK, borderwidth=0,
                        font=mono, padx=16, pady=12, wrap="none",
@@ -3406,6 +4677,12 @@ class HandWindow(tk.Toplevel):
                            command=lambda t=t: self._drop_tag(t))
             b.pack(side="left", padx=2)
 
+    def _copy_share(self):
+        text = query.share_text(self.con, self.hand_id, self.seat)
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+
     def _add_tag(self):
         import notes
         notes.tag(self.con, self.hand_id, self.tag_entry.get())
@@ -3422,6 +4699,21 @@ class HandWindow(tk.Toplevel):
         if self.note_for:
             notes.note(self.con, *self.note_for,
                        self.note_box.get("1.0", "end"))
+
+    def _insert_template(self):
+        import notes
+        if not self.note_for or not self.template.get():
+            return
+        line = notes.filled(self.con, self.template.get(), *self.note_for)
+        had = self.note_box.get("1.0", "end").strip()
+        self.note_box.insert("end", ("\n" if had else "") + line)
+
+    def _note_hand(self):
+        import notes
+        if self.note_for:
+            notes.note_hand(self.con, *self.note_for, self.hand_id,
+                            self.hand_words.get())
+            self.hand_state.configure(text="in the note")
 
 
 def check(db_path=DB):
@@ -3484,6 +4776,18 @@ def check(db_path=DB):
         # the assistant's answers lost it on the way in.
         ({"flags": ["--pool"], "street": ["river"], "facing": ["bet"]},
          ["--pool", "--street", "river", "--facing", "bet"]),
+        # Sittings, by number and by recency.
+        ({"flags": ["--hero"], "vals": {"last_sessions": "2"}},
+         ["--hero", "--last-sessions", "2"]),
+        ({"flags": [], "vals": {"session": "3,4"}}, ["--session", "3,4"]),
+        # The preflop ladder, two rungs at once, which is an OR.
+        ({"flags": ["--pool"], "pf_facing": ["1-limp", "2-limps"]},
+         ["--pool", "--pf-facing", "1-limp,2-limps"]),
+        # The table around the player, and what was posted.
+        ({"flags": ["--hero", "--no-straddle"], "fish_blinds": ["bb"],
+          "vals": {"fish_left_seats": "1-2", "street_pot": "5-7"}},
+         ["--hero", "--no-straddle", "--fish-blinds", "bb",
+          "--fish-left-seats", "1-2", "--street-pot", "5-7"]),
     ]
     for state, argv in cases:
         for f, var in app.flags.items():
@@ -3546,6 +4850,329 @@ def check(db_path=DB):
     for b in broke:
         print(f"    {b}")
     fails += broke
+
+    # The stats table's side chart. A click on a row is the only way it is
+    # asked for, and the table and chart arrive by two roads -- one riding
+    # on the table's own request, one on its own -- so both are driven:
+    # the first must hand back a range under the key the second looks for,
+    # and the chart must draw from it.
+    app.picked = "threebet"
+    app.took.set(next(iter(TOOK)))
+    app.last = ("1=1", "everything", [], None, [])
+    pick = app._range_request("1=1", None)
+    both = app._work(0, "stats", "1=1", "everything", [], "", None, pick=pick)
+    app.results.get_nowait()
+    alone = app._work(0, "statrange", "1=1", "everything", [], "", None,
+                      pick=pick)
+    app.results.get_nowait()
+    g = both.get("range") or {}
+    same = (both.get("range_key") == pick[0] and alone.get("range")
+            and alone["range"].get("cells") == g.get("cells"))
+    direct = con.execute(
+        "SELECT COUNT(*) FROM (SELECT DISTINCT hand_id, seat FROM decisions "
+        f"WHERE ({BY_KEY['threebet'].chance}) "
+        f"AND ({BY_KEY['threebet'].action}))").fetchone()[0]
+    print(f"a clicked stat's range, both roads  "
+          f"{'the same' if same else 'NO'}, {g.get('total', 0):,} player-hands"
+          f" of {direct:,} that 3-bet")
+    if not same or g.get("total") != direct:
+        fails.append("the stats tab's range is not the hands that took the "
+                     "stat, or differs by the road it came by")
+    # Drawn on the screen, because a canvas nobody can see is one pixel
+    # wide and `_draw_chart` rightly draws nothing on it.
+    root.geometry("1360x880")
+    root.deiconify()
+    app.nb.select(app.tabs["stats"])
+    root.update()
+    app._render({"view": "statrange", "range": g})
+    drew = len(app.stat_canvas.find_all())
+    root.withdraw()
+    refused = app._work(0, "statrange", "1=1", "", [], "", None,
+                        pick=(("k",), "vpip", "call"))
+    app.results.get_nowait()
+    print(f"and draws it   {drew} items; VPIP's call range "
+          f"{'refused' if refused['range'].get('error') else 'NOT refused'}")
+    if g.get("cells") and drew < 169:
+        fails.append("the stats tab's range is computed but not drawn")
+    # A square of it, clicked, opens the hands it counted -- as many as the
+    # square says, through the same queue every other query takes.
+    opened = None
+    if g.get("cells") and getattr(app, "_stat_geometry", None):
+        combo, (n_sq, _k) = max(g["cells"].items(), key=lambda kv: kv[1][0])
+        left, top, size = app._stat_geometry
+        spot = next((i, j) for i in range(13) for j in range(13)
+                    if query.combo_at(i, j) == combo)
+        click = type("Click", (), {"widget": app.stat_canvas,
+                                   "x": left + (spot[1] + .5) * size,
+                                   "y": top + (spot[0] + .5) * size})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        # Drawing the tab refreshed it under whatever the window's boxes
+        # held; the range above is of everything, and so is its square.
+        app.last = ("1=1", "everything", [], None, [])
+        app._square_hands(click)
+        item = app.requests.get_nowait()
+        out = app._work(*item[:1], *item[2:])
+        app.results.get_nowait()
+        app._render(out)
+        windows = [w for w in app.winfo_children() if isinstance(w, SquareHands)]
+        opened = windows[-1] if windows else None
+        listed = len(opened.ids) if opened else 0
+        print(f"a clicked square lists its hands  {combo}: {listed} of {n_sq}")
+        if listed != n_sq:
+            fails.append(f"the square {combo} counts {n_sq} hands and its "
+                         f"click listed {listed}")
+        if opened:
+            opened.destroy()
+    # The Chat with AI panel on a small window: its question box has to be there,
+    # whole, and the stats table beside it still shows its numbers. On a
+    # laptop at 150% scaling the packed panel was a sliver with the box
+    # pushed off the bottom, and the table had lost every column but names.
+    root.deiconify()
+    root.geometry("1000x440")
+    app.nb.select(app.tabs["stats"])
+    root.update()
+    app.ask_panel.toggle()
+    root.update()
+    panel, entry = app.ask_panel, app.ask_panel.entry
+    box_ok = (entry.winfo_ismapped() and entry.winfo_height() >= 20
+              and entry.winfo_y() + entry.winfo_height() <= panel.winfo_height()
+              and panel.winfo_width() >= 300)
+    sash = app.stats_split.sashpos(0)
+    split_w = app.stats_split.winfo_width()
+    table_ok = sash >= min(app._stats_need, int(split_w * 0.7)) - 2
+    print(f"the ask box fits a small window  {'yes' if box_ok else 'NO'} "
+          f"(panel {panel.winfo_width()}px, box {entry.winfo_height()}px); "
+          f"the stats table keeps its columns  {'yes' if table_ok else 'NO'}"
+          f" ({sash} of {split_w}px)")
+    if not box_ok:
+        fails.append("the Chat with AI panel's question box is squeezed or off-screen")
+    if not table_ok:
+        fails.append("the stats table is narrower than its columns")
+    app.ask_panel.toggle()
+    root.withdraw()
+    # Feedback reaches the owner: a link that addresses him, says which
+    # kind of message it is, and carries the build, from a button on the
+    # bar rather than only from a menu.
+    from urllib.parse import urlsplit, parse_qs
+    link = urlsplit(feedback_mail("problem"))
+    asked = parse_qs(link.query)
+    window = Feedback(app)
+    window.copy()
+    copied = root.clipboard_get() == FEEDBACK_TO
+    window.destroy()
+    mail_ok = (link.scheme == "mailto" and link.path == FEEDBACK_TO
+               and asked.get("subject") == ["TraceEV problem"]
+               and "TraceEV build:" in asked.get("body", [""])[0]
+               and app.feedback_btn.winfo_manager() == "pack" and copied)
+    print(f"feedback is addressed and on the bar  {'yes' if mail_ok else 'NO'}")
+    if not mail_ok:
+        fails.append("the feedback link, its button or its copy is wrong")
+    # A postflop stat's pane draws what its hands had made, as Hand2Note's
+    # popup does, and a row of it opens those hands -- as many as the row
+    # says. Preflop there is nothing made and the pane stays the 13x13.
+    root.deiconify()
+    root.geometry("1360x880")
+    app.nb.select(app.tabs["stats"])
+    app.picked, app.stat_view = "cbet_flop", "strength"
+    app.took.set(next(iter(TOOK)))
+    app.last = ("1=1", "everything", [], None, [])
+    flop = app._work(0, "statrange", "1=1", "everything", [], "", None,
+                     pick=app._range_request("1=1", None))
+    app.results.get_nowait()
+    root.update()
+    app._render(flop)
+    root.update()
+    rows = getattr(app, "_strength_rows", [])
+    strength_ok = bool(rows) and (flop["range"].get("strength") is not None)
+    listed = want = None
+    if rows:
+        count = {r["made"]: r["n"] for r in flop["range"]["strength"]["rows"]}
+        y0, y1, made = max(rows, key=lambda r: count.get(r[2], 0))
+        want = count[made]
+        click = type("Click", (), {"widget": app.stat_canvas, "x": 300,
+                                   "y": (y0 + y1) / 2})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        app._square_hands(click)
+        item = app.requests.get_nowait() if not app.requests.empty() else None
+        if item:
+            out = app._work(*item[:1], *item[2:])
+            app.results.get_nowait()
+            app._render(out)
+            opened = [w for w in app.winfo_children()
+                      if isinstance(w, SquareHands)]
+            listed = len(opened[-1].ids) if opened else 0
+            for w in opened:
+                w.destroy()
+        strength_ok = strength_ok and listed == want
+    preflop = query.stat_range_of(con, "1=1", "threebet")
+    print(f"a postflop stat shows what its hands made  "
+          f"{'yes' if strength_ok else 'NO'} ({len(rows)} rows; "
+          f"{made if rows else '-'}: {listed} listed of {want}); "
+          f"preflop has none  {'yes' if 'strength' not in preflop else 'NO'}")
+    if not strength_ok or "strength" in preflop:
+        fails.append("the postflop strength pane is missing, or its row "
+                     "lists other hands than it counts")
+    app.picked = None
+    root.withdraw()
+    # Detach: the chart tab, drawn under one filter, copied into a pane;
+    # then the window moves on to another filter, and the pane must still
+    # draw and click as the first. A pane that followed the window would
+    # compare nothing, and one that clicked through to the window's filter
+    # would list hands from a different chart than the one under the mouse.
+    root.deiconify()
+    btn = query.build(["--pos", "BTN"])
+    app.last = (btn[0], btn[1], btn[2], None, ["--pos", "BTN"])
+    app.of.set("the range itself")
+    app.nb.select(app.tabs["chart"])
+    root.update()
+    shown = app._work(0, "chart", btn[0], btn[1], btn[2], "", None)
+    app.results.get_nowait()
+    app.last = (btn[0], btn[1], btn[2], None, ["--pos", "BTN"])
+    app._render(shown)
+    app.detach()
+    panes = [w for w in app.winfo_children() if isinstance(w, Pane)]
+    pane = panes[-1] if panes else None
+    pane_ok = bool(pane)
+    if pane:
+        pane.geometry("900x620")
+        root.update()
+        app.last = ("1=1", "everything", [], None, [])
+        drawn = len(pane.canvas.find_all())
+        geometry = app._geometry_of(pane.canvas)
+        combo = next(c for c, (n, _k) in shown["cells"].items() if n)
+        spot = next((i, j) for i in range(13) for j in range(13)
+                    if query.combo_at(i, j) == combo)
+        left, top, size = geometry or (0, 0, 0)
+        click = type("Click", (), {"widget": pane.canvas,
+                                   "x": left + (spot[1] + .5) * size,
+                                   "y": top + (spot[0] + .5) * size})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        app._square_hands(click)
+        item = app.requests.get_nowait() if not app.requests.empty() else None
+        want = query.build(["--pos", "BTN", "--combo", combo])[0]
+        pane_ok = drawn >= 169 and item is not None and item[3] == want
+        print(f"a detached chart keeps its filter  "
+              f"{'yes' if pane_ok else 'NO'}, {drawn} items, {combo} "
+              f"clicks through to BTN")
+        pane.destroy()
+        root.update()
+    if not pane_ok or app.panes:
+        fails.append("a detached chart did not draw, or clicked through to "
+                     "the window's filter, or outlived its window")
+    # A table pane is the tab's own renderer into another table, and must
+    # leave the tab's record of its rows alone.
+    before = dict(getattr(app, "_hand_ids", {}))
+    rows = app._work(0, "hands", btn[0], btn[1], btn[2], "", None)
+    app.results.get_nowait()
+    table = Pane(app, "hands", rows, app.last, None, "")
+    listed = len(table.ids)
+    table.destroy()
+    kept = getattr(app, "_hand_ids", {}) == before
+    print(f"a detached table lists its rows  {listed} of {len(rows['rows'])}"
+          f"; the tab's own left alone  {'yes' if kept else 'NO'}")
+    if listed != len(rows["rows"]) or not kept:
+        fails.append("a detached hands table lost rows or overwrote the tab's")
+    root.withdraw()
+    if not refused["range"].get("error"):
+        fails.append("a hand-counted stat was given an alternative range")
+    # The weak share under a postflop range is `range_of`'s over the same
+    # rows, and a preflop range has none: nothing is made before the flop,
+    # and a line there would be a tier breakdown of an empty set.
+    flop = query.stat_range_of(con, "1=1", "cbet_flop")
+    held = flop.get("held")
+    want = query.range_of(con, f"({BY_KEY['cbet_flop'].chance}) AND "
+                               f"({BY_KEY['cbet_flop'].action})")
+    weak_ok = (held and abs(held["weak"] - want["weak"]) < 1e-9
+               and "held" not in g)
+    print(f"a postflop range says how much is weak  "
+          f"{(format(held['weak'], '.0f') + '%') if held else 'NO'}"
+          f"; a preflop one says nothing  {'yes' if 'held' not in g else 'NO'}")
+    if not weak_ok:
+        fails.append("the weak share beside a stat's range is missing, or "
+                     "differs from the range tab's, or drawn preflop")
+    app.picked = None
+
+    # A sitting's row opens that sitting's hands and nothing else. The row
+    # is found under a filter, and kept under it the hands tab would show a
+    # few hands of the night and be read as the whole of it.
+    app.clear_filters()
+    app.multi["street"] = {"river"}
+    listed = app._work(0, "sessions", "1=1", "", [], "", None)
+    app.results.get_nowait()
+    app._render(listed)
+    first = listed["rows"][0]["session_id"]
+    app.tree["sessions"].selection_set(f"session:{first}")
+    app._open_session()
+    opened = query.build(app.argv())[0]
+    want = query.build(["--hero", "--session", str(first)])[0]
+    on_hands = app.nb.tab(app.nb.select(), "text") == "hands"
+    print(f"a sitting's row opens its hands  "
+          f"{'yes' if opened == want and on_hands else 'NO -- ' + opened}")
+    if opened != want or not on_hands:
+        fails.append("double-clicking a sitting does not open that sitting")
+    app.clear_filters()
+
+    # A saved view has to come back as it was saved: the same rows, the same
+    # tab, the same choices on it, and the same players. Saved and opened
+    # through the window's own methods and the command line's, into a file
+    # of its own so the user's views are never touched. The first has a
+    # cohort with no site of its own beside a filter that has one, which is
+    # the case `parse_cohort` would have read wrong had the players not
+    # been written last.
+    import contextlib, io, tempfile
+    real_views = query.VIEWS
+    query.VIEWS = Path(tempfile.mkdtemp()) / "views.json"
+    states = [
+        (["--hero"], {"site": "ignition"}, {"pot": {"raised"}}, "chart",
+         ([("vpip", ">=30")], None, None, None),
+         lambda: (app.of.set(BY_KEY["threebet"].label),
+                  app.alternative.set("call"))),
+        (["--pool"], {}, {"street": {"flop"}}, "stats", None,
+         lambda: (setattr(app, "picked", "cbet_flop"),
+                  app.took.set("fold instead"))),
+        (["--hero"], {}, {}, "report", None, lambda: app.by.set("stack")),
+    ]
+    unlike = []
+    for i, (flags, vals, multi, tab, spec, extra) in enumerate(states):
+        app.clear_filters()
+        app.by.set("")
+        for f in flags:
+            app.flags[f].set(True)
+        for n, v in vals.items():
+            app.vals[n].set(v)
+        for g, v in multi.items():
+            app.multi[g] = set(v)
+        app.cohort_spec = spec
+        app.nb.select(app.tabs[tab])
+        extra()
+        before = app.view_argv()
+        where_before = query.build(players.parse_cohort(app.argv())[1])[0]
+        query.save_view(f"view {i}", before)
+        app.clear_filters()
+        app.nb.select(app.tabs["hands"])
+        app.open_view(f"view {i}")
+        after = app.view_argv()
+        where_after = query.build(players.parse_cohort(app.argv())[1])[0]
+        if (before != after or where_before != where_after
+                or app.cohort_spec != spec
+                or app.nb.tab(app.nb.select(), "text") != tab):
+            unlike.append(f"{' '.join(before)} came back as {' '.join(after)}")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                query.main(["--open", f"view {i}"])
+        except SystemExit as e:
+            unlike.append(f"--open 'view {i}' refused: {e}")
+    print(f"a saved view reopens as it was  "
+          f"{len(states) - len(unlike)}/{len(states)}")
+    for u in unlike:
+        print(f"    {u}")
+    fails += unlike
+    query.VIEWS = real_views
+    app.clear_filters()
+    app.picked = None
 
     # The dark theme is only dark if `clam` is the theme in use; the others
     # hand their drawing to Windows and ignore every colour set here.
@@ -3713,7 +5340,8 @@ def check(db_path=DB):
     probe.destroy()
 
     mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
-            "filters.json": query.SAVED, "ai.json": ask.SETTINGS}
+            "filters.json": query.SAVED, "ai.json": ask.SETTINGS,
+            "views.json": query.VIEWS}
     astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)
     print(f"the user's files sit beside it {len(mine) - len(astray)}/{len(mine)}")
     if astray:
@@ -3736,9 +5364,10 @@ def main(argv):
     diag.setup(verbose="--debug" in argv)
     if "--check" in argv:
         return 0 if check() else 1
-    if not DB.exists():
-        print(f"no database at {DB} -- load some hands first")
-        return 1
+    first = not DB.exists()
+    if first:
+        importer.create(DB)
+    crisp()
     root = tk.Tk()
     root.title("TraceEV")
     root.geometry("1360x880")
@@ -3751,6 +5380,8 @@ def main(argv):
     app = App(root, check_updates="--no-update" not in argv)
     app._menu(root)
     app.load_options()
+    if first:
+        root.after(500, app.first_run)
     root.mainloop()
     return 0
 
