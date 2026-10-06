@@ -28,6 +28,7 @@ outlines `clam` gives everything, the chosen tab no longer jumps the row
 sideways, scrollbars are a thin thumb, and only the main action on a bar is
 blue. Every colour, font and spacing is in `dark`. A long table's scrollbar
 had been squeezed out of sight by its own columns; it is packed first now.
+
 ## A first import that derives faster -- 6 Oct 2026
 
 ### Changed -- the indexes on `decisions` are built once, at the end
