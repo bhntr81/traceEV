@@ -402,14 +402,15 @@ def update(con):
     con.execute("INSERT OR IGNORE INTO restamp SELECT DISTINCT hand_id "
                 "FROM spots WHERE (site, player) IN "
                 "(SELECT site, player FROM reclassed)")
-    stamp(con, "hand_id IN (SELECT hand_id FROM restamp)", analyze=False)
+    stamp(con, "hand_id IN (SELECT hand_id FROM restamp)")
+    index(con)
     con.execute("DROP TABLE temp.restamp")
     con.execute("DROP TABLE temp.reclassed")
     con.execute("DROP TABLE temp.touched")
     return len(rows)
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
@@ -420,6 +421,9 @@ def build(db_path=DB):
         "INSERT INTO players VALUES (" + ",".join("?" * 13) + ")", rows)
 
     stamp(con)
+    if indexed:
+        index(con)
+        con.execute("ANALYZE")
     con.commit()
     named = sum(1 for r in rows if r[2])
     print(f"{len(rows):,} identities ({named:,} of them people), "
@@ -429,7 +433,7 @@ def build(db_path=DB):
     return len(rows)
 
 
-def stamp(con, where="1=1", analyze=True):
+def stamp(con, where="1=1"):
     """
     Put the class of the player acting, and of the one they face, on every
     decision.
@@ -555,6 +559,11 @@ def stamp(con, where="1=1", analyze=True):
         + ", ".join(f"{c} = stamped.{c}" for c in NAMES)
         + " FROM stamped WHERE decisions.hand_id = stamped.hand_id "
           "AND decisions.n = stamped.n")
+    con.execute("DROP TABLE temp.stamped")
+
+
+def index(con):
+    """The indexes on the class columns of `decisions`."""
     con.execute("CREATE INDEX IF NOT EXISTS dec_class "
                 "ON decisions(player_class, vs_class, n_fish, n_reg, street)")
     con.execute("CREATE INDEX IF NOT EXISTS dec_vsplayer "
@@ -580,9 +589,6 @@ def stamp(con, where="1=1", analyze=True):
                 "ON decisions(fish_dist_right, street)")
     con.execute("CREATE INDEX IF NOT EXISTS dec_fish_blinds "
                 "ON decisions(fish_blinds, street)")
-    con.execute("DROP TABLE temp.stamped")
-    if analyze:
-        con.execute("ANALYZE")
 
 
 # The profile, in reading order. These were printed from the columns on the
