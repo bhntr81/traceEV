@@ -8,6 +8,27 @@ Newest first.
 
 ---
 
+## A sharper, plainer window -- 6 Oct 2026
+
+### Changed -- text drawn at the screen's real resolution on Windows
+
+The program never told Windows it understood display scaling, so at 125%
+or 150% -- what most laptops ship with -- Windows drew it at 100% and
+stretched the picture, and every letter was soft. `crisp` now says so
+before the first window opens. Fonts follow the real resolution on their
+own; sizes written in pixels (window sizes, table columns, row heights) are
+multiplied by the scaling in `dark`, and the charts keep their text at the
+size their layout was drawn for until they measure it.
+
+### Changed -- one look, set in one place
+
+The menu bar was drawn by Windows, white across the top of a dark window;
+it is now drawn in the window. Buttons, boxes and tabs lost the bevelled
+outlines `clam` gives everything, the chosen tab no longer jumps the row
+sideways, scrollbars are a thin thumb, and only the main action on a bar is
+blue. Every colour, font and spacing is in `dark`. A long table's scrollbar
+had been squeezed out of sight by its own columns; it is packed first now.
+
 ## The program opens on its own -- 6 Oct 2026
 
 ### Fixed -- a first launch with no database did nothing
