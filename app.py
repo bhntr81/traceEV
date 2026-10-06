@@ -34,6 +34,7 @@ hands are from; every file is identified by reading it.
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -92,8 +93,14 @@ ask.SETTINGS = HERE / "ai.json"
 # One palette, so a colour is changed in one place. The line colours are the
 # same four the graph has always used.
 BG, PANEL, EDGE = "#14161a", "#1b1e24", "#2a2f38"
-INK, DIM, ACCENT = "#d8dbe0", "#8b929c", "#4c9aff"
-GOOD, BAD, WARN = "#22a35a", "#d1443c", "#b8892a"
+INK, DIM, ACCENT = "#e3e6eb", "#8b929c", "#4c9aff"
+GOOD, BAD, WARN = "#22a35a", "#d1443c", "#d6a23a"
+# The surfaces a control sits on, lightest last: a field (a box to type or
+# choose in, and an ordinary button), the same under the mouse, and the row
+# that is selected. Text on the accent colour is dark, since white on that
+# blue is a contrast of 2.9 and dark is 7.
+FIELD, HOVER, SELECT = "#232831", "#2d333e", "#24344d"
+ACCENT_HOVER, ON_ACCENT = "#6aaeff", "#0b1424"
 LINE = {"total": "#22a35a", "showdown": "#2f7fd6",
         "nonshowdown": "#d1443c", "allin_ev": "#e0b020"}
 # Painted in this order, so the headline is the one on top. Drawing them in
@@ -257,78 +264,290 @@ def dark_titlebar(window):
         pass
 
 
+def crisp():
+    """
+    Ask Windows for real pixels, before the first window exists.
+
+    A program that does not say it understands display scaling is drawn at
+    96 dots to the inch and then stretched by Windows to fit, and stretched
+    text is blurred text: at 125% or 150%, which is what most laptops ship
+    with, every letter in the window was soft. Saying so lets Tk read the
+    real resolution and draw fonts at it, which is the whole of the fix for
+    the text -- but only for sizes given in points. Pixel sizes, which is
+    what every `geometry` and row height here is written in, stay the size
+    they were and come out small, and `dark` scales those.
+
+    Must run before `tk.Tk()`, because Windows fixes a process's answer the
+    first time it draws a window. Wrapped, because an old Windows without
+    `shcore` falls back to the older call and one without either keeps the
+    blur rather than refusing to start.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+# How many screen pixels this display uses for one of the 96-to-the-inch
+# pixels every size in this file was written in: 1.0 at 100%, 1.5 at 150%.
+# Set by `dark` from the scaling Tk measured, and 1.0 until then.
+ZOOM = 1.0
+
+
+def px(n):
+    """A size written for a 100% display, in this display's pixels."""
+    return int(round(n * ZOOM))
+
+
+def _zoom_geometry():
+    """
+    Every window's `geometry("WxH")` in this display's pixels, in one place.
+
+    Fifteen windows give their size in pixels. Changing each call site would
+    put the same arithmetic in fifteen places for the first one added to
+    forget; wrapping Tk's own method does it for all of them, and clamps to
+    the screen, because a 1360x880 window at 150% is 2040 pixels wide and a
+    laptop is not.
+    """
+    if getattr(tk.Wm, "_unzoomed_geometry", None):
+        return
+    plain_geometry, plain_minsize = tk.Wm.wm_geometry, tk.Wm.wm_minsize
+
+    def geometry(self, spec=None):
+        if spec and ZOOM != 1.0:
+            size = re.match(r"(\d+)x(\d+)(.*)$", spec)
+            if size:
+                w = min(px(int(size.group(1))), self.winfo_screenwidth() - 40)
+                h = min(px(int(size.group(2))), self.winfo_screenheight() - 80)
+                spec = f"{w}x{h}{size.group(3)}"
+        return plain_geometry(self, spec)
+
+    def minsize(self, width=None, height=None):
+        if width is not None and height is not None and ZOOM != 1.0:
+            width = min(px(width), self.winfo_screenwidth() - 40)
+            height = min(px(height), self.winfo_screenheight() - 80)
+        return plain_minsize(self, width, height)
+
+    tk.Wm.wm_geometry = tk.Wm.geometry = geometry
+    tk.Wm.wm_minsize = tk.Wm.minsize = minsize
+    tk.Wm._unzoomed_geometry = plain_geometry
+
+    # The charts are laid out in pixels -- a combo's name seven above the
+    # middle of its square and its share eight below -- and their text in
+    # points, so at 150% the text grew and the gaps did not and the two lines
+    # of every square printed over each other. Until each chart measures its
+    # text, its text is held at the size the layout was drawn for: as large
+    # as it was before, now sharp rather than stretched.
+    plain_text = tk.Canvas.create_text
+
+    def create_text(self, *args, **kw):
+        font = kw.get("font")
+        if ZOOM != 1.0 and isinstance(font, tuple) and len(font) > 1 \
+                and isinstance(font[1], (int, float)) and font[1] > 0:
+            kw["font"] = (font[0], -round(font[1] * 96 / 72)) + font[2:]
+        return plain_text(self, *args, **kw)
+
+    tk.Canvas.create_text = create_text
+
+
 def dark(root):
-    """Make Tk dark, which it does not want to be."""
+    """
+    Make Tk dark, which it does not want to be, and make it one design.
+
+    Every colour, font and spacing the widgets use is set here, so the look
+    is changed in one place and a window built anywhere else inherits it.
+    The fonts are the named ones Tk's own widgets fall back on, so a label
+    nobody gave a font is in the same face as the ones that were.
+    """
+    global ZOOM
     pick_fonts()
+    # Tk's scaling is points to pixels: 96/72 at 100%, 2.0 at 150%.
+    ZOOM = max(1.0, float(root.tk.call("tk", "scaling")) * 72 / 96)
+    _zoom_geometry()
+    # Nine points for the controls, which is what Windows uses for its own;
+    # the tables, which are what the window is for, are a point larger.
+    for name, size, weight in (("TkDefaultFont", 9, "normal"),
+                               ("TkTextFont", 9, "normal"),
+                               ("TkMenuFont", 9, "normal"),
+                               ("TkHeadingFont", 9, "bold"),
+                               ("TkTooltipFont", 9, "normal")):
+        try:
+            tkfont.nametofont(name).configure(family=UI, size=size,
+                                              weight=weight)
+        except tk.TclError:
+            pass
+    body = tkfont.Font(family=UI, size=9)
     style = ttk.Style(root)
     # `clam` draws its own widgets. `vista` and `winnative` delegate to the
     # operating system, which draws them light whatever it is told.
     style.theme_use("clam")
     root.configure(background=BG)
-    style.configure(".", background=BG, foreground=INK, fieldbackground=PANEL,
-                    bordercolor=EDGE, lightcolor=EDGE, darkcolor=EDGE,
-                    troughcolor=BG, focuscolor=ACCENT, insertcolor=INK)
+    # Borders the colour of what they sit on, so a control is a shape and
+    # not an outline: `clam` draws a light bevel on everything by default,
+    # and a window of bevelled boxes is most of what made this one look
+    # like 1998.
+    style.configure(".", background=BG, foreground=INK, fieldbackground=FIELD,
+                    bordercolor=EDGE, lightcolor=BG, darkcolor=BG,
+                    troughcolor=BG, focuscolor=ACCENT, insertcolor=INK,
+                    selectbackground=SELECT, selectforeground=INK,
+                    font=(UI, 9))
     style.configure("TFrame", background=BG)
     style.configure("Panel.TFrame", background=PANEL)
     style.configure("TLabel", background=BG, foreground=INK)
     style.configure("Dim.TLabel", background=BG, foreground=DIM)
-    style.configure("Tag.TButton", padding=(4, 0))
+    style.configure("Tag.TButton", padding=(px(4), 0))
     style.configure("Head.TLabel", background=BG, foreground=DIM,
-                    font=(UI, 8, "bold"))
+                    font=(UI, 9, "bold"))
     style.configure("Title.TLabel", background=BG, foreground=INK,
-                    font=(UI, 11, "bold"))
+                    font=(UI, 12, "bold"))
     # The subject line -- WHO the window is about -- is the largest text
     # on it, because it was the hardest thing to find.
     style.configure("Subject.TLabel", background=BG, foreground=INK,
                     font=(UI, 15, "bold"))
     style.configure("Warn.TLabel", background=BG, foreground=WARN,
-                    font=(UI, 10, "bold"))
-    style.configure("On.TButton", background=ACCENT, foreground="#08111f",
-                    font=(UI, 11, "bold"), padding=(14, 6))
-    style.map("On.TButton", background=[("active", "#5ea6ff")])
-    style.configure("Off.TButton", background=PANEL, foreground=DIM,
-                    font=(UI, 11), padding=(14, 6))
-    style.configure("TCheckbutton", background=BG, foreground=DIM)
-    style.map("TCheckbutton",
-              foreground=[("selected", ACCENT), ("active", INK)],
-              background=[("active", BG)])
-    style.configure("TButton", background=PANEL, foreground=INK,
-                    bordercolor=EDGE, focusthickness=0, padding=(10, 4))
-    style.map("TButton", background=[("active", EDGE)])
-    style.configure("Accent.TButton", background=ACCENT, foreground="#08111f",
-                    bordercolor=ACCENT, padding=(14, 5))
-    style.map("Accent.TButton", background=[("active", "#5ea6ff")])
-    style.configure("Big.TNotebook.Tab", padding=(20, 9),
                     font=(UI, 10))
-    style.configure("TEntry", fieldbackground=PANEL, foreground=INK,
-                    bordercolor=EDGE, insertcolor=INK)
-    style.configure("TCombobox", fieldbackground=PANEL, background=PANEL,
-                    foreground=INK, arrowcolor=DIM, bordercolor=EDGE)
-    style.map("TCombobox", fieldbackground=[("readonly", PANEL)],
-              foreground=[("readonly", INK)])
+    # ME and THE POOL are a pair of switches, so they are drawn as one
+    # control: the lit one filled, the other the colour of a field.
+    style.configure("On.TButton", background=ACCENT, foreground=ON_ACCENT,
+                    bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                    font=(UI, 10, "bold"), padding=(px(16), px(6)))
+    style.map("On.TButton", background=[("active", ACCENT_HOVER)],
+              bordercolor=[("active", ACCENT_HOVER)])
+    style.configure("Off.TButton", background=FIELD, foreground=DIM,
+                    bordercolor=FIELD, lightcolor=FIELD, darkcolor=FIELD,
+                    font=(UI, 10, "bold"), padding=(px(16), px(6)))
+    style.map("Off.TButton", background=[("active", HOVER)],
+              foreground=[("active", INK)], bordercolor=[("active", HOVER)])
+    style.configure("TCheckbutton", background=BG, foreground=DIM,
+                    indicatorbackground=FIELD, indicatorforeground=ACCENT,
+                    indicatormargin=(0, 0, px(6), 0))
+    style.map("TCheckbutton",
+              foreground=[("selected", INK), ("active", INK)],
+              background=[("active", BG)],
+              indicatorbackground=[("selected", FIELD)])
+    style.configure("TButton", background=FIELD, foreground=INK,
+                    bordercolor=FIELD, lightcolor=FIELD, darkcolor=FIELD,
+                    focusthickness=0, padding=(px(12), px(5)))
+    style.map("TButton", background=[("active", HOVER), ("disabled", BG)],
+              bordercolor=[("active", HOVER), ("disabled", EDGE)],
+              foreground=[("disabled", DIM)])
+    style.configure("Accent.TButton", background=ACCENT, foreground=ON_ACCENT,
+                    bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                    font=(UI, 9, "bold"), padding=(px(14), px(5)))
+    style.map("Accent.TButton", background=[("active", ACCENT_HOVER)],
+              bordercolor=[("active", ACCENT_HOVER)])
+    style.configure("Big.TNotebook.Tab", padding=(px(20), px(9)),
+                    font=(UI, 10))
+    style.configure("TEntry", fieldbackground=FIELD, foreground=INK,
+                    bordercolor=EDGE, lightcolor=FIELD, darkcolor=FIELD,
+                    insertcolor=INK, padding=(px(6), px(4)))
+    style.map("TEntry", bordercolor=[("focus", ACCENT)])
+    style.configure("TCombobox", fieldbackground=FIELD, background=FIELD,
+                    foreground=INK, arrowcolor=DIM, bordercolor=FIELD,
+                    lightcolor=FIELD, darkcolor=FIELD,
+                    padding=(px(6), px(3)), arrowsize=px(12))
+    style.map("TCombobox", fieldbackground=[("readonly", FIELD)],
+              foreground=[("readonly", INK)],
+              background=[("active", HOVER)],
+              bordercolor=[("focus", ACCENT), ("active", HOVER)],
+              arrowcolor=[("active", INK)],
+              selectbackground=[("readonly", FIELD)],
+              selectforeground=[("readonly", INK)])
+    style.configure("TSpinbox", fieldbackground=FIELD, background=FIELD,
+                    foreground=INK, arrowcolor=DIM, bordercolor=FIELD,
+                    lightcolor=FIELD, darkcolor=FIELD)
     # The dropdown LIST inside a combobox is a Tk listbox, not a ttk widget,
     # so ttk styling never reaches it and it has to be coloured by option.
-    root.option_add("*TCombobox*Listbox.background", PANEL)
+    root.option_add("*TCombobox*Listbox.background", FIELD)
     root.option_add("*TCombobox*Listbox.foreground", INK)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-    root.option_add("*TCombobox*Listbox.selectForeground", BG)
-    style.configure("TNotebook", background=BG, bordercolor=EDGE)
+    root.option_add("*TCombobox*Listbox.selectForeground", ON_ACCENT)
+    root.option_add("*TCombobox*Listbox.font", body)
+    root.option_add("*TCombobox*Listbox.borderWidth", 0)
+    # Menus, and the plain Tk widgets a few dialogs still use, take their
+    # colours from the option database too; set once here, they stop
+    # arriving grey-on-white wherever somebody forgot to pass them.
+    for pattern, value in (("*Menu.background", PANEL),
+                           ("*Menu.foreground", INK),
+                           ("*Menu.activeBackground", ACCENT),
+                           ("*Menu.activeForeground", ON_ACCENT),
+                           ("*Menu.relief", "flat"),
+                           ("*Menu.borderWidth", 0),
+                           ("*Menu.font", body),
+                           ("*Listbox.background", FIELD),
+                           ("*Listbox.foreground", INK),
+                           ("*Listbox.selectBackground", ACCENT),
+                           ("*Listbox.selectForeground", ON_ACCENT),
+                           ("*Listbox.highlightThickness", 0),
+                           ("*Text.highlightThickness", 1),
+                           ("*Text.highlightBackground", EDGE),
+                           ("*Text.highlightColor", ACCENT)):
+        root.option_add(pattern, value)
+    # Tabs as a row of words with the chosen one lifted, not as a row of
+    # bordered boxes; and the same size whether chosen or not, because
+    # `clam` grows the chosen tab by two pixels and the whole row jumped
+    # sideways on every click.
+    style.configure("TNotebook", background=BG, bordercolor=EDGE,
+                    lightcolor=BG, darkcolor=BG, tabmargins=(0, 0, 0, 0))
     style.configure("TNotebook.Tab", background=BG, foreground=DIM,
-                    padding=(14, 6), bordercolor=EDGE)
-    style.map("TNotebook.Tab", background=[("selected", PANEL)],
-              foreground=[("selected", INK)])
+                    padding=(px(14), px(7)), bordercolor=BG,
+                    lightcolor=BG, darkcolor=BG, font=(UI, 10))
+    style.map("TNotebook.Tab",
+              background=[("selected", PANEL), ("active", HOVER)],
+              foreground=[("selected", INK), ("active", INK)],
+              bordercolor=[("selected", EDGE)],
+              lightcolor=[("selected", PANEL)],
+              darkcolor=[("selected", PANEL)],
+              padding=[("selected", (px(14), px(7)))],
+              expand=[("selected", (0, 0, 0, 0))])
+    rows = tkfont.Font(family=UI, size=10).metrics("linespace")
     style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
-                    foreground=INK, bordercolor=EDGE, rowheight=22)
-    style.configure("Treeview.Heading", background=BG, foreground=DIM,
-                    relief="flat", font=(UI, 8, "bold"))
-    style.map("Treeview.Heading", background=[("active", EDGE)])
-    style.map("Treeview", background=[("selected", "#233047")],
+                    foreground=INK, bordercolor=PANEL, lightcolor=PANEL,
+                    darkcolor=PANEL, font=(UI, 10),
+                    rowheight=rows + px(8))
+    style.configure("Treeview.Heading", background=PANEL, foreground=DIM,
+                    relief="flat", bordercolor=PANEL, lightcolor=PANEL,
+                    darkcolor=PANEL, font=(UI, 9, "bold"),
+                    padding=(px(6), px(6)))
+    style.map("Treeview.Heading", background=[("active", HOVER)],
+              foreground=[("active", INK)])
+    style.map("Treeview", background=[("selected", SELECT)],
               foreground=[("selected", INK)])
     style.configure("TSeparator", background=EDGE)
-    style.configure("Vertical.TScrollbar", background=PANEL,
-                    troughcolor=BG, bordercolor=BG, arrowcolor=DIM)
-    style.configure("Horizontal.TScrollbar", background=PANEL,
-                    troughcolor=BG, bordercolor=BG, arrowcolor=DIM)
+    style.configure("Bar.TFrame", background=PANEL)
+    style.configure("Bar.TMenubutton", background=PANEL, foreground=INK,
+                    bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL,
+                    arrowsize=0, padding=(px(12), px(5)), font=(UI, 9))
+    style.layout("Bar.TMenubutton", [
+        ("Menubutton.border", {"sticky": "nswe", "children": [
+            ("Menubutton.padding", {"sticky": "nswe", "children": [
+                ("Menubutton.label", {"sticky": ""})]})]})])
+    style.map("Bar.TMenubutton", background=[("active", HOVER),
+                                             ("pressed", HOVER)])
+    style.configure("TPanedwindow", background=BG)
+    style.configure("Sash", sashthickness=px(6), gripcount=0,
+                    background=BG, bordercolor=BG, lightcolor=BG, darkcolor=BG)
+    # Thin scrollbars with no arrows: a thumb on a track the colour of the
+    # panel, as every program written this decade has them.
+    for orient in ("Vertical", "Horizontal"):
+        style.layout(f"{orient}.TScrollbar", [
+            (f"{orient}.Scrollbar.trough", {"sticky": "nswe", "children": [
+                (f"{orient}.Scrollbar.thumb",
+                 {"expand": "1", "sticky": "nswe"})]})])
+        style.configure(f"{orient}.TScrollbar", background=EDGE,
+                        troughcolor=PANEL, bordercolor=PANEL,
+                        lightcolor=EDGE, darkcolor=EDGE, gripcount=0,
+                        arrowsize=px(10), width=px(10))
+        style.map(f"{orient}.TScrollbar",
+                  background=[("active", DIM), ("pressed", DIM)],
+                  lightcolor=[("active", DIM), ("pressed", DIM)],
+                  darkcolor=[("active", DIM), ("pressed", DIM)])
     return style
 
 
@@ -387,13 +606,55 @@ class Progress(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
 
+class MenuBar(ttk.Frame):
+    """
+    The menu bar, drawn in the window rather than by the operating system.
+
+    Windows draws a program's menu bar itself and ignores every colour Tk
+    passes it, so a dark window arrived with a white strip across its top --
+    the first thing anybody saw, and the thing that most made it look
+    unfinished. A row of buttons that each open the same menu is drawn by
+    Tk and so is dark. It answers `add_cascade` as a `tk.Menu` does, so the
+    menus are built the same way whichever of the two is holding them.
+    """
+
+    def __init__(self, root):
+        super().__init__(root, style="Bar.TFrame")
+        self.root = root
+
+    def add_cascade(self, label, menu):
+        ttk.Menubutton(self, text=label, menu=menu, width=0,
+                       style="Bar.TMenubutton").pack(side="left")
+
+    def show(self, before):
+        self.pack(fill="x", before=before)
+        ttk.Separator(self.root).pack(fill="x", before=before)
+
+
+class NativeMenuBar(tk.Menu):
+    """
+    On a Mac the menu bar is not in the window at all, and the system's is
+    used there, because a menu inside the window is what would look wrong.
+    """
+
+    def __init__(self, root):
+        super().__init__(root, borderwidth=0)
+        self.root = root
+
+    def show(self, before):
+        self.root.configure(menu=self)
+
+
+def menu_bar(root):
+    aqua = root.tk.call("tk", "windowingsystem") == "aqua"
+    return (NativeMenuBar if aqua else MenuBar)(root)
+
+
 class ImportMixin:
     """Everything the Import menu does. Kept apart because none of it is UI."""
 
     def _menu(self, root):
-        bar = tk.Menu(root, background=PANEL, foreground=INK,
-                      activebackground=ACCENT, activeforeground=BG,
-                      borderwidth=0)
+        bar = menu_bar(root)
         m = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
         m.add_command(label="Import new hands", command=self.import_new)
@@ -431,7 +692,7 @@ class ImportMixin:
         h.add_command(label="Open the log folder",
                       command=lambda: open_folder(diag.LOG.parent))
         bar.add_cascade(label="Help", menu=h)
-        root.configure(menu=bar)
+        bar.show(before=self)
 
     def update_now(self):
         """
@@ -844,7 +1105,6 @@ class App(ImportMixin, ttk.Frame):
         # who has something to say should not have to go looking for where
         # to say it, and most never open a menu that sounds like a manual.
         self.feedback_btn = ttk.Button(bar, text="✉  Feedback",
-                                       style="Accent.TButton",
                                        command=self.feedback)
         self.feedback_btn.pack(side="right", padx=(0, 6))
         ttk.Button(bar, text="detach", command=self.detach).pack(
@@ -1029,7 +1289,7 @@ class App(ImportMixin, ttk.Frame):
                                                    orient="horizontal")
         # Fitted again whenever the tab changes size -- opening the Ask
         # panel takes its width out of this one -- as well as on each render.
-        self._stats_need = 514
+        self._stats_need = px(514)
         split.bind("<Configure>",
                    lambda e: self._fit_stats_split(self._stats_need))
         split.pack(fill="both", expand=True)
@@ -1090,8 +1350,11 @@ class App(ImportMixin, ttk.Frame):
         tv = ttk.Treeview(wrap, show="headings", selectmode="browse")
         vs = ttk.Scrollbar(wrap, orient="vertical", command=tv.yview)
         tv.configure(yscrollcommand=vs.set)
-        tv.pack(side="left", fill="both", expand=True)
+        # The scrollbar first: the packer serves in order, and a table whose
+        # columns ask for more than the pane has took all of it and left the
+        # scrollbar none, so a long table had no visible way down.
         vs.pack(side="right", fill="y")
+        tv.pack(side="left", fill="both", expand=True)
         tv.tag_configure("group", foreground=DIM)
         tv.tag_configure("thin", foreground=WARN)
         tv.tag_configure("pos", foreground=GOOD)
@@ -1836,7 +2099,7 @@ class App(ImportMixin, ttk.Frame):
             side = anchors.get(c, "e")
             tv.heading(c, text=c, anchor=side,
                        command=lambda tv=tv, c=c: self._sort_by(tv, c))
-            tv.column(c, width=widths[i], minwidth=widths[i],
+            tv.column(c, width=px(widths[i]), minwidth=px(widths[i]),
                       anchor=side, stretch=False)
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
@@ -1877,7 +2140,10 @@ class App(ImportMixin, ttk.Frame):
                   + ((320,) if said is not None else ()))
         self._cols(tv, names, widths, {"stat": "w", "note": "w"})
         if tv is getattr(self, "tree", {}).get("stats"):
-            self._stats_need = sum(widths) + 24
+            # In screen pixels, as `_cols` lays the columns out: the sash
+            # is measured in those, and at 150% an unscaled total left the
+            # last column cut off again.
+            self._stats_need = px(sum(widths) + 24)
             self.after_idle(lambda: self._fit_stats_split(self._stats_need))
         blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
@@ -5101,6 +5367,7 @@ def main(argv):
     first = not DB.exists()
     if first:
         importer.create(DB)
+    crisp()
     root = tk.Tk()
     root.title("TraceEV")
     root.geometry("1360x880")
