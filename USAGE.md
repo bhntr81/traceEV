@@ -462,6 +462,13 @@ that did it and the hands that called, folded, raised, checked or bet
 instead. Hover a square for its count. The seen fraction is printed under
 it for the same reason as above.
 
+For a flop, turn or river stat the pane first shows what those hands had
+**made** -- the made-hand ladder from sets down to high card, each row's
+share of the hands that were seen, coloured strong, middle pair or weak,
+with the draws beneath -- which is the question Hand2Note's popup answers
+for a c-bet. Click a row for its hands; **starting hands ▸** at the top
+right switches to the 13x13, and **hand strength ▸** back.
+
 **Click a square** -- here or on the chart tab -- and the hands behind it
 open in a window, latest first, each a double-click from its replay. The
 list is exactly the square's count: the filter, that combo, and on a

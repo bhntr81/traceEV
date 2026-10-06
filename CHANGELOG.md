@@ -8,6 +8,24 @@ Newest first.
 
 ---
 
+## What a c-bet was made of, beside the c-bet -- 6 Oct 2026
+
+### Added -- the hand-strength ladder for a clicked postflop stat
+
+John, trying the beta: clicking flop c-bet should show how strong those
+hands were, the way Hand2Note's popup does. The pane beside the stats
+table drew the starting hands as a 13x13 for every stat, with one line of
+strong/middle/weak under it; for a flop, turn or river stat it now draws
+the whole made-hand ladder of the hands that took it -- `range_of` over
+the same rows, so the same rows, splits, draws and seen fraction as the
+range tab, and the tiers are `strength.STRONG` and `strength.WEAK` and
+nowhere else. A click on a row opens those hands (`--made` with `--took`);
+**starting hands ▸** switches to the 13x13. A preflop stat has nothing
+made and keeps the grid. `app.py --check` clicks the biggest row of the
+flop c-bet ladder and requires as many hands as the row counts.
+
+---
+
 ## The chat panel and the stats tab on a laptop screen -- 6 Oct 2026
 
 ### Fixed -- a question box one pixel tall, and a table with no numbers

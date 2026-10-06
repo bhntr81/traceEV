@@ -1050,9 +1050,13 @@ class App(ImportMixin, ttk.Frame):
         self.stat_canvas.bind("<Leave>",
                               lambda e: self.stat_canvas.delete("hint"))
         self.stat_chart, self.picked = None, None
-        self.stat_note = ("Click a stat in the table to draw its range here: "
-                          "the starting hands the players had when they did "
-                          "it, as a 13x13 grid.")
+        # What the pane beside the stats shows for a postflop stat: what the
+        # hands had made, or their starting hands. Strength first.
+        self.stat_view = "strength"
+        self.stat_note = ("Click a stat in the table to see the hands behind "
+                          "it here: for a flop, turn or river stat, what they "
+                          "had made on the board; for a preflop one, the "
+                          "starting hands as a 13x13 grid.")
         for name in ("actions", "overfolds", "range", "report", "results",
                      "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
@@ -2254,6 +2258,9 @@ class App(ImportMixin, ttk.Frame):
         if w < 80 or h < 80:
             return
         g, side, pane = self._chart_on(c)
+        if side and g and g.get("strength") and self.stat_view == "strength":
+            self._draw_strength(c, g)
+            return
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
@@ -2272,6 +2279,8 @@ class App(ImportMixin, ttk.Frame):
                                + ("" if "held" not in g else
                                   "\n" + query.held_line(g["held"])))
 
+        if side and g.get("strength"):
+            self._view_link(c, "hand strength ▸")
         comparison = g["mode"] == "comparison"
         rate = g["mode"] in ("rate", "comparison")
         top = 16 + (18 if "took" in g else 0) + (16 if "held" in g else 0)
@@ -2373,6 +2382,8 @@ class App(ImportMixin, ttk.Frame):
         g, side, pane = self._chart_on(c)
         geometry = self._geometry_of(c)
         c.delete("hint")
+        if side and g and g.get("strength") and self.stat_view == "strength":
+            return
         if not g or not geometry:
             return
         left, top, size = geometry
@@ -2407,6 +2418,92 @@ class App(ImportMixin, ttk.Frame):
                                         fill=BG, outline=EDGE, tags=("hint",))
         c.tag_lower(background, item)
 
+    def _view_link(self, c, text):
+        """The switch between a postflop range's two pictures, top right."""
+        w = c.winfo_width()
+        item = c.create_text(w - 12, 6, anchor="ne", text=text, fill=ACCENT,
+                             font=(UI, 9, "underline"))
+        self._view_link_box = c.bbox(item)
+
+    def _draw_strength(self, c, g):
+        """
+        What the hands behind a postflop stat had made, as bars.
+
+        Hand2Note's popup for a c-bet answers "with what" before it answers
+        "which starting hands", and so does this: the made-hand ladder in
+        `strength.ORDER`, each row the share of the SEEN hands that took the
+        stat, coloured by the tier `strength.STRONG` and `strength.WEAK`
+        put it in -- one line drawn in one place, as everywhere else. A
+        click on a row lists those hands; the starting hands are one click
+        away at the top right.
+        """
+        s = g["strength"]
+        w, h = c.winfo_width(), c.winfo_height()
+        k, n = g.get("took", (0, 0))
+        c.create_text(14, 6, anchor="nw", fill=INK, font=(UI, 9),
+                      width=w - 160,
+                      text=f"{g['stat']}: {k:,} of {n:,} chances"
+                           + (f" ({100.0 * k / n:.1f}%)" if n else "")
+                           + " -- what those hands had made")
+        self._view_link(c, "starting hands ▸")
+        rows = [r for r in s["rows"]]
+        lines = len(rows) + 6 + (len(s["draws"]) + 1 if s["draws"] else 0)
+        top = 34
+        step = max(14, min(22, (h - top - 40) / max(1, lines)))
+        small = step < 18
+        font = (UI, 8 if small else 9)
+        label_w, num_w = 150, 110
+        bar_x = 14 + label_w
+        bar_w = max(40, w - bar_x - num_w - 14)
+        peak = max([r["pct"] for r in rows] + [1.0])
+        self._strength_rows = []
+        y = top
+        for r in rows:
+            sub = r.get("sub")
+            colour = (BAD if r["weak"] else GOOD if r["tier"] == "strong"
+                      else WARN)
+            c.create_text(14 + (12 if sub else 0), y + step / 2, anchor="w",
+                          text=r["made"].strip(), fill=DIM if sub else INK,
+                          font=font)
+            length = bar_w * r["pct"] / peak
+            c.create_rectangle(bar_x, y + 3, bar_x + max(1, length),
+                               y + step - 3, width=0,
+                               fill=blend(PANEL, colour, 0.45 if sub else 0.9))
+            c.create_text(w - 14, y + step / 2, anchor="e", fill=INK,
+                          font=font, text=f"{r['pct']:.1f}%  {r['n']:,}")
+            if not sub:
+                self._strength_rows.append((y, y + step, r["made"]))
+            y += step
+        y += step / 2
+        for name, pct, colour, said in (
+                ("STRONG", s["strong"], GOOD, "top pair or better"),
+                ("MEDIUM", s["medium"], WARN, "middle pair"),
+                ("WEAK", s["weak"], BAD, "cannot call")):
+            c.create_text(14, y + step / 2, anchor="w", fill=colour,
+                          font=(UI, 9, "bold"), text=f"{name}  {pct:.0f}%")
+            c.create_text(bar_x, y + step / 2, anchor="w", fill=DIM, font=font,
+                          text=said)
+            y += step
+        if s["draws"]:
+            y += step / 2
+            c.create_text(14, y + step / 2, anchor="w", fill=DIM, font=font,
+                          text="and, overlapping the above:")
+            y += step
+            for d in s["draws"]:
+                c.create_text(26, y + step / 2, anchor="w", fill=DIM, font=font,
+                              text=d["label"])
+                c.create_text(w - 14, y + step / 2, anchor="e", fill=DIM,
+                              font=font, text=f"{d['pct']:.1f}%  {d['n']:,}")
+                y += step
+        share = 100.0 * s["n"] / s["total"] if s["total"] else 0.0
+        c.create_text(14, h - 8, anchor="sw", fill=DIM, font=(UI, 8),
+                      width=w - 28,
+                      text=f"{s['n']:,} of {s['total']:,} decisions had cards "
+                           f"to read ({share:.0f}%) -- this is what was SEEN"
+                           + ("" if share > 90 else
+                              ", and on ACR that is the showdown half")
+                           + ".  Click a row for its hands.")
+
     def _chart_on(self, c):
         """(chart, is the stats tab's, detached pane or None) for a canvas."""
         pane = getattr(self, "panes", {}).get(c)
@@ -2440,6 +2537,23 @@ class App(ImportMixin, ttk.Frame):
         g, side, pane = self._chart_on(c)
         geometry = self._geometry_of(c)
         last = pane["last"] if pane else getattr(self, "last", None)
+        if side and g and g.get("strength"):
+            box = getattr(self, "_view_link_box", None)
+            if box and box[0] - 4 <= event.x <= box[2] + 4 \
+                    and box[1] - 4 <= event.y <= box[3] + 4:
+                self.stat_view = ("grid" if self.stat_view == "strength"
+                                  else "strength")
+                self._draw_chart(self.stat_note, c)
+                return
+            if self.stat_view == "strength":
+                made = next((m for y0, y1, m in getattr(self, "_strength_rows", ())
+                             if y0 <= event.y < y1), None)
+                if made and last and self.picked:
+                    alternative = TOOK.get(self.took.get())
+                    self._open_hands(last, ["--made", made, "--took", self.picked
+                                            + (":" + alternative if alternative
+                                               else "")])
+                return
         if not g or not geometry or not last:
             return
         left, top, size = geometry
@@ -2451,7 +2565,6 @@ class App(ImportMixin, ttk.Frame):
         combo = query.combo_at(i, j)
         if not g["cells"].get(combo, (0, None))[0]:
             return
-        _where, _label, _parts, cohort_spec, query_argv = last
         extra = ["--combo", combo]
         if side and self.picked:
             alternative = TOOK.get(self.took.get())
@@ -2463,6 +2576,11 @@ class App(ImportMixin, ttk.Frame):
             stat = pane["stat"] if pane else self.chart_stat()
             if stat:
                 extra += ["--took", stat]
+        self._open_hands(last, extra)
+
+    def _open_hands(self, last, extra):
+        """The hands under `last`'s filter and `extra`, in a window of their own."""
+        _where, _label, _parts, cohort_spec, query_argv = last
         argv = list(query_argv) + extra
         try:
             where, label, parts = query.build(argv)
@@ -4584,6 +4702,54 @@ def check(db_path=DB):
     print(f"feedback is addressed and on the bar  {'yes' if mail_ok else 'NO'}")
     if not mail_ok:
         fails.append("the feedback link, its button or its copy is wrong")
+    # A postflop stat's pane draws what its hands had made, as Hand2Note's
+    # popup does, and a row of it opens those hands -- as many as the row
+    # says. Preflop there is nothing made and the pane stays the 13x13.
+    root.deiconify()
+    root.geometry("1360x880")
+    app.nb.select(app.tabs["stats"])
+    app.picked, app.stat_view = "cbet_flop", "strength"
+    app.took.set(next(iter(TOOK)))
+    app.last = ("1=1", "everything", [], None, [])
+    flop = app._work(0, "statrange", "1=1", "everything", [], "", None,
+                     pick=app._range_request("1=1", None))
+    app.results.get_nowait()
+    root.update()
+    app._render(flop)
+    root.update()
+    rows = getattr(app, "_strength_rows", [])
+    strength_ok = bool(rows) and (flop["range"].get("strength") is not None)
+    listed = want = None
+    if rows:
+        count = {r["made"]: r["n"] for r in flop["range"]["strength"]["rows"]}
+        y0, y1, made = max(rows, key=lambda r: count.get(r[2], 0))
+        want = count[made]
+        click = type("Click", (), {"widget": app.stat_canvas, "x": 300,
+                                   "y": (y0 + y1) / 2})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        app._square_hands(click)
+        item = app.requests.get_nowait() if not app.requests.empty() else None
+        if item:
+            out = app._work(*item[:1], *item[2:])
+            app.results.get_nowait()
+            app._render(out)
+            opened = [w for w in app.winfo_children()
+                      if isinstance(w, SquareHands)]
+            listed = len(opened[-1].ids) if opened else 0
+            for w in opened:
+                w.destroy()
+        strength_ok = strength_ok and listed == want
+    preflop = query.stat_range_of(con, "1=1", "threebet")
+    print(f"a postflop stat shows what its hands made  "
+          f"{'yes' if strength_ok else 'NO'} ({len(rows)} rows; "
+          f"{made if rows else '-'}: {listed} listed of {want}); "
+          f"preflop has none  {'yes' if 'strength' not in preflop else 'NO'}")
+    if not strength_ok or "strength" in preflop:
+        fails.append("the postflop strength pane is missing, or its row "
+                     "lists other hands than it counts")
+    app.picked = None
+    root.withdraw()
     # Detach: the chart tab, drawn under one filter, copied into a pane;
     # then the window moves on to another filter, and the pane must still
     # draw and click as the first. A pane that followed the window would
