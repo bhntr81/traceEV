@@ -20,6 +20,7 @@ views.json
 
 # runtime log
 TraceEV.log*
+TraceEV HUD.log*
 
 # screenshots taken while working on the window
 *.png

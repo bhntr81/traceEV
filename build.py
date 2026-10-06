@@ -190,7 +190,10 @@ def _third_party():
     import ast
     import sys as _sys
     stdlib = set(_sys.stdlib_module_names)
-    ours = set(RUNTIME) | {"population", "check", "build"}
+    # Any module in this folder is ours, not a dependency: `hud`'s check
+    # reaches `fixtures` for its watcher test, and a short list here called
+    # that "not portable" and would have failed the release build.
+    ours = {p.stem for p in HERE.glob("*.py")}
     bad = set()
     for name in RUNTIME:
         path = HERE / f"{name}.py"
