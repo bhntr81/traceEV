@@ -1502,6 +1502,8 @@ cohort picker.
 | **Action Profit Details**: profit per hand-strength group (pair+draw, LP, MP, TPWK, TPGK, overpair, set, 2pair+, KQ/KJ/QJ, trash, AK/AQ/AJ, A-high, gutshot, draw, low PP) and per bet size | **missing** — `--by hand` exists for rates; the actions view needs a `--by made` |
 | Postflop diagram: the showdown range after the action, in those groups, with counts | have `--range` (our groups: set, trips, two pair, overpair, top pair, middle pair, weak pair, under pair, board pair, high card + draws); **no top-pair kicker split (TPGK/TPWK), no A-high/K-high split, no "pair + draw" group** |
 | Preflop range map with two colours (base action and alternative, e.g. raise vs call) and Raise Total / Call Total | have `--chart` for one stat; **the two-action overlay is missing** |
+| A square of the range map opens the hands behind it |  since 5 Oct: click any square of the chart tab or of the stats tab's range; `--took STAT --combo X --hands` on the command line |
+| Panes that come off the main window and dock back | since 5 Oct: **detach** copies any tab into a window under its filter; **back into the window** returns it. Panes are copies, not a docking layout: they do not tile inside the main window or persist between runs |
 | List of showdown hands under the diagram, sorted by strength | have hands tab; sort by strength missing |
 | Customisable groups (hand strength), boards, bet sizes — with "Is weak" per group | have `strength.WEAK/STRONG` lists and `BOARDS`; not user-editable in the window |
 

@@ -4,6 +4,15 @@ Every command, what it does, and how to read what comes back.
 
 ---
 
+## Feedback and feature requests
+
+**✉ Feedback**, on the bar beside **Ask** (and in the Help menu), opens a
+small window with **Report a problem** and **Request a feature**. Each opens
+your email program with the developer's address, a subject and the build
+you are running already filled in; nothing is sent until you press send.
+Without an email program -- webmail, say -- copy the address from the same
+window. For a crash, Help > **Show the log** has what is needed.
+
 ## Loading hands
 
 One loader for every site. Each file is identified by the header its hands
@@ -453,6 +462,18 @@ that did it and the hands that called, folded, raised, checked or bet
 instead. Hover a square for its count. The seen fraction is printed under
 it for the same reason as above.
 
+**Click a square** -- here or on the chart tab -- and the hands behind it
+open in a window, latest first, each a double-click from its replay. The
+list is exactly the square's count: the filter, that combo, and on a
+stat's range the decisions that took the stat (or the action named in
+**range of**). On the command line the same list is `--took`, a filter
+like any other:
+
+```bash
+python query.py --pool --site ignition --took threebet --combo AKo --hands
+python query.py --pool --site ignition --took threebet:call --combo AJs --hands
+```
+
 ---
 
 ### Expression stats, in Hand2Note's language
@@ -557,6 +578,15 @@ must not carry columns or people, and a view must carry both. Flags typed
 after `--open NAME` narrow the view rather than replacing it. A view that no
 longer builds -- a flag renamed since -- is listed as broken rather than
 dropped.
+
+**detach** (beside **Ask**, and in the Views menu) copies the tab on screen
+into a window of its own, under the filter it was drawn with, and the main
+window goes on to the next question -- the button's range beside the
+cutoff's, last month's graph beside this month's. Any tab can come off. A
+detached chart hovers and clicks like the tab's, and its squares list the
+hands under the pane's filter, not the window's; a detached hands table
+opens each hand on a double-click. **back into the window** puts the pane's
+filter and tab back in the main window and closes it.
 
 ### Sizes, depth and the game
 

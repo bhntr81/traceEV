@@ -8,6 +8,79 @@ Newest first.
 
 ---
 
+## Feedback from inside the program -- 5 Oct 2026
+
+### Added -- a Feedback button, to the developer's email
+
+For the beta's testers: **✉ Feedback** on the bar, beside **Ask**, and in
+the Help menu. It opens the tester's own email program addressed to the
+developer, with a subject saying problem or feature request and the build
+and operating system in the body -- the two questions a reply would
+otherwise have to ask first. It does not send mail itself, because sending
+would need a mail password or an API key in the program, and the
+repository is public. The address is printed with a copy button too: a
+computer with no email program set up does nothing at all on a mailto
+link, and says nothing either. `app.py --check` reads the link back and
+copies the address.
+
+---
+
+## Panes off the main window -- 5 Oct 2026
+
+### Added -- detach any tab, and put it back
+
+**detach**, beside **Ask** and in the Views menu, copies the tab on screen
+into a window of its own under the filter it was drawn with. Hand2Note's
+panes come off so two answers can be read side by side, and a copy that
+followed the window's filter would show what the tab shows and compare
+nothing, so a pane keeps its own. It is drawn by the tab's own code from
+the answer the tab already had: no query, and no way for the two to differ.
+A detached chart hovers and clicks like the tab's, and a square lists the
+hands under the pane's filter; **back into the window** restores the pane's
+filter and tab in the main window and closes it.
+
+The renderers note what they drew for the tab's own clicks -- the stats
+tab's player, the hands tab's rows -- and a pane drawn through them puts
+those back, or a double-click on the hands tab would open the pane's hands.
+`app.py --check` detaches a chart drawn on the button, moves the window to
+everything, and clicks a square of the pane: it must ask for the button's
+hands. It does; pointed at the window's filter instead, the check fails.
+
+Not a docking layout: panes do not tile inside the main window and are
+not kept between runs. A saved view is the way to keep a whole window.
+
+---
+
+## A square of a range opens its hands -- 5 Oct 2026
+
+### Added -- click a square, get the hands; `--took`
+
+Hand2Note's range map opens onto the hands behind each square, and the
+question a reader has once a range's shape has answered the first one is
+"which ace-king was it". A click on any square of the chart tab, or of the
+range beside the stats table, now opens those hands in a window of their
+own, each one a double-click from its replay. The window says what filter
+they were found under, because a list of nine hands reads as "his ace-king"
+when it is his ace-king 3-betting from the button last month.
+
+The hands are the filter's, cut to the combo, and on a stat's range cut
+again to the decisions that took the stat -- or the action taken instead,
+whichever the box beside the table says. That second cut is a filter of its
+own, **`--took STAT`** (`--took threebet:call` for the calls on the same
+chances), so `query.py --took threebet --combo AKo --hands` is the same
+list on the command line. Both it and the range are `query.took_where`, and
+`query.py --check` holds every square of two stats' ranges to the number of
+hands the click lists. `--took` joins `--aggressive` and `--allin` among
+the flags a saved stat may not be defined over: a chance that already
+contains its own action reads 100% for ever.
+
+On the chart tab with a stat chosen, a square is coloured by the share that
+took the stat, and its click lists the ones that did. A click opens a
+window rather than writing `--combo` into the filter, because the chart is
+still being read and a click should not change what it is a chart of.
+
+---
+
 ## The sittings filters have an index -- 5 Oct 2026
 
 ### Added -- `dec_sid`, on `decisions(session_id)`
@@ -22,6 +95,8 @@ to seek it. It is built with the other session indexes in `sessions.index`
 and not in `decisions.INDEXES`, because `decisions.build` makes a table
 without the session columns and indexes it before they exist. An existing
 database gets it on its next import, without a rebuild.
+
+---
 
 ## Notes: templates, a hand in a note, a note on a stat -- 5 Oct 2026
 

@@ -38,8 +38,10 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import platform
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import sqlite3
@@ -62,6 +64,12 @@ HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
         else Path(__file__).parent)
 DB = HERE / "hands.db"
 query.DB = DB
+# Where testers' feedback and feature requests go: the owner's own address,
+# given for exactly this. The window opens the tester's email program with
+# it filled in rather than sending anything itself, because sending would
+# need a mail password or an API key in the program, and the repository is
+# public -- a key in it is a key for everybody.
+FEEDBACK_TO = "john.brandon.h86@gmail.com"
 # The saved stats are the user's as much as the database is, so they sit
 # beside it rather than beside the code -- which, frozen, is a directory
 # PyInstaller deletes on the way out. Loading them again here is what puts
@@ -417,6 +425,8 @@ class ImportMixin:
 
         h = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
+        h.add_command(label="Send feedback or a feature request…",
+                      command=self.feedback)
         h.add_command(label="Show the log…", command=self.show_log)
         h.add_command(label="Open the log folder",
                       command=lambda: open_folder(diag.LOG.parent))
@@ -453,6 +463,9 @@ class ImportMixin:
             f"Commit: {update.head() or 'unknown'}\n"
             f"Repository: {update.remote_repo()}\n\n"
             f"The database is at:\n{DB}")
+
+    def feedback(self):
+        Feedback(self)
 
     def show_log(self):
         win = tk.Toplevel(self.master)
@@ -795,9 +808,19 @@ class App(ImportMixin, ttk.Frame):
         self.preset_box.bind("<<ComboboxSelected>>",
                              lambda _e: self.refresh())
         self.clear_btn = ttk.Button(bar, text="clear", command=self.clear_filters)
+        self.shown_out, self.panes = {}, {}
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
         ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
+        # On the bar every view keeps, not only in the Help menu: a tester
+        # who has something to say should not have to go looking for where
+        # to say it, and most never open a menu that sounds like a manual.
+        self.feedback_btn = ttk.Button(bar, text="✉  Feedback",
+                                       style="Accent.TButton",
+                                       command=self.feedback)
+        self.feedback_btn.pack(side="right", padx=(0, 6))
+        ttk.Button(bar, text="detach", command=self.detach).pack(
+            side="right", padx=(0, 6))
         ttk.Separator(self).pack(fill="x")
 
         # The answer on the left, the assistant on the right when it is
@@ -983,6 +1006,7 @@ class App(ImportMixin, ttk.Frame):
         self.stat_canvas.bind("<Configure>", lambda e: self._draw_chart(
             self.stat_note, self.stat_canvas))
         self.stat_canvas.bind("<Motion>", self._chart_hover)
+        self.stat_canvas.bind("<Button-1>", self._square_hands)
         self.stat_canvas.bind("<Leave>",
                               lambda e: self.stat_canvas.delete("hint"))
         self.stat_chart, self.picked = None, None
@@ -1006,6 +1030,7 @@ class App(ImportMixin, ttk.Frame):
         self.chart_canvas.pack(fill="both", expand=True)
         self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
         self.chart_canvas.bind("<Motion>", self._chart_hover)
+        self.chart_canvas.bind("<Button-1>", self._square_hands)
         self.chart_canvas.bind("<Leave>", lambda e: self.chart_canvas.delete("hint"))
         self.chart = None
         self.tree["sessions"].bind("<Double-1>", self._open_session)
@@ -1237,6 +1262,8 @@ class App(ImportMixin, ttk.Frame):
         """The Views menu, read from the file each time it is opened."""
         menu.delete(0, "end")
         menu.add_command(label="Save this view…", command=self.save_view)
+        menu.add_command(label="Detach this tab into a window",
+                         command=self.detach)
         menu.add_command(label="Export the hands it selects…",
                          command=self.export_hands)
         known = query.saved_views()
@@ -1621,6 +1648,9 @@ class App(ImportMixin, ttk.Frame):
             elif view == "hands":
                 out["rows"] = query.hands_of(con, where, limit=500,
                                              sort=stat or "date")
+            elif view == "square":
+                out["rows"] = query.hands_of(con, where, limit=500)
+                out["label"], out["argv"] = label, list(filter_argv)
             elif view == "graph":
                 out["series"] = self._series(con, where)
             if view != "statrange" and not self._any(out):
@@ -1694,6 +1724,12 @@ class App(ImportMixin, ttk.Frame):
     # ---- drawing ------------------------------------------------------
     def _render(self, out):
         view = out["view"]
+        # What each tab last drew, and under what, for Detach: a pane is a
+        # copy of an answer already on the screen, so it costs no query and
+        # cannot come out different from the tab it was taken from.
+        if view not in ("statrange", "square") and getattr(self, "last", None):
+            self.shown_out[view] = (out, self.last, self.chart_stat(),
+                                    self.by.get())
         # A cached table carries the range of whatever was clicked when it
         # was computed; `show_stat_range` draws the current one after it.
         current = self._range_request(self.last[0], self.last[3]) \
@@ -1712,12 +1748,18 @@ class App(ImportMixin, ttk.Frame):
             self.graph_ran = True
             self._draw_graph(out.get("why") or out.get("error"))
             return
+        if view == "square":
+            SquareHands(self, out)
+            return
         if view == "chart":
             self.chart = out if (out.get("cells") or
                                  (out.get("mode") == "comparison" and out.get("total"))) else None
             self._draw_chart(out.get("why") or out.get("error"))
             return
-        tv = self.tree[view]
+        self._render_into(self.tree[view], view, out)
+
+    def _render_into(self, tv, view, out):
+        """One table view's answer into a Treeview, the tab's or a pane's."""
         tv.delete(*tv.get_children())
         if out.get("error") or (out.get("why") and view != "report"):
             tv.configure(columns=("msg",))
@@ -2015,14 +2057,15 @@ class App(ImportMixin, ttk.Frame):
             "one hand's result has a standard deviation near 11.7bb, so the "
             "error on a win rate is about 1170/√n", ""))
 
-    def _render_hands(self, tv, out):
+    def _fill_hands(self, tv, rows):
+        """`hands_of`'s rows into a table; returns each row's (hand, seat)."""
         self._cols(tv, ("when", "site", "bb", "pos", "hand", "my line",
                         "net bb", "board", "tags"),
                    (140, 90, 60, 60, 70, 150, 90, 170, 160),
                    {"when": "w", "site": "w", "pos": "w", "hand": "w",
                     "my line": "w", "board": "w", "tags": "w"})
-        self._hand_ids = {}
-        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in out["rows"]:
+        ids = {}
+        for hid, seat, when, site, bb, pos, combo, board, net, own, marks in rows:
             iid = tv.insert("", "end", values=(
                 (when or "")[:16], site, f"{bb:g}" if bb else "",
                 pos or "", combo or "–", own or "",
@@ -2030,7 +2073,11 @@ class App(ImportMixin, ttk.Frame):
                 board or "", ", ".join(marks)),
                 tags=("pos",) if (net or 0) > 0 else
                      ("neg",) if (net or 0) < 0 else ())
-            self._hand_ids[iid] = (hid, seat)
+            ids[iid] = (hid, seat)
+        return ids
+
+    def _render_hands(self, tv, out):
+        self._hand_ids = self._fill_hands(tv, out["rows"])
         if out["rows"]:
             tv.insert("", "end", values=("",) * 9)
             tv.insert("", "end", tags=("note",),
@@ -2052,6 +2099,26 @@ class App(ImportMixin, ttk.Frame):
             return
         sid = chosen[0][len("session:"):]
         self.apply_argv(["--hero", "--session", sid, "--hands"])
+
+    def detach(self):
+        """
+        The tab on screen, copied into a window of its own.
+
+        Hand2Note's panes come off the main window so that two answers can
+        be read side by side -- the button's range beside the cutoff's, last
+        month's graph beside this month's. The copy keeps the filter it was
+        made under, and the main window goes on to the next question: a
+        pane that followed the filter would show the same thing as the tab
+        and compare nothing.
+        """
+        view = self.nb.tab(self.nb.select(), "text")
+        shown = self.shown_out.get(view)
+        if not shown:
+            messagebox.showinfo("Nothing to detach",
+                                f"The {view} tab has not drawn anything yet.",
+                                parent=self.master)
+            return
+        Pane(self, view, *shown)
 
     def export_hands(self):
         """
@@ -2119,8 +2186,7 @@ class App(ImportMixin, ttk.Frame):
         w, h = c.winfo_width(), c.winfo_height()
         if w < 80 or h < 80:
             return
-        side = c is getattr(self, "stat_canvas", None)
-        g = self.stat_chart if side else self.chart
+        g, side, pane = self._chart_on(c)
         if not g:
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10), width=w - 60,
                           justify="center",
@@ -2145,7 +2211,9 @@ class App(ImportMixin, ttk.Frame):
         foot = 112 if comparison else 52
         size = min((w - 28) / 13.0, (h - top - foot) / 13.0)
         left = (w - size * 13) / 2.0
-        if side:
+        if pane:
+            pane["geometry"] = (left, top, size)
+        elif side:
             self._stat_geometry = (left, top, size)
         else:
             self._chart_geometry = (left, top, size)
@@ -2235,13 +2303,12 @@ class App(ImportMixin, ttk.Frame):
     def _chart_hover(self, event):
         """A colour's sample is one pointer move away, without another query."""
         c = getattr(event, "widget", self.chart_canvas)
-        side = c is getattr(self, "stat_canvas", None)
-        g = self.stat_chart if side else self.chart
-        geometry = "_stat_geometry" if side else "_chart_geometry"
+        g, side, pane = self._chart_on(c)
+        geometry = self._geometry_of(c)
         c.delete("hint")
-        if not g or not hasattr(self, geometry):
+        if not g or not geometry:
             return
-        left, top, size = getattr(self, geometry)
+        left, top, size = geometry
         if size <= 0:
             return
         i, j = int((event.y - top) // size), int((event.x - left) // size)
@@ -2261,6 +2328,8 @@ class App(ImportMixin, ttk.Frame):
                 text += "\nThin sample; colours hidden."
         else:
             text += " matching opportunities"
+        if n:
+            text += "\nclick for these hands"
         x = max(4, min(event.x + 14, c.winfo_width() - 300))
         y = max(4, min(event.y + 14, c.winfo_height() - 100))
         item = c.create_text(x + 6, y + 6, anchor="nw", text=text, fill=INK,
@@ -2271,20 +2340,93 @@ class App(ImportMixin, ttk.Frame):
                                         fill=BG, outline=EDGE, tags=("hint",))
         c.tag_lower(background, item)
 
+    def _chart_on(self, c):
+        """(chart, is the stats tab's, detached pane or None) for a canvas."""
+        pane = getattr(self, "panes", {}).get(c)
+        if pane:
+            return pane["g"], False, pane
+        side = c is getattr(self, "stat_canvas", None)
+        return (self.stat_chart if side else self.chart), side, None
+
+    def _geometry_of(self, c):
+        _g, side, pane = self._chart_on(c)
+        if pane:
+            return pane.get("geometry")
+        return getattr(self, "_stat_geometry" if side else "_chart_geometry",
+                       None)
+
+    def _square_hands(self, event):
+        """
+        A square of a chart, clicked: the hands it was drawn from.
+
+        Hand2Note's range opens onto its hands, and a square is the question
+        a reader actually has -- "which ace-king was it" -- once the shape
+        has answered the first one. The hands are the filter's, cut to that
+        combo, and on a stat's range cut again to the decisions that took
+        the stat (or the action taken instead), so the list is exactly the
+        count printed on the square; `query.py --check` holds the two to
+        that. Opened in a window of its own rather than written into the
+        filter, because the chart is still being read and a click should
+        not change what it is a chart of.
+        """
+        c = event.widget
+        g, side, pane = self._chart_on(c)
+        geometry = self._geometry_of(c)
+        last = pane["last"] if pane else getattr(self, "last", None)
+        if not g or not geometry or not last:
+            return
+        left, top, size = geometry
+        if size <= 0:
+            return
+        i, j = int((event.y - top) // size), int((event.x - left) // size)
+        if not (0 <= i < 13 and 0 <= j < 13):
+            return
+        combo = query.combo_at(i, j)
+        if not g["cells"].get(combo, (0, None))[0]:
+            return
+        _where, _label, _parts, cohort_spec, query_argv = last
+        extra = ["--combo", combo]
+        if side and self.picked:
+            alternative = TOOK.get(self.took.get())
+            extra += ["--took", self.picked
+                      + (":" + alternative if alternative else "")]
+        elif not side and g["mode"] != "composition":
+            # A rate's square is coloured by the share that took it, and
+            # the ones that did are the hands worth opening.
+            stat = pane["stat"] if pane else self.chart_stat()
+            if stat:
+                extra += ["--took", stat]
+        argv = list(query_argv) + extra
+        try:
+            where, label, parts = query.build(argv)
+        except SystemExit as e:
+            messagebox.showerror("No hands", str(e), parent=self)
+            return
+        key = ("square", where, repr(cohort_spec))
+        if key in self.cache:
+            self._render(self.cache[key])
+            return
+        self.pending += 1
+        self.status.configure(text="working…")
+        self.requests.put((self.pending, key, "square", where, label, parts,
+                           "", cohort_spec, None, None, argv, None))
+
     # ---- the graph, drawn rather than served ---------------------------
-    def _draw_graph(self, message=None):
-        c = self.canvas
+    def _draw_graph(self, message=None, canvas=None, series=None):
+        """The main graph, or with `canvas` and `series` a detached one."""
+        c = canvas or self.canvas
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50:
             return
-        s = self.series
+        s = series if canvas is not None else self.series
+        ran = canvas is not None or self.graph_ran
         if not s:
             idle = "the graph is drawn once the filter has run"
             c.create_text(w / 2, h / 2, fill=DIM, font=(UI, 10),
                           text=message or (
                               "fewer than two of your hands match -- a line "
-                              "needs two points" if self.graph_ran else idle))
+                              "needs two points" if ran else idle))
             return
         L, R, T, B = 70, 210, 30, 40
         n = len(s["total"])
@@ -3714,6 +3856,211 @@ class AskPanel(ttk.Frame):
         self.app.apply_argv(self.last_ran)
 
 
+def feedback_mail(kind):
+    """
+    A mailto: link to FEEDBACK_TO for a problem or a feature request.
+
+    The subject says which, and the body carries what a reply would
+    otherwise have to ask for first: which build, on what computer. The
+    commit is unknown in a packaged build, which has no git beside it, so
+    it says it is one instead.
+    """
+    build = update.head() or ("a packaged build" if getattr(sys, "frozen", False)
+                              else "unknown")
+    subject = f"TraceEV {kind}"
+    body = ("\n\n\n-- \n"
+            f"TraceEV build: {build}\n"
+            f"Computer: {platform.system()} {platform.release()}, "
+            f"Python {platform.python_version()}\n")
+    if kind == "problem":
+        body = ("What happened, and what did you expect?\n" + body
+                + "If it crashed, Help > Show the log has the details.\n")
+    else:
+        body = "What would you like TraceEV to do?\n" + body
+    return (f"mailto:{FEEDBACK_TO}?subject={quote(subject)}"
+            f"&body={quote(body)}")
+
+
+class Feedback(tk.Toplevel):
+    """
+    Feedback and feature requests, to the owner's email.
+
+    Two buttons open the tester's own email program with the address, a
+    subject and the build filled in; nothing is sent until they press send
+    there. The address is printed with a copy button as well, because a
+    computer with no email program set up opens nothing on a mailto: link
+    and gives no error, and webmail users are most testers.
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.title("Feedback and feature requests")
+        self.configure(background=BG)
+        self.geometry("520x260")
+        self.transient(app.master)
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=18, pady=14)
+        ttk.Label(body, text="Found a problem, or want TraceEV to do something "
+                             "it doesn't? It goes straight to the developer.",
+                  wraplength=480, justify="left").pack(anchor="w")
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(14, 10))
+        ttk.Button(row, text="Report a problem", style="Accent.TButton",
+                   command=lambda: self.write("problem")).pack(side="left")
+        ttk.Button(row, text="Request a feature",
+                   command=lambda: self.write("feature request")).pack(
+            side="left", padx=(8, 0))
+        ttk.Label(body, text="Your email program opens with this filled in; "
+                             "nothing is sent until you press send there. "
+                             "No email program? Write to:",
+                  style="Dim.TLabel", wraplength=480,
+                  justify="left").pack(anchor="w")
+        addr = ttk.Frame(body)
+        addr.pack(anchor="w", pady=(6, 0))
+        ttk.Label(addr, text=FEEDBACK_TO).pack(side="left")
+        self.copied = ttk.Label(addr, text="", style="Dim.TLabel")
+        ttk.Button(addr, text="copy address", command=self.copy).pack(
+            side="left", padx=(10, 0))
+        self.copied.pack(side="left", padx=(8, 0))
+
+    def write(self, kind):
+        webbrowser.open(feedback_mail(kind))
+
+    def copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(FEEDBACK_TO)
+        self.copied.configure(text="copied")
+
+
+class Pane(tk.Toplevel):
+    """
+    One tab's answer in a window of its own, under the filter it was made in.
+
+    Drawn by the tab's own code from the answer the tab already had, so a
+    pane and the tab it came from cannot disagree. A chart pane is a chart
+    like the tab's: hover for counts, click a square for its hands, under
+    the pane's filter and not the window's. **back into the window** puts
+    that filter and tab back in the main window and closes the pane.
+    """
+
+    def __init__(self, app, view, out, last, stat, by):
+        super().__init__(app)
+        self.app, self.view, self.last, self.by = app, view, last, by
+        self.configure(background=BG)
+        label = last[1] + (f", cohort: {players.describe_cohort(last[3])}"
+                           if last[3] is not None else "")
+        self.title(f"{view} · {label}"[:120])
+        self.geometry("900x620")
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        ttk.Label(top, text=f"{view} -- {label}"
+                  + (f", by {by}" if view in ("report", "results", "actions",
+                                              "overfolds") and by else ""),
+                  style="Dim.TLabel", wraplength=700,
+                  justify="left").pack(side="left")
+        ttk.Button(top, text="back into the window",
+                   command=self.dock).pack(side="right")
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.canvas = None
+        if view in ("chart", "graph"):
+            c = self.canvas = tk.Canvas(body, bg=BG, highlightthickness=0)
+            c.pack(fill="both", expand=True)
+            if view == "chart":
+                g = out if (out.get("cells") or (out.get("mode") == "comparison"
+                                                 and out.get("total"))) else None
+                app.panes[c] = {"g": g, "last": last, "stat": stat}
+                message = out.get("why") or out.get("error")
+                c.bind("<Configure>", lambda e: app._draw_chart(message, c))
+                c.bind("<Motion>", app._chart_hover)
+                c.bind("<Leave>", lambda e: c.delete("hint"))
+                c.bind("<Button-1>", app._square_hands)
+            else:
+                c.bind("<Configure>", lambda e: app._draw_graph(
+                    out.get("why") or out.get("error"), c, out.get("series")))
+        else:
+            self.tv = app._table(body)
+            # The tab's renderers keep a note of what they drew, for the
+            # tab's own clicks; a pane must not leave its answer there, or
+            # a double-click on the tab would open the pane's hands.
+            kept = (getattr(app, "shown_stats", None),
+                    getattr(app, "_hand_ids", {}))
+            try:
+                app._render_into(self.tv, view, out)
+                self.ids = getattr(app, "_hand_ids", {}) if view == "hands" else {}
+            finally:
+                app.shown_stats, app._hand_ids = kept
+            if self.ids:
+                self.tv.bind("<Double-1>", self._open)
+                self.tv.bind("<Return>", self._open)
+        self.bind("<Destroy>", self._gone)
+
+    def _open(self, _event=None):
+        sel = self.tv.selection()
+        if sel and sel[0] in self.ids:
+            HandWindow(self.app, self.app.con, *self.ids[sel[0]])
+
+    def _gone(self, event):
+        if event.widget is self and self.canvas is not None:
+            self.app.panes.pop(self.canvas, None)
+
+    def dock(self):
+        _w, _l, _p, cohort_spec, query_argv = self.last
+        argv = list(query_argv)
+        if self.by and self.view in ("report", "results"):
+            argv += ["--by", self.by]
+        self.app.apply_argv(argv, cohort_spec)
+        if self.view in ("actions", "overfolds") and self.by is not None:
+            self.app.by.set(self.by)
+        self.app.nb.select(self.app.tabs[self.view])
+        self.app.refresh()
+        self.destroy()
+
+
+class SquareHands(tk.Toplevel):
+    """
+    The hands behind one square of a chart, each one double-clicked open.
+
+    The filter they were found under is written along the top, because a
+    list of nine hands is read as "his ace-king" and it is his ace-king
+    3-betting from the button in the last month, or whatever else the
+    filter was, and nothing else on the screen would say so.
+    """
+
+    def __init__(self, master, out):
+        super().__init__(master)
+        self.configure(background=BG)
+        rows = out.get("rows") or []
+        self.title(f"{len(rows):,} hands" if rows else "no hands")
+        self.geometry("1000x420")
+        self.master_app, self.con = master, master.con
+        said = out.get("label", "")
+        if len(rows) >= 500:
+            said += " -- the latest 500"
+        ttk.Label(self, text=said, style="Dim.TLabel", wraplength=960,
+                  justify="left").pack(anchor="w", padx=12, pady=(10, 4))
+        frame = ttk.Frame(self)
+        frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.tv = master._table(frame)
+        if out.get("error") or not rows:
+            self.tv.configure(columns=("msg",))
+            self.tv.column("msg", width=900, anchor="w")
+            self.tv.insert("", "end", tags=("neg",), values=(
+                out.get("error") or "nothing matches",))
+            if out.get("why"):
+                self.tv.insert("", "end", values=(out["why"],), tags=("note",))
+            self.ids = {}
+            return
+        self.ids = master._fill_hands(self.tv, rows)
+        self.tv.bind("<Double-1>", self._open)
+        self.tv.bind("<Return>", self._open)
+
+    def _open(self, _event=None):
+        sel = self.tv.selection()
+        if sel and sel[0] in self.ids:
+            HandWindow(self.master_app, self.con, *self.ids[sel[0]])
+
+
 class HandWindow(tk.Toplevel):
     """
     One hand, replayed in a window of its own -- and where it gets marked.
@@ -4076,6 +4423,113 @@ def check(db_path=DB):
           f"{'refused' if refused['range'].get('error') else 'NOT refused'}")
     if g.get("cells") and drew < 169:
         fails.append("the stats tab's range is computed but not drawn")
+    # A square of it, clicked, opens the hands it counted -- as many as the
+    # square says, through the same queue every other query takes.
+    opened = None
+    if g.get("cells") and getattr(app, "_stat_geometry", None):
+        combo, (n_sq, _k) = max(g["cells"].items(), key=lambda kv: kv[1][0])
+        left, top, size = app._stat_geometry
+        spot = next((i, j) for i in range(13) for j in range(13)
+                    if query.combo_at(i, j) == combo)
+        click = type("Click", (), {"widget": app.stat_canvas,
+                                   "x": left + (spot[1] + .5) * size,
+                                   "y": top + (spot[0] + .5) * size})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        # Drawing the tab refreshed it under whatever the window's boxes
+        # held; the range above is of everything, and so is its square.
+        app.last = ("1=1", "everything", [], None, [])
+        app._square_hands(click)
+        item = app.requests.get_nowait()
+        out = app._work(*item[:1], *item[2:])
+        app.results.get_nowait()
+        app._render(out)
+        windows = [w for w in app.winfo_children() if isinstance(w, SquareHands)]
+        opened = windows[-1] if windows else None
+        listed = len(opened.ids) if opened else 0
+        print(f"a clicked square lists its hands  {combo}: {listed} of {n_sq}")
+        if listed != n_sq:
+            fails.append(f"the square {combo} counts {n_sq} hands and its "
+                         f"click listed {listed}")
+        if opened:
+            opened.destroy()
+    # Feedback reaches the owner: a link that addresses him, says which
+    # kind of message it is, and carries the build, from a button on the
+    # bar rather than only from a menu.
+    from urllib.parse import urlsplit, parse_qs
+    link = urlsplit(feedback_mail("problem"))
+    asked = parse_qs(link.query)
+    window = Feedback(app)
+    window.copy()
+    copied = root.clipboard_get() == FEEDBACK_TO
+    window.destroy()
+    mail_ok = (link.scheme == "mailto" and link.path == FEEDBACK_TO
+               and asked.get("subject") == ["TraceEV problem"]
+               and "TraceEV build:" in asked.get("body", [""])[0]
+               and app.feedback_btn.winfo_manager() == "pack" and copied)
+    print(f"feedback is addressed and on the bar  {'yes' if mail_ok else 'NO'}")
+    if not mail_ok:
+        fails.append("the feedback link, its button or its copy is wrong")
+    # Detach: the chart tab, drawn under one filter, copied into a pane;
+    # then the window moves on to another filter, and the pane must still
+    # draw and click as the first. A pane that followed the window would
+    # compare nothing, and one that clicked through to the window's filter
+    # would list hands from a different chart than the one under the mouse.
+    root.deiconify()
+    btn = query.build(["--pos", "BTN"])
+    app.last = (btn[0], btn[1], btn[2], None, ["--pos", "BTN"])
+    app.of.set("the range itself")
+    app.nb.select(app.tabs["chart"])
+    root.update()
+    shown = app._work(0, "chart", btn[0], btn[1], btn[2], "", None)
+    app.results.get_nowait()
+    app.last = (btn[0], btn[1], btn[2], None, ["--pos", "BTN"])
+    app._render(shown)
+    app.detach()
+    panes = [w for w in app.winfo_children() if isinstance(w, Pane)]
+    pane = panes[-1] if panes else None
+    pane_ok = bool(pane)
+    if pane:
+        pane.geometry("900x620")
+        root.update()
+        app.last = ("1=1", "everything", [], None, [])
+        drawn = len(pane.canvas.find_all())
+        geometry = app._geometry_of(pane.canvas)
+        combo = next(c for c, (n, _k) in shown["cells"].items() if n)
+        spot = next((i, j) for i in range(13) for j in range(13)
+                    if query.combo_at(i, j) == combo)
+        left, top, size = geometry or (0, 0, 0)
+        click = type("Click", (), {"widget": pane.canvas,
+                                   "x": left + (spot[1] + .5) * size,
+                                   "y": top + (spot[0] + .5) * size})
+        while not app.requests.empty():
+            app.requests.get_nowait()
+        app._square_hands(click)
+        item = app.requests.get_nowait() if not app.requests.empty() else None
+        want = query.build(["--pos", "BTN", "--combo", combo])[0]
+        pane_ok = drawn >= 169 and item is not None and item[3] == want
+        print(f"a detached chart keeps its filter  "
+              f"{'yes' if pane_ok else 'NO'}, {drawn} items, {combo} "
+              f"clicks through to BTN")
+        pane.destroy()
+        root.update()
+    if not pane_ok or app.panes:
+        fails.append("a detached chart did not draw, or clicked through to "
+                     "the window's filter, or outlived its window")
+    # A table pane is the tab's own renderer into another table, and must
+    # leave the tab's record of its rows alone.
+    before = dict(getattr(app, "_hand_ids", {}))
+    rows = app._work(0, "hands", btn[0], btn[1], btn[2], "", None)
+    app.results.get_nowait()
+    table = Pane(app, "hands", rows, app.last, None, "")
+    listed = len(table.ids)
+    table.destroy()
+    kept = getattr(app, "_hand_ids", {}) == before
+    print(f"a detached table lists its rows  {listed} of {len(rows['rows'])}"
+          f"; the tab's own left alone  {'yes' if kept else 'NO'}")
+    if listed != len(rows["rows"]) or not kept:
+        fails.append("a detached hands table lost rows or overwrote the tab's")
+    root.withdraw()
     if not refused["range"].get("error"):
         fails.append("a hand-counted stat was given an alternative range")
     # The weak share under a postflop range is `range_of`'s over the same
