@@ -6,7 +6,7 @@ Every command, what it does, and how to read what comes back.
 
 ## Feedback and feature requests
 
-**✉ Feedback**, on the bar beside **Ask** (and in the Help menu), opens a
+**✉ Feedback**, on the bar beside **Chat with AI** (and in the Help menu), opens a
 small window with **Report a problem** and **Request a feature**. Each opens
 your email program with the developer's address, a subject and the build
 you are running already filled in; nothing is sent until you press send.
@@ -462,6 +462,13 @@ that did it and the hands that called, folded, raised, checked or bet
 instead. Hover a square for its count. The seen fraction is printed under
 it for the same reason as above.
 
+For a flop, turn or river stat the pane first shows what those hands had
+**made** -- the made-hand ladder from sets down to high card, each row's
+share of the hands that were seen, coloured strong, middle pair or weak,
+with the draws beneath -- which is the question Hand2Note's popup answers
+for a c-bet. Click a row for its hands; **starting hands ▸** at the top
+right switches to the 13x13, and **hand strength ▸** back.
+
 **Click a square** -- here or on the chart tab -- and the hands behind it
 open in a window, latest first, each a double-click from its replay. The
 list is exactly the square's count: the filter, that combo, and on a
@@ -579,7 +586,7 @@ after `--open NAME` narrow the view rather than replacing it. A view that no
 longer builds -- a flag renamed since -- is listed as broken rather than
 dropped.
 
-**detach** (beside **Ask**, and in the Views menu) copies the tab on screen
+**detach** (beside **Chat with AI**, and in the Views menu) copies the tab on screen
 into a window of its own, under the filter it was drawn with, and the main
 window goes on to the next question -- the button's range beside the
 cutoff's, last month's graph beside this month's. Any tab can come off. A
