@@ -8,6 +8,31 @@ Newest first.
 
 ---
 
+## The HUD from the window -- 6 Oct 2026
+
+### Added -- a HUD menu, so the HUD needs no command line
+
+The HUD was `python hud.py` and nothing else, and the program is used as a
+downloaded `TraceEV.exe` by people who never open a prompt. The window now
+has a HUD menu: start it, place the boxes, try it on a pretend table, choose
+what the boxes show. Each starts the HUD as its own process -- the same
+program with `--hud` when packaged -- because the HUD runs a Tk loop and a
+watcher of its own, and this window's one query thread is a rule a second
+loop in one interpreter would break. A one-file build tells its children to
+reuse its unpacked folder, which closing the window deletes, so the HUD is
+started with PyInstaller's `PYINSTALLER_RESET_ENVIRONMENT` and unpacks its
+own.
+
+### Changed -- the HUD says why it did not start, and where it is looking
+
+Its refusals (ClubWPT Gold open, a bad `hud.json`, no hands yet for the
+demo) were printed, and a windowed build has nowhere to print: the HUD would
+simply not appear. With no console they are a message box. Its window lists
+the folders it watches and can add one, saved as `"folders"` in `hud.json`,
+because a client told to save its hands elsewhere gave a HUD that drew
+nothing and looked broken. `hud.json` and `hands.db` are found beside the
+program when packaged, as everything else is.
+
 ## A sharper, plainer window -- 6 Oct 2026
 
 ### Changed -- text drawn at the screen's real resolution on Windows
@@ -525,6 +550,129 @@ Since imports stopped rebuilding, a new entry in `decisions.INDEXES` would
 reach an existing database only on its next rebuild, which might never
 come. `importer.update` now builds any missing indexes once, after its
 transaction commits.
+
+---
+
+## The HUD's next-hand line -- 4 Oct 2026
+
+### Added -- each box ends with the player's position next hand, and its stats
+
+The button moves one seat, so between hands each seat's next position is
+the one the seat before it had. The box's last line names it and shows
+the stats that matter there, each at that position and pulled towards the
+pool at that position: the coming button's steal, the coming blinds' fold
+to a steal. Measured on the corpus, the rotation is right on 177 of 178
+consecutive hands with the same seats; the one miss has hands missing
+between the two, as the corpus is files and not sessions.
+
+The design's phase 4 asked for more -- the bettor's c-bet while you face
+it -- and that cannot be had from a hand history: both clients write the
+hand when it is over. It would mean reading the live table, and that is
+left out, not deferred. Ignition's session HUD is out for the same kind
+of reason: it writes no history while you play.
+
+### Fixed -- a badge on one hand
+
+`3B+` was given to a player who had 3-bet once in one chance: the Wilson
+floor of 1/1 is 21%, which clears a 10% line. A badge now needs as many
+chances as a number needs not to be faint -- the colour rule's reasoning,
+which the badge rule had not been given. Caught looking at the demo, not
+by the check, which had been written to the same rule as the code; the
+check now holds the threshold too.
+
+---
+
+## The HUD's editor, colours, badges and seat layouts -- 4 Oct 2026
+
+### Added -- `hud.py --edit`, `--layout`, and badges that have to be earned
+
+The editor sets what the boxes and popups show, the colour ranges and the
+badge rules, and the running HUD redraws with them. It refuses what it
+cannot draw -- a misspelled key, a colour that is not one, a badge with
+no line -- naming each, because a key nobody recognises is otherwise a
+number silently never drawn. `hud.json` keeps only what differs from the
+defaults.
+
+A colour is never put on a faint number, and a badge rule fires only when
+the 95% interval on the player's own count lies wholly past its line --
+an interval, as `players.classify` uses, never the rate itself. The
+overfold badge is `query.overfolds_of` on the player's decisions and only
+its REAL rows, as the design promised. The note mark follows `notes.py`.
+
+`--layout` makes the boxes draggable; a box dropped is saved for its
+table size and its slot counted from hero, so the measured layout holds
+whatever seat the client deals and however big the window is.
+
+`hud.py --check` holds the colours to the rule written out by hand, the
+badges to `stats.wilson` and `--overfolds` asked by hand, the note mark to
+a note written into a copy of the database, nine wrong settings to being
+refused, a saved layout to being used for its size alone; and, with Tk
+and a display, a box dragged 50 by 30 to being saved and drawn there, and
+the editor to refusing a bad key and applying a good one. A colour on a
+faint number, a badge from the rate instead of its interval, and a drop
+saved to the wrong slot each failed it.
+
+---
+
+## The HUD's popups -- 4 Oct 2026
+
+### Added -- a click on a box opens the player in full
+
+A table per street, every row the stat as the box shows it, its count,
+the 95% interval on the player's own count, and the pool figure it is
+pulled towards; then opening and VPIP by position, and the player's note.
+The pool is the box's own -- the table's site and stake without the
+player -- and by position it is the pool at that position, because a
+button open read against opens everywhere is pulled down by every early
+seat in the pool. The numbers are worked out on a thread of their own,
+so the boxes keep following their tables while a popup is coming.
+
+`hud.py --check` holds every popup row to `stats.rate` and `stats.wilson`
+and every position cell to a pool written out longhand; a popup shrunk
+towards the whole pool, and an interval at 90% instead of 95%, each
+failed it. It now also runs the window itself where there is Tk and a
+display, as CI has: the boxes drawn, a box following its table when it
+moves, and a click on a number opening the popup and a second closing
+it. Taking the click off the numbers failed that.
+
+A name is a person on one site only, and the corpus has a "Player4" on
+both: the check's first version opened the PokerStars one for the ACR
+seat. `popup_for` takes the site.
+
+---
+
+## A HUD, on ACR and PokerStars -- 3 Oct 2026
+
+### Added -- `hud.py`, and `Site.hud`
+
+A box beside each opponent while the table is played, kept beside their
+seat as the window moves. It is a view and nothing else: the numbers are
+`stats.rates` and `stats.shrunk`, the people are `spots.identify`'s, the
+class is `players.classify`'s, and a hand reaches it through
+`importer.update`, the incremental import that came before it for this
+reason. A HUD that worked out its own VPIP would be a second answer to a
+question the project answers once.
+
+Shrunk towards the table's game by default -- its site and stake, the
+player taken out -- because a rate on one chance printed bare is
+believed, and the profile view's "fold to 3-bet 0.0%" was. `hud.json`
+with `"rates": "raw"` prints them as Hand2Note does. The stats, the faint
+threshold and the seat layout are settings too.
+
+`hud.py --check` holds every number to `stats.rate` and a pool written
+out longhand, pooled and raw; hero to the bottom of every table size;
+every table name in the database to the window titles it should match,
+"Halley" not claiming "Halley II"; and a history file that grows while
+it is watched to reaching the boxes. A pool that left the player in, and
+a faint line drawn one chance too late, each failed it.
+
+It will not start while ClubWPT Gold is open, by window title or
+process name: that client looks for HUDs and restricts the account.
+
+What it has not been held to is a poker client: the window code runs
+only on Windows, and the seat ellipse is a guess. `hud.py --demo` draws
+the HUD over a pretend table named after the last one played, so the
+whole of it but the client can be seen.
 
 ---
 

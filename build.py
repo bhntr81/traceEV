@@ -57,7 +57,7 @@ TARGETS = {
 # first click, which is a much worse way to find out.
 MODULES = ["query", "stats", "equity", "decisions", "spots", "lines",
            "strength", "players", "sessions", "importer", "sites", "notes",
-           "ask", "diag", "update"] + PARSERS
+           "ask", "diag", "update", "hud"] + PARSERS
 
 
 def target():
@@ -182,7 +182,7 @@ def check():
 # PyInstaller is a build tool and never a dependency of what it builds.
 RUNTIME = ("app", "query", "stats", "spots", "decisions", "lines", "strength",
            "players", "sessions", "equity", "importer", "sites", "notes",
-           "ask", "diag", "update", "opponents", "gui") + tuple(PARSERS)
+           "ask", "diag", "update", "opponents", "gui", "hud") + tuple(PARSERS)
 
 
 def _third_party():
@@ -190,7 +190,10 @@ def _third_party():
     import ast
     import sys as _sys
     stdlib = set(_sys.stdlib_module_names)
-    ours = set(RUNTIME) | {"population", "check", "build"}
+    # Any module in this folder is ours, not a dependency: `hud`'s check
+    # reaches `fixtures` for its watcher test, and a short list here called
+    # that "not portable" and would have failed the release build.
+    ours = {p.stem for p in HERE.glob("*.py")}
     bad = set()
     for name in RUNTIME:
         path = HERE / f"{name}.py"

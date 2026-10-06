@@ -34,6 +34,7 @@ CHECKS = [
     ("sessions", "every hand you played is in exactly one sitting"),
     ("stats", "the stat engine, against spots where they overlap"),
     ("opponents", "opponent profiles: deviations really clear their intervals"),
+    ("hud", "the HUD says what the engine says, beside the right seat"),
     ("importer", "the site detector, against hands already loaded"),
     ("equity", "the hand evaluator, against published equities"),
     ("query", "the filter surface: every filter runs, and every one narrows"),

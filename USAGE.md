@@ -1566,6 +1566,142 @@ replays a thousand hands both ways and fails on any row that differs.
 
 ---
 
+## The HUD
+
+```bash
+python hud.py              # watch the hand history folders, draw a box beside each opponent
+python hud.py --demo       # a pretend table named after your last one, with the HUD over it
+python hud.py --print      # the numbers for the tables you played last, as text
+python hud.py --windows    # every window title, and which table it matched
+python hud.py --popup NAME # what a click on that player's box opens, as text
+python hud.py --edit       # what the boxes, popups, colours and badges show
+python hud.py --layout     # drag each box onto its seat at a real table
+```
+
+From the TraceEV window, with no command line, the **HUD** menu does the
+same: **Start the HUD**, **Place the boxes on their seats** (`--layout`),
+**Try it on a pretend table** (`--demo`) and **Choose what the boxes
+show…** (`--edit`). Each starts the HUD as a program of its own, so it
+keeps drawing while the window imports, and closing either leaves the
+other running. A packaged build runs itself again with `--hud`, and
+`TraceEV.exe --hud --demo` and the rest work from a prompt too; the HUD
+logs to `TraceEV HUD.log` beside the program.
+
+The HUD's small window lists the folders it is watching. If your client
+saves hands somewhere else, **Add a folder...** there adds it to
+`"folders"` in `hud.json`, watched beside the usual places.
+
+**Close ClubWPT Gold first, completely, if you play there on this PC.**
+Its client looks for HUDs and restricts the account that runs one, coins
+and redemptions included, so `hud.py` will not start while a ClubWPT Gold
+window or process is open.
+
+Open the poker client, start `hud.py`, and sit down. Every second it looks
+at the client's hand history folder; when a hand is written it is imported
+the way **Import new hands** imports it, and every table whose file moved
+gets its boxes worked out again. Only ACR and PokerStars: `Site.hud` says
+which sites allow one and have names that are people.
+
+A box reads:
+
+```
+Somebody  75h  REG
+19 / 6 / 11
+(55) / (60) / (48)
+```
+
+the name, how many hands of theirs you have, and a class only when
+`players.classify` gave one. Then VPIP / PFR / 3-bet, and fold to 3-bet /
+flop c-bet / fold to c-bet. A number in brackets -- drawn faint on the
+screen -- rests on fewer than ten chances. A dash is no chance at all,
+which is not the same as zero.
+
+**The numbers are pulled towards the table's game**, the same way the
+player profile pulls them (`stats.shrunk`): a player seen fold to one
+3-bet out of one does not read 100. The game is the table's site and
+stake with the player taken out. To see raw rates as Hand2Note prints
+them, and to change anything else, write a `hud.json` beside the
+program -- yours, and not in the repository:
+
+```json
+{"rates": "raw",
+ "lines": [["vpip", "pfr", "threebet", "wtsd"], ["cbet_flop", "fold_to_cbet"]],
+ "faint_below": 20,
+ "ellipse": [0.5, 0.45, 0.42, 0.38]}
+```
+
+**Click a box for the popup**; click it again, or press Escape, to close
+it. It is a table per street -- preflop, flop, turn, river, showdown --
+each row the stat as the box prints it, its `n`, the 95% interval on the
+player's own count, and the pool's figure it is pulled towards. Below that,
+opening and VPIP split by position, each read against the pool's figure
+at the same position, and the note you wrote on the player, if any.
+`--popup NAME` prints the same thing, and a site after the name picks
+between two players of that name on different sites.
+
+**Edit the HUD** -- the button on the HUD's small window, or `python hud.py
+--edit` -- changes what the boxes and popups show, the colours and the
+badges, and saves them to `hud.json`. The running HUD redraws with them at
+once. A stat key it does not know, a colour that is not one, a badge with
+no line: each is refused with the reason, and nothing is saved, because a
+misspelled key would otherwise be a number that is silently never drawn.
+Any stat key works, including one you saved in `stats.json`; the list of
+every key is beside the fields, and a double-click puts one in.
+
+**Colours** mark a number past a line -- by default VPIP under 15 in blue
+and over 40 in orange, 3-bet over 12 and fold to c-bet over 60. Never on
+a faint number: a colour reads as a finding, and four chances are not one.
+
+**Badges** go after the name, and each has to be earned:
+
+```
+*        you have a note on this player
+OF       query.py --overfolds finds a REAL overfold for them (Holm-corrected,
+         30 decisions or more); the popup says at which street and bet size
+LOOSE    VPIP surely above 40 -- the whole 95% interval past the line
+NIT      VPIP surely below 14
+3B+      3-bet surely above 10
+```
+
+"Surely" is the point: a player seen enter two pots of two is not LOOSE,
+and gets no badge until the interval clears the line, the same test
+`players.classify` uses. Rules are yours to change in the editor, one per
+line: `LOOSE vpip above 40`.
+
+**The last line is the next hand.** Between hands every player's next
+position is known -- the button moves one seat -- so the box ends with
+that position and the stats that matter there: open-raise and steal for
+the coming cutoff and button, steal and fold to a steal for the small
+blind, fold to a steal and BB defence for the big blind. Each is the
+player's rate at that position only, pulled towards the pool's rate at
+that position. Change which stats per position in the editor
+(`BTN: rfi steal`), or empty the field to drop the line.
+
+That is as far as "stats that change with the hand" can go here. Both
+clients write a hand to the history only when it is over, so while it is
+being played the HUD does not know who bet; showing the bettor's c-bet as
+you face it would mean reading the live table, which this does not do.
+A player sitting down or leaving between hands can move the blinds in a
+way the rule cannot see.
+
+**Seat layouts.** The seats start on an ellipse, which is a guess. To put
+them where your clients draw the names, open a table and run
+
+```bash
+python hud.py --layout          # or --layout --demo, over the pretend table
+```
+
+and drag each box onto its seat. Where you drop it is saved for every
+table of that size (6-max, 9-max, heads-up are separate), counted from
+your own seat, so it holds whichever seat the client gives you and however
+big the window is. The editor shows which sizes you have placed and can
+forget them.
+
+If a table gets no boxes, run `--windows` with it open and look at its
+title: the table is found by its name from the hand history at the start
+of the title, and a title that does not start with it is the thing to
+report.
+
 ## Keeping it up to date
 
 The window checks GitHub on every launch, on a worker thread, and says

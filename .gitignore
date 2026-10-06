@@ -15,10 +15,12 @@ hands.db.bak*
 # not the project's
 stats.json
 filters.json
+hud.json
 views.json
 
 # runtime log
 TraceEV.log*
+TraceEV HUD.log*
 
 # screenshots taken while working on the window
 *.png
