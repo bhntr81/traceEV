@@ -8,7 +8,7 @@ Newest first.
 
 ---
 
-## The Ask panel and the stats tab on a laptop screen -- 6 Oct 2026
+## The chat panel and the stats tab on a laptop screen -- 6 Oct 2026
 
 ### Fixed -- a question box one pixel tall, and a table with no numbers
 
@@ -33,6 +33,11 @@ of the tab) on each render and whenever the tab changes size, and the
 empty pane says what it is for. `app.py --check` opens the panel on a
 1000x440 window and requires the whole box and the table's columns; with
 the old panel layout it reports the box at 1 pixel and fails.
+
+### Changed -- **Ask** is now **Chat with AI**
+
+The button and the panel's title, in John's words. "Ask" did not say
+that a model was on the other end.
 
 ---
 

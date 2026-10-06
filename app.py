@@ -839,7 +839,7 @@ class App(ImportMixin, ttk.Frame):
         self.shown_out, self.panes = {}, {}
         self.summary = ttk.Label(bar, text="all hands", style="Dim.TLabel")
         self.summary.pack(side="left", padx=12)
-        ttk.Button(bar, text="Ask  ▸", command=self.toggle_ask).pack(side="right")
+        ttk.Button(bar, text="Chat with AI  ▸", command=self.toggle_ask).pack(side="right")
         # On the bar every view keeps, not only in the Help menu: a tester
         # who has something to say should not have to go looking for where
         # to say it, and most never open a menu that sounds like a manual.
@@ -3702,7 +3702,7 @@ class AskPanel(ttk.Frame):
 
         head = ttk.Frame(self)
         head.pack(fill="x", padx=10, pady=(10, 4))
-        ttk.Label(head, text="ask the database", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="Chat with AI", style="Title.TLabel").pack(side="left")
         ttk.Button(head, text="×", width=3, command=self.toggle).pack(side="right")
         ttk.Button(head, text="AI settings", command=self._toggle_settings
                    ).pack(side="right", padx=(0, 6))
@@ -4540,7 +4540,7 @@ def check(db_path=DB):
                          f"click listed {listed}")
         if opened:
             opened.destroy()
-    # The Ask panel on a small window: its question box has to be there,
+    # The Chat with AI panel on a small window: its question box has to be there,
     # whole, and the stats table beside it still shows its numbers. On a
     # laptop at 150% scaling the packed panel was a sliver with the box
     # pushed off the bottom, and the table had lost every column but names.
@@ -4562,7 +4562,7 @@ def check(db_path=DB):
           f"the stats table keeps its columns  {'yes' if table_ok else 'NO'}"
           f" ({sash} of {split_w}px)")
     if not box_ok:
-        fails.append("the Ask panel's question box is squeezed or off-screen")
+        fails.append("the Chat with AI panel's question box is squeezed or off-screen")
     if not table_ok:
         fails.append("the stats table is narrower than its columns")
     app.ask_panel.toggle()

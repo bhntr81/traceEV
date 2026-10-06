@@ -6,7 +6,7 @@ Every command, what it does, and how to read what comes back.
 
 ## Feedback and feature requests
 
-**✉ Feedback**, on the bar beside **Ask** (and in the Help menu), opens a
+**✉ Feedback**, on the bar beside **Chat with AI** (and in the Help menu), opens a
 small window with **Report a problem** and **Request a feature**. Each opens
 your email program with the developer's address, a subject and the build
 you are running already filled in; nothing is sent until you press send.
@@ -579,7 +579,7 @@ after `--open NAME` narrow the view rather than replacing it. A view that no
 longer builds -- a flag renamed since -- is listed as broken rather than
 dropped.
 
-**detach** (beside **Ask**, and in the Views menu) copies the tab on screen
+**detach** (beside **Chat with AI**, and in the Views menu) copies the tab on screen
 into a window of its own, under the filter it was drawn with, and the main
 window goes on to the next question -- the button's range beside the
 cutoff's, last month's graph beside this month's. Any tab can come off. A
