@@ -854,10 +854,16 @@ class App(ImportMixin, ttk.Frame):
         # The answer on the left, the assistant on the right when it is
         # open. A panel rather than a window, because the point is to ask
         # about what is on screen and read the answer beside it.
-        body = ttk.Frame(self)
+        #
+        # A paned window, not two packed frames: packed, the tabs asked for
+        # their width first and the panel got whatever was left, which on a
+        # laptop at 125-150% display scaling was a sliver with its question
+        # box pushed off the bottom (John's first look at the beta, 6 Oct).
+        # As a pane it gets its own width, and a sash to drag.
+        body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True)
         right = ttk.Frame(body)
-        right.pack(side="left", fill="both", expand=True)
+        body.add(right, weight=1)
         self._views(right)
         self.ask_panel = AskPanel(body, self)
 
@@ -1019,7 +1025,13 @@ class App(ImportMixin, ttk.Frame):
         # The stats table with the range of whichever row is clicked beside
         # it: Hand2Note's statistics view, where a rate and the hands it
         # was made of are one look and not two tabs and a dropdown.
-        split = ttk.Panedwindow(self.tabs["stats"], orient="horizontal")
+        split = self.stats_split = ttk.Panedwindow(self.tabs["stats"],
+                                                   orient="horizontal")
+        # Fitted again whenever the tab changes size -- opening the Ask
+        # panel takes its width out of this one -- as well as on each render.
+        self._stats_need = 514
+        split.bind("<Configure>",
+                   lambda e: self._fit_stats_split(self._stats_need))
         split.pack(fill="both", expand=True)
         table, side = ttk.Frame(split), ttk.Frame(split)
         split.add(table, weight=3)
@@ -1038,7 +1050,9 @@ class App(ImportMixin, ttk.Frame):
         self.stat_canvas.bind("<Leave>",
                               lambda e: self.stat_canvas.delete("hint"))
         self.stat_chart, self.picked = None, None
-        self.stat_note = "click a stat to see the hands it was made of"
+        self.stat_note = ("Click a stat in the table to draw its range here: "
+                          "the starting hands the players had when they did "
+                          "it, as a 13x13 grid.")
         for name in ("actions", "overfolds", "range", "report", "results",
                      "hands", "sessions"):
             self.tree[name] = self._table(self.tabs[name])
@@ -1823,6 +1837,27 @@ class App(ImportMixin, ttk.Frame):
         tv.heading("_pad", text="")
         tv.column("_pad", width=1, minwidth=1, anchor="w", stretch=True)
 
+    def _fit_stats_split(self, need):
+        """
+        Widen the stats table to its columns, never past 70% of the tab.
+
+        The pane beside it is empty until a stat is clicked, and the paned
+        window split the space by what each side asked for when it was
+        built -- before the table had any columns -- so the numbers were
+        cut off beside a wide, blank chart. Only ever widens: a sash the
+        user has dragged further right is theirs.
+        """
+        split = self.stats_split
+        width = split.winfo_width()
+        if width < 100:
+            return
+        target = min(need, int(width * 0.7))
+        try:
+            if split.sashpos(0) < target:
+                split.sashpos(0, target)
+        except tk.TclError:
+            pass
+
     def _render_stats(self, tv, out):
         self.shown_stats = out
         # The last two columns exist only when one player is named, because
@@ -1834,8 +1869,12 @@ class App(ImportMixin, ttk.Frame):
         said = out.get("said") if "who" in out else None
         names = (("stat", "value", "±", "n") + (("pool", "w/ pool") if pooled else ())
                  + (("note",) if said is not None else ()))
-        self._cols(tv, names, (230, 90, 70, 100) + ((90, 90) if pooled else ())
-                   + ((320,) if said is not None else ()), {"stat": "w", "note": "w"})
+        widths = ((230, 90, 70, 100) + ((90, 90) if pooled else ())
+                  + ((320,) if said is not None else ()))
+        self._cols(tv, names, widths, {"stat": "w", "note": "w"})
+        if tv is getattr(self, "tree", {}).get("stats"):
+            self._stats_need = sum(widths) + 24
+            self.after_idle(lambda: self._fit_stats_split(self._stats_need))
         blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
         for r in out["rows"]:
@@ -3704,10 +3743,16 @@ class AskPanel(ttk.Frame):
         self.key_status.pack(fill="x", padx=10, pady=(0, 6))
         self._load_settings()
 
+        # The question box and its button are packed against the bottom
+        # before the log, and the log asks for one line and expands: a Text
+        # asks for 24 lines by default, which at 150% scaling is taller than
+        # a laptop's window, and the packer took the difference out of the
+        # question box -- the one part of the panel that has to be there.
+        row = ttk.Frame(self)
+        row.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
         self.log = tk.Text(self, background=PANEL, foreground=INK, borderwidth=0,
                            font=(UI, 10), wrap="word", padx=10, pady=8,
-                           insertbackground=INK, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=10)
+                           insertbackground=INK, state="disabled", height=1)
         for name, colour in (("you", ACCENT), ("dim", DIM), ("bad", BAD)):
             self.log.tag_configure(name, foreground=colour)
         self.log.tag_configure("mono", font=(MONO, 9))
@@ -3721,11 +3766,10 @@ class AskPanel(ttk.Frame):
         self.entry = tk.Text(self, height=3, background=BG, foreground=INK,
                              insertbackground=INK, font=(UI, 10), wrap="word",
                              borderwidth=1)
-        self.entry.pack(fill="x", padx=10, pady=(6, 4))
+        self.entry.pack(side="bottom", fill="x", padx=10, pady=(6, 4))
         self.entry.bind("<Return>", self._enter)
         self.entry.bind("<Shift-Return>", lambda e: None)
-        row = ttk.Frame(self)
-        row.pack(fill="x", padx=10, pady=(0, 10))
+        self.log.pack(fill="both", expand=True, padx=10)
         ttk.Button(row, text="ask", style="Accent.TButton",
                    command=self.send).pack(side="left")
         ttk.Checkbutton(row, text="drive the window", variable=self.drive
@@ -3819,11 +3863,25 @@ class AskPanel(ttk.Frame):
         threading.Thread(target=work, daemon=True).start()
 
     def toggle(self):
+        body = self.master
         if self.shown:
-            self.pack_forget()
+            body.forget(self)
         else:
-            self.pack(side="right", fill="y")
+            # Wide enough for the settings rows at whatever scaling the
+            # screen uses: measured in the panel's own font, not pixels.
+            want = max(380, tkfont.nametofont("TkDefaultFont").measure("0") * 52)
+            whole = body.winfo_width()
+            if whole > 200:
+                want = min(want, int(whole * 0.4))
+            self.configure(width=want)
             self.pack_propagate(False)
+            body.add(self, weight=0)
+            body.update_idletasks()
+            if body.winfo_width() > want:
+                try:
+                    body.sashpos(0, body.winfo_width() - want)
+                except tk.TclError:
+                    pass
             self.entry.focus_set()
         self.shown = not self.shown
 
@@ -3868,7 +3926,8 @@ class AskPanel(ttk.Frame):
             self._say("\n".join("ran: python query.py " + " ".join(a) for a in ran),
                       "mono")
             self.last_ran = ran[-1]
-            self.run_btn.pack(fill="x", padx=10, pady=(0, 4))
+            self.run_btn.pack(side="bottom", fill="x", padx=10, pady=(0, 4),
+                              before=self.log)
             if self.drive.get():
                 self.app.apply_argv(self.last_ran)
         self.history = transcript
@@ -4481,6 +4540,33 @@ def check(db_path=DB):
                          f"click listed {listed}")
         if opened:
             opened.destroy()
+    # The Ask panel on a small window: its question box has to be there,
+    # whole, and the stats table beside it still shows its numbers. On a
+    # laptop at 150% scaling the packed panel was a sliver with the box
+    # pushed off the bottom, and the table had lost every column but names.
+    root.deiconify()
+    root.geometry("1000x440")
+    app.nb.select(app.tabs["stats"])
+    root.update()
+    app.ask_panel.toggle()
+    root.update()
+    panel, entry = app.ask_panel, app.ask_panel.entry
+    box_ok = (entry.winfo_ismapped() and entry.winfo_height() >= 20
+              and entry.winfo_y() + entry.winfo_height() <= panel.winfo_height()
+              and panel.winfo_width() >= 300)
+    sash = app.stats_split.sashpos(0)
+    split_w = app.stats_split.winfo_width()
+    table_ok = sash >= min(app._stats_need, int(split_w * 0.7)) - 2
+    print(f"the ask box fits a small window  {'yes' if box_ok else 'NO'} "
+          f"(panel {panel.winfo_width()}px, box {entry.winfo_height()}px); "
+          f"the stats table keeps its columns  {'yes' if table_ok else 'NO'}"
+          f" ({sash} of {split_w}px)")
+    if not box_ok:
+        fails.append("the Ask panel's question box is squeezed or off-screen")
+    if not table_ok:
+        fails.append("the stats table is narrower than its columns")
+    app.ask_panel.toggle()
+    root.withdraw()
     # Feedback reaches the owner: a link that addresses him, says which
     # kind of message it is, and carries the build, from a button on the
     # bar rather than only from a menu.

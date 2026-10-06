@@ -8,6 +8,34 @@ Newest first.
 
 ---
 
+## The Ask panel and the stats tab on a laptop screen -- 6 Oct 2026
+
+### Fixed -- a question box one pixel tall, and a table with no numbers
+
+John's first look at the beta, on his own 24,000 hands: clicking **Ask**
+opened a box "about a millimetre" tall at the bottom of the window, beside
+a wide, empty pane saying "click a stat to see the hands it was made of".
+Reproduced at 1366x728 with 150% display scaling. Three causes:
+
+The panel was packed beside the tabs, and the packer gave the tabs their
+width first, so the panel got what was left. It is now a pane of its own
+in a paned window, sized in its font rather than in pixels, with a sash.
+
+Inside it, the answer log asked for Tk's default 24 lines, taller than
+the window at that scaling, and the packer took the difference out of the
+question box: 1 pixel. The box and its button are now packed against the
+bottom first, and the log takes what is left.
+
+The stats tab's split was decided when the table had no columns yet, so
+the empty range pane took most of the width and the table showed names
+and no numbers. The table is now widened to its columns (never past 70%
+of the tab) on each render and whenever the tab changes size, and the
+empty pane says what it is for. `app.py --check` opens the panel on a
+1000x440 window and requires the whole box and the table's columns; with
+the old panel layout it reports the box at 1 pixel and fails.
+
+---
+
 ## The program opens on its own -- 6 Oct 2026
 
 ### Fixed -- a first launch with no database did nothing
