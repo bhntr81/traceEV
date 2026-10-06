@@ -368,7 +368,7 @@ def update(con):
     return len(rows)
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     migrate(con)
@@ -377,6 +377,18 @@ def build(db_path=DB):
     for name in ("dec_made", "dec_draw", "dec_shown"):
         con.execute(f"DROP INDEX IF EXISTS {name}")
     stage(con, rows)
+    if indexed:
+        index(con)
+        con.execute("ANALYZE")
+    con.commit()
+    print(f"{len(rows):,} decisions classified, "
+          f"{distinct:,} distinct hand-and-board combinations")
+    con.close()
+    return len(rows)
+
+
+def index(con):
+    """The indexes on what each hand is, on `decisions`."""
     # `kicker` is in the made-hand index rather than one of its own: it is
     # only ever asked alongside a pair, and on its own it read every row.
     con.execute("CREATE INDEX IF NOT EXISTS dec_made "
@@ -386,12 +398,6 @@ def build(db_path=DB):
     # the index only has to hold that quarter.
     con.execute("CREATE INDEX IF NOT EXISTS dec_shown "
                 "ON decisions(cards, street) WHERE cards IS NOT NULL")
-    con.execute("ANALYZE")
-    con.commit()
-    print(f"{len(rows):,} decisions classified, "
-          f"{distinct:,} distinct hand-and-board combinations")
-    con.close()
-    return len(rows)
 
 
 def common(db_path=DB):

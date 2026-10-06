@@ -297,7 +297,7 @@ def board_to(board, street):
     return " ".join(cards[:{"preflop": 0, "flop": 3, "turn": 4, "river": 5}[street]])
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
@@ -323,7 +323,8 @@ def build(db_path=DB):
     con.executemany(
         "INSERT INTO decisions VALUES ({})".format(",".join("?" * n)), rows)
     con.commit()
-    index(con=con)
+    if indexed:
+        index(con=con)
     con.close()
     return len(rows)
 
