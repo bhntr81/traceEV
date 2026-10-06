@@ -1578,6 +1578,19 @@ python hud.py --edit       # what the boxes, popups, colours and badges show
 python hud.py --layout     # drag each box onto its seat at a real table
 ```
 
+From the TraceEV window, with no command line, the **HUD** menu does the
+same: **Start the HUD**, **Place the boxes on their seats** (`--layout`),
+**Try it on a pretend table** (`--demo`) and **Choose what the boxes
+show…** (`--edit`). Each starts the HUD as a program of its own, so it
+keeps drawing while the window imports, and closing either leaves the
+other running. A packaged build runs itself again with `--hud`, and
+`TraceEV.exe --hud --demo` and the rest work from a prompt too; the HUD
+logs to `TraceEV HUD.log` beside the program.
+
+The HUD's small window lists the folders it is watching. If your client
+saves hands somewhere else, **Add a folder...** there adds it to
+`"folders"` in `hud.json`, watched beside the usual places.
+
 **Close ClubWPT Gold first, completely, if you play there on this PC.**
 Its client looks for HUDs and restricts the account that runs one, coins
 and redemptions included, so `hud.py` will not start while a ClubWPT Gold

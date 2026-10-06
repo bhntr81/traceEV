@@ -8,6 +8,31 @@ Newest first.
 
 ---
 
+## The HUD from the window -- 6 Oct 2026
+
+### Added -- a HUD menu, so the HUD needs no command line
+
+The HUD was `python hud.py` and nothing else, and the program is used as a
+downloaded `TraceEV.exe` by people who never open a prompt. The window now
+has a HUD menu: start it, place the boxes, try it on a pretend table, choose
+what the boxes show. Each starts the HUD as its own process -- the same
+program with `--hud` when packaged -- because the HUD runs a Tk loop and a
+watcher of its own, and this window's one query thread is a rule a second
+loop in one interpreter would break. A one-file build tells its children to
+reuse its unpacked folder, which closing the window deletes, so the HUD is
+started with PyInstaller's `PYINSTALLER_RESET_ENVIRONMENT` and unpacks its
+own.
+
+### Changed -- the HUD says why it did not start, and where it is looking
+
+Its refusals (ClubWPT Gold open, a bad `hud.json`, no hands yet for the
+demo) were printed, and a windowed build has nowhere to print: the HUD would
+simply not appear. With no console they are a message box. Its window lists
+the folders it watches and can add one, saved as `"folders"` in `hud.json`,
+because a client told to save its hands elsewhere gave a HUD that drew
+nothing and looked broken. `hud.json` and `hands.db` are found beside the
+program when packaged, as everything else is.
+
 ## A sharper, plainer window -- 6 Oct 2026
 
 ### Changed -- text drawn at the screen's real resolution on Windows

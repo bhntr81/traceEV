@@ -673,6 +673,18 @@ class ImportMixin:
         v.configure(postcommand=lambda: self._fill_views(v))
         bar.add_cascade(label="Views", menu=v)
 
+        hm = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                     activebackground=ACCENT, activeforeground=BG)
+        hm.add_command(label="Start the HUD", command=lambda: self.hud())
+        hm.add_command(label="Place the boxes on their seats",
+                       command=lambda: self.hud("--layout"))
+        hm.add_command(label="Try it on a pretend table",
+                       command=lambda: self.hud("--demo"))
+        hm.add_separator()
+        hm.add_command(label="Choose what the boxes show…",
+                       command=lambda: self.hud("--edit"))
+        bar.add_cascade(label="HUD", menu=hm)
+
         u = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
         if getattr(sys, "frozen", False):
@@ -693,6 +705,32 @@ class ImportMixin:
                       command=lambda: open_folder(diag.LOG.parent))
         bar.add_cascade(label="Help", menu=h)
         bar.show(before=self)
+
+    @staticmethod
+    def hud(*flags):
+        """
+        Start the HUD as a process of its own.
+
+        Frozen, that is this same program again with `--hud`, which `main`
+        hands to `hud.main`; from source, `hud.py`. Never inside this
+        process: the HUD keeps a Tk loop of its own and a watcher importing
+        every second, and this window's one query thread is a rule (see
+        CLAUDE.md) that a second loop in the same interpreter would break.
+        """
+        env = dict(os.environ)
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--hud", *flags]
+            # A one-file build unpacks itself into a temporary folder and
+            # tells its children to reuse it, which is right for a helper
+            # and wrong here: closing this window deletes the folder, and a
+            # HUD still running out of it fails on its next import.
+            # PyInstaller's documented way to have a child unpack its own.
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+            env.pop("_MEIPASS2", None)
+        else:
+            cmd = [sys.executable, str(Path(__file__).parent / "hud.py"), *flags]
+        diag.event("starting the HUD", flags=" ".join(flags))
+        subprocess.Popen(cmd, cwd=str(HERE), env=env)
 
     def update_now(self):
         """
@@ -5361,6 +5399,16 @@ def check(db_path=DB):
 
 
 def main(argv):
+    if "--hud" in argv:
+        # The HUD is its own process, started by the HUD menu as this same
+        # program with `--hud`: one file to download, and a HUD that keeps
+        # drawing while this window imports or prices all-ins, and the other
+        # way round. Its own log, because two processes rotating one file on
+        # Windows fail on the rename.
+        diag.LOG = HERE / "TraceEV HUD.log"
+        diag.setup(verbose="--debug" in argv)
+        import hud
+        return hud.main([a for a in argv if a != "--hud"])
     diag.setup(verbose="--debug" in argv)
     if "--check" in argv:
         return 0 if check() else 1

@@ -52,8 +52,13 @@ import importer
 import sites
 import stats
 
-DB = Path(__file__).parent / "hands.db"
-SETTINGS = Path(__file__).parent / "hud.json"
+# Beside the program, as `app.py` has it: frozen, `__file__` is a directory
+# PyInstaller deletes on the way out, and the database and the settings are
+# the user's, not the program's.
+HERE = (Path(sys.executable).parent if getattr(sys, "frozen", False)
+        else Path(__file__).parent)
+DB = HERE / "hands.db"
+SETTINGS = HERE / "hud.json"
 
 # The five choices the design left open, as settings. `hud.json` beside the
 # program overrides any of them; it is the user's and is not in the
@@ -72,6 +77,11 @@ DEFAULTS = {
     "faint_below": stats.SHRINK,
     # How often the hand history folders are looked at, in seconds.
     "poll": 1.0,
+    # Folders to watch besides the ones `sites.py` knows a client saves to.
+    # A client can be told to save anywhere, and a HUD that looked only in
+    # the usual places would draw nothing at such a table and say nothing
+    # about why.
+    "folders": [],
     # A table counts as one being played if its file changed this recently,
     # in minutes. The file's clock is this machine's, which is the point:
     # `played_at` is the site's clock and nothing says it agrees.
@@ -227,6 +237,9 @@ def problems(conf):
                                     for v in p) for p in spots):
             out.append(f"seats {size}: needs one [x, y] per seat, as fractions "
                        "of the window")
+    folders = conf.get("folders")
+    if not isinstance(folders, list) or not all(isinstance(f, str) for f in folders):
+        out.append("folders: needs a list of folder names")
     ell = conf.get("ellipse")
     for size, e in (ell.items() if isinstance(ell, dict) else [("", ell)]):
         if not (isinstance(e, (list, tuple)) and len(e) == 4):
@@ -769,14 +782,17 @@ class Watcher:
         # again on the next look, whether or not a file moved.
         self.redraw = False
 
-    def files(self):
+    def roots(self):
+        """Every folder this watcher looks in, whether or not it exists."""
         if self.folders is not None:
-            roots = [Path(f) for f in self.folders]
-        else:
-            import os
-            roots = [Path(os.path.expandvars(p)) for key in sites.with_hud()
-                     for p in sites.of(key).places]
-        for root in roots:
+            return [Path(f) for f in self.folders]
+        import os
+        return ([Path(os.path.expandvars(p)) for key in sites.with_hud()
+                 for p in sites.of(key).places]
+                + [Path(f) for f in self.conf.get("folders") or ()])
+
+    def files(self):
+        for root in self.roots():
             if root.is_dir():
                 yield from root.rglob("*.txt")
             elif root.is_file():
@@ -1138,20 +1154,39 @@ def hostile(titles, names):
     return None
 
 
+def tell(text):
+    """
+    Say why the HUD is not starting, where the person will see it.
+
+    Started from the TraceEV window there is no console: a windowed build
+    has no `sys.stdout` at all, and a refusal printed there is a HUD that
+    silently never appears -- beside ClubWPT Gold, exactly the moment the
+    reason matters most. So with no console the reason is a message box.
+    """
+    if sys.stdout is not None and not getattr(sys, "frozen", False):
+        print(text)
+        return
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showwarning("TraceEV HUD", text, parent=root)
+    root.destroy()
+
+
 def run(source=None, db_path=DB, folders=None, extra=None, layout=False):
     """The HUD: the watcher on its thread, the boxes on Tk's."""
     found = hostile([w[0] for w in windows()], processes())
     if found:
-        print(f"not starting: {found!r} is open, and that client restricts "
-              "accounts that run a HUD. Close it completely, then start the "
-              "HUD again.")
+        tell(f"Not starting: {found!r} is open, and that client restricts "
+             "accounts that run a HUD. Close it completely, then start the "
+             "HUD again.")
         return 1
     conf = settings()
     bad = problems(conf)
     if bad:
-        print(f"not starting: {SETTINGS.name} has problems --")
-        for p in bad:
-            print(f"  {p}")
+        tell(f"Not starting: {SETTINGS} has problems --\n"
+             + "\n".join(f"  {p}" for p in bad))
         return 1
     dpi_aware()
     import tkinter as tk
@@ -1166,15 +1201,43 @@ def run(source=None, db_path=DB, folders=None, extra=None, layout=False):
     overlay = Overlay(root, source or windows, conf, db_path, layout=layout)
     watcher = Watcher(db_path, folders, overlay.inbox, conf)
 
+    # Which folders are being watched, said, because a client saving its
+    # hands somewhere else is a HUD that draws nothing -- and from the
+    # outside that looks the same as a HUD that is broken.
+    where = tk.Label(root, justify="left", anchor="w")
+    where.pack(padx=10, pady=(0, 4), fill="x")
+
+    def show_where():
+        there = [str(r) for r in watcher.roots() if r.exists()]
+        where.config(text=(
+            "Watching for hands in:\n  " + "\n  ".join(there) if there else
+            "No ACR or PokerStars hand history folder found.\n"
+            "Use Add a folder... to show the HUD where your client saves them."))
+    show_where()
+
+    def add_folder():
+        from tkinter import filedialog
+        chosen = filedialog.askdirectory(
+            parent=root, title="Folder your poker client saves hands in")
+        if not chosen or chosen in conf["folders"]:
+            return
+        conf["folders"] = conf["folders"] + [chosen]
+        save(conf)
+        show_where()
+
     def edited(new):
         # The same dicts the overlay and the watcher hold, changed in place,
         # and every table worked out again under them.
         conf.clear()
         conf.update(new)
         watcher.redraw = True
-    tk.Button(root, text="Edit the HUD...",
-              command=lambda: Editor(root, conf, on_save=edited)).pack(
-                  padx=10, pady=(0, 8), anchor="w")
+    buttons = tk.Frame(root)
+    buttons.pack(padx=10, pady=(0, 8), anchor="w")
+    tk.Button(buttons, text="Edit the HUD...",
+              command=lambda: Editor(root, conf, on_save=edited)).pack(side="left")
+    if folders is None:
+        tk.Button(buttons, text="Add a folder...",
+                  command=add_folder).pack(side="left", padx=(6, 0))
     stop = threading.Event()
     threading.Thread(target=watcher.run, args=(stop,), daemon=True).start()
     if extra:
@@ -1456,7 +1519,8 @@ def demo(db_path=DB, layout=False):
     tables = last_tables(con, 2)
     con.close()
     if not tables:
-        print("no ACR or PokerStars hand with you seated in the database")
+        tell("No ACR or PokerStars hand with you seated in the database yet. "
+             "Import some hands, then try again.")
         return 1
     tables_open = []
 
@@ -1756,6 +1820,18 @@ def settings_check():
             fails.append("bad settings were saved")
         except ValueError:
             pass
+        # A folder added from the HUD window is watched, alongside the
+        # usual places rather than instead of them, and only when the
+        # watcher was not given folders of its own.
+        if not problems(dict(conf, folders="C:/hands")):
+            fails.append("a folder that is not in a list was accepted")
+        extra = Path(tmp) / "elsewhere"
+        roots = Watcher(conf=dict(conf, folders=[str(extra)])).roots()
+        usual = Watcher(conf=conf).roots()
+        if extra not in roots or not set(usual) <= set(roots):
+            fails.append("an added folder is not watched beside the usual ones")
+        if extra in Watcher(folders=[], conf=dict(conf, folders=[str(extra)])).roots():
+            fails.append("a watcher given its folders also watches the settings'")
     print(f"the editor's settings hold     {'yes' if not fails else 'NO'}   "
           f"{len(cases)} wrong settings refused")
     return fails
