@@ -512,13 +512,38 @@ def rebuild(db_path=DB, progress=None):
     import importlib
 
     import decisions
-    for name, _what in CHAIN:
+
+    # Every stage after `decisions` rewrites columns of every row of it, and
+    # each one used to do that under the indexes the stages before it had
+    # built -- forty-eight of them by the last stage, every one rewritten
+    # with each row. So the stages that index `decisions` are asked not to,
+    # and the indexes are built once, here, over finished rows. With the
+    # threads below, the whole derive at 49,600 hands went from 100 seconds
+    # to 85. ANALYZE goes with them, once rather than five times. The
+    # indexes and statistics that come out are the same; the stages still
+    # index for themselves when run alone, and the incremental update never
+    # drops an index at all.
+    mods = [importlib.import_module(name) for name, _what in CHAIN]
+    for (name, _what), mod in zip(CHAIN, mods):
         if progress:
             progress(f"deriving {name}...")
-        importlib.import_module(name).build(db_path)
+        if hasattr(mod, "index"):
+            mod.build(db_path, indexed=False)
+        else:
+            mod.build(db_path)
     if progress:
         progress("indexing...")
-    decisions.index(db_path)
+    con = sqlite3.connect(db_path)
+    # Forty-seven indexes, and each one is a sort of half a million rows.
+    # SQLite will spread a sort over worker threads when asked, and nothing
+    # else asks: 24 seconds of indexing became 18 on four cores. A build
+    # without the threads reads this as zero and sorts on one, as before.
+    con.execute("PRAGMA threads = 4")
+    for mod in mods:
+        if hasattr(mod, "index") and mod is not decisions:
+            mod.index(con)
+    decisions.index(con=con)
+    con.close()
 
 
 # Past this share of the database, new hands are derived by a rebuild

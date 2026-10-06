@@ -275,7 +275,7 @@ def update(con):
     return len(rows)
 
 
-def build(db_path=DB):
+def build(db_path=DB, indexed=True):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     migrate(con)
@@ -291,7 +291,16 @@ def build(db_path=DB):
         con.execute(f"DROP INDEX IF EXISTS dec_{col}")
 
     stage(con, rows)
+    if indexed:
+        index(con)
+        con.execute("ANALYZE")
+    con.commit()
+    print(f"{len(acts_by):,} hands, {len(rows):,} decisions")
+    return len(rows)
 
+
+def index(con):
+    """The indexes on the line columns of `decisions`."""
     # The whole argument for strings rather than a graph is that a prefix
     # match is an index seek. Without these it is a scan of every row, which
     # works, and is slow in a way nobody would connect to a missing index --
@@ -309,10 +318,6 @@ def build(db_path=DB):
     # the index.
     con.execute("CREATE INDEX IF NOT EXISTS dec_street_pot "
                 "ON decisions(street_pot, street)")
-    con.execute("ANALYZE")
-    con.commit()
-    print(f"{len(acts_by):,} hands, {len(rows):,} decisions")
-    return len(rows)
 
 
 def common(db_path=DB, street="flop", limit=15, where="1=1"):
