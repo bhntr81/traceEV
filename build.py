@@ -105,7 +105,32 @@ def build():
     print(f"\nbuilt {out}  ({size / 1e6:.1f} MB)" if size else
           f"\nbuild reported success but {out} is not there")
     print("put hands.db next to it and open it.")
+    if size and platform.system() == "Windows":
+        installer()
     return bool(size)
+
+
+def installer():
+    """
+    TraceEV-setup.exe beside the program, when Inno Setup is installed.
+
+    Optional, here and nowhere else: the bare .exe is a complete program,
+    and the build workflow makes the installer on every tag whether or not
+    this machine can. `TraceEV.iss` says what it installs and why per user.
+    """
+    import os
+    iscc = shutil.which("iscc") or next(
+        (str(p) for p in (Path(os.environ.get(v, "")) / "Inno Setup 6" / "ISCC.exe"
+                          for v in ("ProgramFiles(x86)", "ProgramFiles"))
+         if p.exists()), None)
+    if not iscc:
+        print("no installer: Inno Setup is not installed (only the bare .exe)")
+        return False
+    proc = subprocess.run([iscc, str(HERE / "TraceEV.iss")], cwd=str(HERE))
+    made = DIST / "TraceEV-setup.exe"
+    print(f"built {made}" if not proc.returncode and made.exists()
+          else "installer build failed")
+    return not proc.returncode
 
 
 def _size(path):

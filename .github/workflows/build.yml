@@ -105,6 +105,51 @@ jobs:
             exit 1
           fi
 
+      # The installer, Windows only: TraceEV.exe with a Start menu entry and
+      # an uninstaller, for a tester who would rather not keep a loose .exe
+      # in Downloads. Inno Setup is on GitHub's Windows machines; installed
+      # here if an image ever drops it.
+      - name: Make the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DVersion=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}" TraceEV.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Then install it the way a tester would, open what it installed, and
+      # take it off again -- the same reasoning as opening the bare .exe
+      # above. Installing, starting and making hands.db proves the folder is
+      # one the program can write to; uninstalling has to remove the program
+      # and leave hands.db, which is the tester's hands.
+      - name: Install it, open it, uninstall it
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Process dist\TraceEV-setup.exe -Wait -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER'
+          $app = "$env:LOCALAPPDATA\Programs\TraceEV"
+          $menu = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\TraceEV.lnk"
+          if (-not (Test-Path "$app\TraceEV.exe")) { throw "nothing was installed in $app" }
+          if (-not (Test-Path $menu)) { throw "no Start menu entry at $menu" }
+          Start-Process "$app\TraceEV.exe" -ArgumentList '--no-update'
+          for ($i = 0; $i -lt 90 -and -not (Test-Path "$app\hands.db"); $i++) { Start-Sleep 1 }
+          Start-Sleep 5
+          taskkill /F /T /IM TraceEV.exe
+          Get-ChildItem $app
+          if (Test-Path "$app\TraceEV.log") { Get-Content "$app\TraceEV.log" }
+          if (-not (Test-Path "$app\hands.db")) { throw "the installed program did not start" }
+          if (Select-String -Path "$app\TraceEV.log" -Pattern Traceback -Quiet -ErrorAction SilentlyContinue) { throw "the installed program started and then failed" }
+          Start-Sleep 2
+          Start-Process "$app\unins000.exe" -Wait -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          # The uninstaller copies itself elsewhere and returns at once, so
+          # its work is waited for by watching the program go.
+          for ($i = 0; $i -lt 60 -and (Test-Path "$app\TraceEV.exe"); $i++) { Start-Sleep 1 }
+          Get-ChildItem $app
+          if (Test-Path "$app\TraceEV.exe") { throw "uninstalling left TraceEV.exe behind" }
+          if (Test-Path $menu) { throw "uninstalling left the Start menu entry" }
+          if (-not (Test-Path "$app\hands.db")) { throw "uninstalling deleted hands.db" }
+
       # The program has been TraceEV since 15 Sep 2026; the paths here still
       # said poker_analysis until 17 Sep, so every tagged build failed at
       # this step with "no files found" and the downloads page the window
@@ -114,6 +159,7 @@ jobs:
           name: TraceEV-${{ matrix.name }}
           path: |
             dist/TraceEV.exe
+            dist/TraceEV-setup.exe
             dist/TraceEV.app
             dist/TraceEV
           if-no-files-found: error
@@ -136,6 +182,7 @@ jobs:
         run: |
           mkdir out
           cp downloads/TraceEV-windows/TraceEV.exe out/TraceEV-windows.exe
+          cp downloads/TraceEV-windows/TraceEV-setup.exe out/TraceEV-windows-setup.exe
           cp downloads/TraceEV-linux/TraceEV out/TraceEV-linux
           cd downloads/TraceEV-macos && zip -r ../../out/TraceEV-macos.zip . && cd ../..
       - name: Publish the release
