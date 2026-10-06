@@ -1289,7 +1289,7 @@ class App(ImportMixin, ttk.Frame):
                                                    orient="horizontal")
         # Fitted again whenever the tab changes size -- opening the Ask
         # panel takes its width out of this one -- as well as on each render.
-        self._stats_need = 514
+        self._stats_need = px(514)
         split.bind("<Configure>",
                    lambda e: self._fit_stats_split(self._stats_need))
         split.pack(fill="both", expand=True)
@@ -2140,7 +2140,10 @@ class App(ImportMixin, ttk.Frame):
                   + ((320,) if said is not None else ()))
         self._cols(tv, names, widths, {"stat": "w", "note": "w"})
         if tv is getattr(self, "tree", {}).get("stats"):
-            self._stats_need = sum(widths) + 24
+            # In screen pixels, as `_cols` lays the columns out: the sash
+            # is measured in those, and at 150% an unscaled total left the
+            # last column cut off again.
+            self._stats_need = px(sum(widths) + 24)
             self.after_idle(lambda: self._fit_stats_split(self._stats_need))
         blank = (("", "") if pooled else ()) + (("",) if said is not None else ())
         group = None
