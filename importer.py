@@ -482,6 +482,24 @@ CHAIN = (
 )
 
 
+def create(db_path=DB):
+    """
+    An empty database with every table in it, for a first launch.
+
+    A tester downloads the program and opens it with nothing beside it. The
+    window used to refuse -- "no database, load some hands first" -- and
+    print it, which a packaged build has no console to show, so the first
+    beta did nothing at all when opened, on 6 Oct 2026. Every table, derived
+    ones included, so the window's first queries find the shapes they ask
+    for and the Import menu can fill them.
+    """
+    con = sqlite3.connect(db_path)
+    migrate(con)
+    con.commit()
+    con.close()
+    rebuild(db_path)
+
+
 def rebuild(db_path=DB, progress=None):
     """
     Redo every derived table, in the order they depend on each other.
@@ -667,6 +685,22 @@ def check(db_path=DB):
     plausible is how eight thousand hands got loaded under the wrong name.
     """
     fails = []
+    # A first launch has no database, and `create` is what gives it one. An
+    # empty one has to hold every derived table, or the window's first query
+    # fails on a missing table instead of showing an empty answer.
+    with tempfile.TemporaryDirectory() as tmp:
+        fresh = Path(tmp) / "hands.db"
+        create(fresh)
+        empty = sqlite3.connect(fresh)
+        tables = {r[0] for r in empty.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        rows = empty.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+        empty.close()
+    wanted = {"hands", "seats", "actions", "spots", "decisions", "sessions"}
+    print(f"a first launch gets every table  "
+          f"{'yes' if wanted <= tables and rows == 0 else 'NO, missing ' + str(sorted(wanted - tables))}")
+    if not wanted <= tables or rows:
+        fails.append("a new database is missing tables")
     con = sqlite3.connect(db_path)
     known = con.execute(
         "SELECT source, site, COUNT(*) FROM hands WHERE source IS NOT NULL "

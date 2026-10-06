@@ -543,6 +543,34 @@ class ImportMixin:
         paths = [p["path"] for p in found]
         self._run_import("importing", lambda say: self._do_load(paths, say))
 
+    def first_run(self):
+        """
+        What a new tester sees: an offer to find their hands, or to choose them.
+
+        The database was made empty a moment ago, so every tab is blank, and
+        a blank window with an Import menu somewhere at the top is not an
+        instruction. This asks once, at the moment there is nothing else the
+        program can usefully do.
+        """
+        found = importer.scan()
+        if found:
+            summary = "\n".join(importer.describe(p) for p in found)
+            if messagebox.askyesno(
+                    "Welcome to TraceEV",
+                    "TraceEV reads the hand histories your poker site saves. "
+                    "It found these:\n\n" + summary
+                    + "\n\nImport them now?"):
+                paths = [p["path"] for p in found]
+                self._run_import("importing",
+                                 lambda say: self._do_load(paths, say))
+            return
+        messagebox.showinfo(
+            "Welcome to TraceEV",
+            "TraceEV reads the hand histories your poker site saves, and "
+            "found none in the usual places.\n\nChoose the folder your site "
+            "saves them in. You can import more later from the Import menu.")
+        self.import_folder()
+
     def import_new(self):
         """
         Load whatever has appeared in the usual places since last time.
@@ -4818,9 +4846,9 @@ def main(argv):
     diag.setup(verbose="--debug" in argv)
     if "--check" in argv:
         return 0 if check() else 1
-    if not DB.exists():
-        print(f"no database at {DB} -- load some hands first")
-        return 1
+    first = not DB.exists()
+    if first:
+        importer.create(DB)
     root = tk.Tk()
     root.title("TraceEV")
     root.geometry("1360x880")
@@ -4833,6 +4861,8 @@ def main(argv):
     app = App(root, check_updates="--no-update" not in argv)
     app._menu(root)
     app.load_options()
+    if first:
+        root.after(500, app.first_run)
     root.mainloop()
     return 0
 

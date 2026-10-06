@@ -99,7 +99,8 @@ python query.py --site ignition --quick threebet --chart
 TraceEV is in beta, and **free during the beta; later versions may be
 paid.** The Windows program is on the
 [releases page](https://github.com/bhntr81/traceEV/releases): download
-`TraceEV-windows.exe` and run it, with no Python needed. It is not signed,
+`TraceEV-windows.exe` and run it, with no Python needed. The first time it
+opens, it asks where your poker site saves its hand histories. It is not signed,
 so Windows SmartScreen may warn about it the first time; "More info", then
 "Run anyway". A Mac and a Linux build are on the same page. Bugs and
 suggestions go in [Issues](https://github.com/bhntr81/traceEV/issues).

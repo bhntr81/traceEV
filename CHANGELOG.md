@@ -8,6 +8,22 @@ Newest first.
 
 ---
 
+## The program opens on its own -- 6 Oct 2026
+
+### Fixed -- a first launch with no database did nothing
+
+The first beta, v0.1.0-beta, did nothing when a tester opened it. With no
+`hands.db` beside it the program printed "no database -- load some hands
+first" and quit, and a windowed build has no console to print to, so
+nothing appeared at all. A first launch now makes an empty database
+(`importer.create`), opens the window and offers to import: the hand
+histories it finds in the usual places, or a folder picker when it finds
+none. `importer.py --check` holds a new database to having every table, so
+the window's first queries find empty tables and not missing ones. The
+build workflow now opens the packaged program in an empty folder on Windows
+and Linux and fails if it does not start. Until now nothing had launched
+what it shipped.
+
 ## Feedback from inside the program -- 5 Oct 2026
 
 ### Added -- a Feedback button, to the developer's email
