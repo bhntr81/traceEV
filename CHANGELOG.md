@@ -8,6 +8,21 @@ Newest first.
 
 ---
 
+## A Windows installer -- 6 Oct 2026
+
+### Added -- TraceEV-windows-setup.exe
+
+Beside the bare `TraceEV-windows.exe` on every release, an installer: a
+Start menu entry, an optional desktop icon, and an uninstaller in Windows'
+own list of programs. It installs per user, into
+`%LOCALAPPDATA%\Programs\TraceEV`, with no administrator prompt, because
+the program keeps `hands.db` and its log beside itself and could write
+neither under Program Files. A later installer upgrades the same install,
+and uninstalling leaves `hands.db`, which was never installed and is the
+tester's hands. The build workflow installs it, opens the installed
+program, uninstalls it and checks each step, as it already opens the bare
+program; `TraceEV.iss` is the script, and `build.py` makes it on a Windows
+machine that has Inno Setup.
 ## A sharper, plainer window -- 6 Oct 2026
 
 ### Changed -- text drawn at the screen's real resolution on Windows

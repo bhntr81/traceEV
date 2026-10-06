@@ -137,8 +137,9 @@ def update():
         return "available", (f"There is a newer version on GitHub ({sha}: "
                              f"{subject}).\n\nThis is the packaged program, "
                              f"which cannot update itself. Update > Get the "
-                             f"latest build opens the downloads page; save the "
-                             f"new TraceEV.exe next to hands.db and start it. "
+                             f"latest build opens the downloads page; run the "
+                             f"new installer, or save the new TraceEV.exe next "
+                             f"to hands.db and start it. "
                              f"Nothing about your hands changes.")
 
     if not is_checkout():
