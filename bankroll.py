@@ -44,7 +44,11 @@ below, from the plan this replaced, and yours in `bankroll.json` beside
 stop-loss are measured in buy-ins of the stake you are actually PLAYING --
 the last sitting's -- never of the stake your bankroll would allow: the old
 script took the tier from the balance, so its stop-loss could only fire in
-the first tier, and at 10NL with $250 it measured from 2NL's entry.
+the first tier, and at 10NL with $250 it measured from 2NL's entry. The
+stop-loss is five buy-ins under that tier's entry, and is not in effect at
+all until the bankroll is under thirty buy-ins of the stake: the user's
+rule of 11 Oct 2026, which leaves a bankroll that is short of the entry but
+still deep in buy-ins alone.
 
 The ledger is your data, not a derivation. It lives in `hands.db` beside the
 hands, as notes and tags do, in tables nothing in `importer.CHAIN` touches;
@@ -138,7 +142,13 @@ DEFAULT_PLAN = {
     "currency": "USD",
     # Empty: every site whose account is in the plan's currency.
     "sites": [],
+    # The stop-loss: this many buy-ins under the entry of the tier played,
+    # and in effect only while the bankroll is also under the second number
+    # of that stake's buy-ins. At 2NL Deep the second decides -- $144 is
+    # five under the $164 entry but still 36 buy-ins of $4 -- and at every
+    # other tier the first does.
     "stop_loss_buyins": 5,
+    "stop_loss_in_effect_under": 30,
     "after": "50NL",
     "tiers": [
         {"name": "2NL Deep", "bb": "0.02", "straddle": None,
@@ -197,6 +207,19 @@ def money(c, currency=""):
     sign = "-" if c < 0 else ""
     whole = f"{abs(c) / 100:,.2f}"
     return f"{sign}{sym}{whole}" + ("" if sym or not currency else f" {currency}")
+
+
+def tenths(num, den, sign=False):
+    """
+    num/den to one decimal, cut toward zero rather than rounded.
+
+    For counts of buy-ins beside a line that fires at a count: $119.99 at
+    2NL is 29.9975 buy-ins, and rounded it read "30.0" next to a stop-loss
+    that had just fired for being under 30. Whole cents in, so it is exact.
+    """
+    q = abs(num) * 10 // den
+    neg = num < 0 and q
+    return (("-" if neg else "+" if sign else "") + f"{q // 10}.{q % 10}")
 
 
 def when(text):
@@ -525,6 +548,8 @@ def check_plan(plan):
                "currency": str(plan.get("currency", "USD")).upper(),
                "sites": [site_key(s) for s in plan.get("sites") or []],
                "stop_loss_buyins": float(plan.get("stop_loss_buyins", 5)),
+               "stop_loss_in_effect_under": float(
+                   plan.get("stop_loss_in_effect_under", 30)),
                "after": str(plan.get("after", "")), "tiers": tiers}
     except (KeyError, TypeError, ValueError, InvalidOperation) as e:
         raise ValueError(f"the plan does not read: {e}") from None
@@ -545,6 +570,8 @@ def check_plan(plan):
                              f"{a['name']} ends at {money(a['target'])}")
     if out["stop_loss_buyins"] <= 0:
         raise ValueError("stop_loss_buyins must be above zero")
+    if out["stop_loss_in_effect_under"] <= 0:
+        raise ValueError("stop_loss_in_effect_under must be above zero")
     out["start"] = tiers[0]["entry"]
     out["goal"] = tiers[-1]["target"]
     out["milestones"] = [t["target"] for t in tiers]
@@ -903,10 +930,16 @@ def progress(plan, res, money_in, accounts):
                           "day": last["day"], "site": last["site"],
                           "tier": tier, "why": why}
         if tier:
-            floor = tier["entry"] - plan["stop_loss_buyins"] * tier["buyin"]
+            buyin = tier["buyin"]
+            floor = tier["entry"] - plan["stop_loss_buyins"] * buyin
+            in_effect = plan["stop_loss_in_effect_under"] * buyin
             out["stop_loss"] = {
-                "floor": floor, "fires": total <= floor,
-                "buyins_from_entry": (total - tier["entry"]) / tier["buyin"]}
+                "buyin": buyin, "entry": tier["entry"],
+                "floor": floor, "in_effect_under": in_effect,
+                "in_effect": total < in_effect,
+                "fires": total <= floor and total < in_effect,
+                "buyins": total / buyin,
+                "buyins_from_entry": (total - tier["entry"]) / buyin}
             later = plan["tiers"][plan["tiers"].index(tier) + 1:]
             if later:
                 nxt = later[0]
@@ -1039,9 +1072,20 @@ def report(s):
         say(f"  playing {playing['stake']} (last session {playing['day']} on {playing['site']}):"
             f" {t['name']},"
             f" entry {money(t['entry'], code)}, buy-in {money(t['buyin'], code)}")
-        say(f"  {sl['buyins_from_entry']:+.1f} buy-ins from the entry; stop-loss at "
-            f"{money(sl['floor'], code)} ({plan['stop_loss_buyins']:g} buy-ins under)"
-            + ("   <-- STOP-LOSS: move down" if sl["fires"] else ""))
+        say(f"  {tenths(p['bankroll'], sl['buyin'])} buy-ins of {t['name']}, "
+            f"{tenths(p['bankroll'] - sl['entry'], sl['buyin'], sign=True)} from the entry")
+        under, gate = plan["stop_loss_buyins"], plan["stop_loss_in_effect_under"]
+        if sl["floor"] < sl["in_effect_under"]:
+            rule = (f"stop-loss at {money(sl['floor'], code)}: {under:g} buy-ins under "
+                    f"the entry, in effect under {gate:g} buy-ins "
+                    f"({money(sl['in_effect_under'], code)})")
+        else:
+            # The entry's rule would fire first, while the bankroll is still
+            # deep in buy-ins, and is not in effect there.
+            rule = (f"stop-loss under {money(sl['in_effect_under'], code)}: "
+                    f"{under:g} under the entry is {money(sl['floor'], code)}, "
+                    f"but it is not in effect until under {gate:g} buy-ins")
+        say("  " + rule + ("   <-- STOP-LOSS: move down" if sl["fires"] else ""))
         if "next" in p:
             n = p["next"]
             if n["needed"] <= 0:
@@ -1284,6 +1328,20 @@ def main(argv, db_path=DB):
     if "--help" in argv:
         print(__doc__)
         return 0
+    if "--plan" in argv:
+        # Before the connection: reading the plan is no reason to make the
+        # ledger's tables, and making them copies the whole of hands.db.
+        plan, origin = load_plan()
+        print(f"{plan['name']} -- {origin}")
+        for t in plan["tiers"]:
+            st = {None: "either", True: "straddled", False: "no straddle"}[t["straddle"]]
+            cur = plan["currency"]
+            print(f"  {t['name']:26} bb {t['bb']:<5} {st:12} buy-in {money(t['buyin'], cur)}"
+                  f"  entry {money(t['entry'], cur)}  target {money(t['target'], cur)}")
+        print(f"  stop-loss {plan['stop_loss_buyins']:g} buy-ins under the entry "
+              "of the tier you are playing, in effect only under "
+              f"{plan['stop_loss_in_effect_under']:g} buy-ins of its stake")
+        return 0
     con = sqlite3.connect(db_path)
     try:
         ensure(con)
@@ -1329,16 +1387,6 @@ def main(argv, db_path=DB):
             for r in s["rows"]:
                 print(f"{r['id']:>6} {r['at']:19} {r['site']:10} {r['what']:28} "
                       f"{money(r['cents'], r['currency']):>12}  {r['note']}")
-        elif "--plan" in argv:
-            plan, origin = load_plan()
-            print(f"{plan['name']} -- {origin}")
-            for t in plan["tiers"]:
-                st = {None: "either", True: "straddled", False: "no straddle"}[t["straddle"]]
-                cur = plan["currency"]
-                print(f"  {t['name']:26} bb {t['bb']:<5} {st:12} buy-in {money(t['buyin'], cur)}"
-                      f"  entry {money(t['entry'], cur)}  target {money(t['target'], cur)}")
-            print(f"  stop-loss {plan['stop_loss_buyins']:g} buy-ins under the entry "
-                  "of the tier you are playing")
         elif "--import-old" in argv or "--import-csv" in argv:
             flag = "--import-old" if "--import-old" in argv else "--import-csv"
             site = _opt(argv, "--site")
@@ -1449,26 +1497,38 @@ def check(db_path=DB):
            "deleting a session leaves the other one's result as it was")
         con.close()
 
-        print("the stop-loss at a tier boundary")
-        for bankroll, st, expect_tier, fires in (
-                (250, False, "10NL Deep", False),
-                (200, False, "10NL Deep", True),
-                (199, False, "10NL Deep", True),
-                (500, True, "10NL Straddle", True),
-                (520, True, "10NL Straddle", False)):
+        print("the stop-loss at a tier boundary: 5 buy-ins under the entry, "
+              "in effect under 30")
+        # Bankrolls in cents, at the edges of both numbers. 2NL Deep is the
+        # tier where thirty buy-ins decides: $144 is five under its entry
+        # but 36 buy-ins of $4, so it is not in effect until under $120.
+        for bankroll, stake_text, expect_tier, fires in (
+                (25000, "0.05/0.10", "10NL Deep", False),
+                (20100, "0.05/0.10", "10NL Deep", False),
+                (20000, "0.05/0.10", "10NL Deep", True),
+                (19900, "0.05/0.10", "10NL Deep", True),
+                (50000, "0.05/0.10/0.20", "10NL Straddle", True),
+                (52000, "0.05/0.10/0.20", "10NL Straddle", False),
+                (14400, "0.01/0.02", "2NL Deep", False),
+                (12000, "0.01/0.02", "2NL Deep", False),
+                (11999, "0.01/0.02", "2NL Deep", True),
+                (100000, "0.10/0.20", "20NL (effectively 40NL)", True),
+                (100001, "0.10/0.20", "20NL (effectively 40NL)", False)):
             con = sqlite3.connect(":memory:")
             ensure(con)
             set_account(con, "clubwpt", "USD")
             add_entry(con, "clubwpt", "deposit", "164", "2026-09-01")
-            add_session(con, "clubwpt", str(bankroll - 164), "2026-09-02",
-                        stake_text="0.05/0.10" + ("/0.20" if st else ""))
+            add_session(con, "clubwpt", f"{(bankroll - 16400) / 100:.2f}", "2026-09-02",
+                        stake_text=stake_text)
             p = summary(con, plan)["progress"]
             t = p["playing"]["tier"]
             ok(t and t["name"] == expect_tier and p["stop_loss"]["fires"] == fires,
-               f"${bankroll} at 10NL{' straddled' if st else ''}: {expect_tier}, "
-               f"{p['stop_loss']['buyins_from_entry']:+.2f} buy-ins, "
+               f"{money(bankroll, 'USD')} at {stake_text}: {expect_tier}, "
+               f"{tenths(bankroll, p['stop_loss']['buyin'])} buy-ins, "
+               f"{tenths(bankroll - p['stop_loss']['entry'], p['stop_loss']['buyin'], True)}"
+               " from the entry, "
                f"stop-loss {'fires' if fires else 'quiet'}")
-            if bankroll == 199:
+            if bankroll == 19900:
                 old = p["bankroll_allows"]
                 ok(old["name"] == "2NL Deep" and 19900 > old["entry"] - 5 * old["buyin"],
                    "the old rule -- the tier from the bankroll -- read 2NL here and "
@@ -1533,10 +1593,20 @@ def check(db_path=DB):
         own = json.loads(json.dumps(DEFAULT_PLAN))
         own["name"] = "mine"
         own["stop_loss_buyins"] = 3
+        del own["stop_loss_in_effect_under"]
         mine.write_text(json.dumps(own), encoding="utf-8")
         got, origin = load_plan(mine)
-        ok(got["name"] == "mine" and got["stop_loss_buyins"] == 3 and origin == str(mine),
-           "a bankroll.json replaces the default")
+        ok(got["name"] == "mine" and got["stop_loss_buyins"] == 3 and origin == str(mine)
+           and got["stop_loss_in_effect_under"] == 30,
+           "a bankroll.json replaces the default, and one that does not say when "
+           "the stop-loss comes into effect gets thirty buy-ins")
+        never = json.loads(json.dumps(DEFAULT_PLAN))
+        never["stop_loss_in_effect_under"] = 0
+        try:
+            check_plan(never)
+            ok(False, "a stop-loss never in effect is refused")
+        except ValueError:
+            ok(True, "a stop-loss never in effect is refused")
         ok(plan["start"] == 16400 and plan["goal"] == 300000
            and plan["milestones"] == [30000, 60000, 120000, 300000],
            "the default runs $164 to $3,000, with milestones at 300, 600, 1,200, 3,000")
@@ -1596,10 +1666,27 @@ def check(db_path=DB):
         else:
             import importer
             importer.create(work)
+        # The copy first, on a database of its own, because this machine's
+        # may have its ledger already -- and then, rightly, nothing is made
+        # and nothing copied. Asked of this machine's, it failed on every
+        # database that had ever opened the Bankroll tab.
+        fresh = tmp / "fresh.db"
+        con = sqlite3.connect(fresh)
+        con.execute("CREATE TABLE hands (hand_id TEXT)")
+        con.commit()
+        ensure(con)
+        again = len(list(tmp.glob("fresh.db.bak-*")))
+        ensure(con)
+        con.close()
+        ok(again == 1 and len(list(tmp.glob("fresh.db.bak-*"))) == 1,
+           "the database was copied before the ledger's tables were made, and only then")
         con = sqlite3.connect(work)
         ensure(con)
-        backups = list(tmp.glob("hands.db.bak-*"))
-        ok(not real or backups, "the database was copied before the ledger's tables were made")
+        # And the copy's ledger emptied -- the copy's, never this machine's --
+        # so that what follows counts the rows it adds and not yours.
+        for t in TABLES:
+            con.execute(f"DELETE FROM {t}")
+        con.commit()
         sits = sittings(con) or []
         for site in {s["site"] for s in sits}:
             set_account(con, site, "USD")
