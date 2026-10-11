@@ -48,6 +48,7 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 import sqlite3
 
 import ask
+import bankroll_view
 import diag
 import importer
 import players
@@ -1277,7 +1278,7 @@ class App(ImportMixin, ttk.Frame):
 
         self.tabs = {}
         for name in ("stats", "actions", "overfolds", "range", "chart", "report",
-                     "results", "graph", "hands", "sessions"):
+                     "results", "graph", "hands", "sessions", "bankroll"):
             frame = ttk.Frame(self.nb)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
@@ -1343,6 +1344,14 @@ class App(ImportMixin, ttk.Frame):
         self.tree["sessions"].bind("<Return>", self._open_session)
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        # The money half: a ledger and a plan rather than a filter's answer,
+        # so it draws itself, and asks through the same queue as the rest.
+        self.bankroll = bankroll_view.BankrollTab(
+            self, self.tabs["bankroll"],
+            {"px": px, "bg": BG, "panel": PANEL, "ink": INK, "dim": DIM,
+             "accent": ACCENT, "good": GOOD, "bad": BAD, "field": FIELD,
+             "mono": MONO},
+            DB)
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -1727,6 +1736,12 @@ class App(ImportMixin, ttk.Frame):
             return
         diag.event("refresh", view=view, filter=label)
         self.filter_line.configure(text="filter: " + label)
+        if view == "bankroll":
+            # Money is everything you played and everything you moved; a
+            # bankroll for the hands on a monotone flop is not a bankroll.
+            self.filter_line.configure(
+                text="the bankroll is every hand of yours and every ledger "
+                     "row -- the filter does not narrow it")
         self.paint_subject()
         self.summary.configure(text=self.describe_filter())
         if self.argv():
@@ -1962,7 +1977,9 @@ class App(ImportMixin, ttk.Frame):
                 out["label"], out["argv"] = label, list(filter_argv)
             elif view == "graph":
                 out["series"] = self._series(con, where)
-            if view != "statrange" and not self._any(out):
+            elif view == "bankroll":
+                out.update(self.bankroll.compute())
+            if view not in ("statrange", "bankroll") and not self._any(out):
                 out["why"] = query.why_empty(con, parts)
         except ValueError as e:
             out = {"view": view, "error": str(e)}
@@ -2036,7 +2053,7 @@ class App(ImportMixin, ttk.Frame):
         # What each tab last drew, and under what, for Detach: a pane is a
         # copy of an answer already on the screen, so it costs no query and
         # cannot come out different from the tab it was taken from.
-        if view not in ("statrange", "square") and getattr(self, "last", None):
+        if view not in ("statrange", "square", "bankroll") and getattr(self, "last", None):
             self.shown_out[view] = (out, self.last, self.chart_stat(),
                                     self.by.get())
         # A cached table carries the range of whatever was clicked when it
@@ -2064,6 +2081,9 @@ class App(ImportMixin, ttk.Frame):
             self.chart = out if (out.get("cells") or
                                  (out.get("mode") == "comparison" and out.get("total"))) else None
             self._draw_chart(out.get("why") or out.get("error"))
+            return
+        if view == "bankroll":
+            self.bankroll.render(out)
             return
         self._render_into(self.tree[view], view, out)
 
@@ -2450,6 +2470,14 @@ class App(ImportMixin, ttk.Frame):
         """
         view = self.nb.tab(self.nb.select(), "text")
         shown = self.shown_out.get(view)
+        if view == "bankroll":
+            # A copy of a ledger kept under an old filter compares nothing:
+            # there is one ledger, and the filter never narrowed it.
+            messagebox.showinfo("Nothing to detach",
+                                "The bankroll is one ledger and does not "
+                                "change with the filter, so a copy of it "
+                                "would compare nothing.", parent=self.master)
+            return
         if not shown:
             messagebox.showinfo("Nothing to detach",
                                 f"The {view} tab has not drawn anything yet.",
@@ -4850,6 +4878,16 @@ def check(db_path=DB):
     for b in broke:
         print(f"    {b}")
     fails += broke
+
+    # The bankroll tab is not a filter's answer, so it is not in the loop
+    # above: it is driven through the queue on a copy of the database, since
+    # what it does that the others do not is write.
+    off = bankroll_view.check_tab(app, db_path)
+    print(f"the bankroll tab draws what bankroll.py prints, and writes "
+          f"through the queue  {'yes' if not off else 'NO'}")
+    for o in off:
+        print(f"    {o}")
+    fails += off
 
     # The stats table's side chart. A click on a row is the only way it is
     # asked for, and the table and chart arrive by two roads -- one riding
