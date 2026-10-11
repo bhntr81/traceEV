@@ -83,7 +83,7 @@ import sqlite3
 import sys
 import time
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -218,8 +218,9 @@ def tenths(num, den, sign=False):
     that had just fired for being under 30. Whole cents in, so it is exact.
     """
     q = abs(num) * 10 // den
-    neg = num < 0 and q
-    return (("-" if neg else "+" if sign else "") + f"{q // 10}.{q % 10}")
+    # The sign is the number's, not the cut's: a cent under the entry read
+    # "+0.0 from the entry" beside a line saying it was under.
+    return (("-" if num < 0 else "+" if sign else "") + f"{q // 10}.{q % 10}")
 
 
 def when(text):
@@ -277,15 +278,21 @@ def stake(text):
         return None, None
     straddled = True if "straddle" in text else None
     nums = re.findall(r"\d+(?:\.\d+)?", text)
-    if "/" in text and len(nums) >= 2:
-        return float(Decimal(nums[1])), len(nums) >= 3 or straddled is True
     m = re.search(r"(\d+(?:\.\d+)?)\s*nl", text)
-    if m:
-        return float(Decimal(m.group(1)) / 100), straddled
-    if len(nums) == 1:
-        return float(Decimal(nums[0])), straddled
-    raise ValueError(f"{text!r} is not a stake: write 0.05/0.10, "
-                     "0.05/0.10/0.20 for a straddle, or 10NL")
+    if "/" in text and len(nums) >= 2:
+        bb, straddled = Decimal(nums[1]), len(nums) >= 3 or straddled is True
+    elif m:
+        bb = Decimal(m.group(1)) / 100
+    elif len(nums) == 1:
+        bb = Decimal(nums[0])
+    else:
+        raise ValueError(f"{text!r} is not a stake: write 0.05/0.10, "
+                         "0.05/0.10/0.20 for a straddle, or 10NL")
+    # A big blind of nothing is a typing mistake, and a win rate in big
+    # blinds divides by it: one "0.05/0" took the whole report down.
+    if bb <= 0:
+        raise ValueError(f"{text!r} has no big blind")
+    return float(bb), straddled
 
 
 def stake_label(bb, straddled):
@@ -547,9 +554,12 @@ def check_plan(plan):
         out = {"name": str(plan.get("name") or "the plan"),
                "currency": str(plan.get("currency", "USD")).upper(),
                "sites": [site_key(s) for s in plan.get("sites") or []],
-               "stop_loss_buyins": float(plan.get("stop_loss_buyins", 5)),
-               "stop_loss_in_effect_under": float(
-                   plan.get("stop_loss_in_effect_under", 30)),
+               # Exact, as the cents they multiply are: in floats a gate of
+               # 35.7 buy-ins of $4 was $142.80000000000001, and $142.80
+               # read as under it.
+               "stop_loss_buyins": Decimal(str(plan.get("stop_loss_buyins", 5))),
+               "stop_loss_in_effect_under": Decimal(
+                   str(plan.get("stop_loss_in_effect_under", 30))),
                "after": str(plan.get("after", "")), "tiers": tiers}
     except (KeyError, TypeError, ValueError, InvalidOperation) as e:
         raise ValueError(f"the plan does not read: {e}") from None
@@ -561,17 +571,19 @@ def check_plan(plan):
     for t in tiers:
         if t["straddle"] not in (None, True, False):
             raise ValueError(f"{t['name']}: straddle is true, false or null")
-        if t["buyin"] <= 0 or t["entry"] <= 0 or t["target"] <= t["entry"]:
-            raise ValueError(f"{t['name']}: a buy-in and an entry above "
-                             "nothing, and a target above the entry")
+        if t["bb"] <= 0 or t["buyin"] <= 0 or t["entry"] <= 0 \
+                or t["target"] <= t["entry"]:
+            raise ValueError(f"{t['name']}: a big blind, a buy-in and an entry "
+                             "above nothing, and a target above the entry")
     for a, b in zip(tiers, tiers[1:]):
         if b["entry"] != a["target"]:
             raise ValueError(f"{b['name']} begins at {money(b['entry'])} but "
                              f"{a['name']} ends at {money(a['target'])}")
-    if out["stop_loss_buyins"] <= 0:
-        raise ValueError("stop_loss_buyins must be above zero")
-    if out["stop_loss_in_effect_under"] <= 0:
-        raise ValueError("stop_loss_in_effect_under must be above zero")
+    # Finite as well as above zero: NaN is neither above nor below anything,
+    # so a plan saying NaN loaded, and its stop-loss could never fire.
+    for key in ("stop_loss_buyins", "stop_loss_in_effect_under"):
+        if not (out[key].is_finite() and out[key] > 0):
+            raise ValueError(f"{key} must be a number above zero")
     out["start"] = tiers[0]["entry"]
     out["goal"] = tiers[-1]["target"]
     out["milestones"] = [t["target"] for t in tiers]
@@ -800,7 +812,7 @@ def typed_rates(manual):
     """bb/100 of typed sessions that say their hands and stake. No error."""
     acc = {}
     for m in manual:
-        if m["replaced_by"] or m["cents"] is None or not m["hands"] or m["bb"] is None:
+        if m["replaced_by"] or m["cents"] is None or not m["hands"] or not m["bb"]:
             continue
         k = (m["site"], m["bb"], m["straddle"])
         hands, c = acc.get(k, (0, 0))
@@ -926,13 +938,24 @@ def progress(plan, res, money_in, accounts):
         out["why"] = "no session at any stake yet"
     else:
         tier, why = tier_for(plan, last["bb"], last["straddle"])
-        out["playing"] = {"stake": stake_label(last["bb"], last["straddle"]),
+        label = stake_label(last["bb"], last["straddle"])
+        if last["bb"] is None:
+            # Only a typed session reaches here -- a sitting that mixed
+            # stakes is never the last one asked -- so it did not mix
+            # stakes; it did not say one.
+            label, why = "a stake not given", "the last session does not say its stake"
+        out["playing"] = {"stake": label,
                           "day": last["day"], "site": last["site"],
                           "tier": tier, "why": why}
         if tier:
             buyin = tier["buyin"]
-            floor = tier["entry"] - plan["stop_loss_buyins"] * buyin
-            in_effect = plan["stop_loss_in_effect_under"] * buyin
+            # In whole cents, as they are shown: the largest bankroll on
+            # the line, and the smallest clear of the thirty, so that a
+            # printed amount is never on the wrong side of either.
+            floor = int((tier["entry"] - plan["stop_loss_buyins"] * buyin)
+                        .to_integral_value(rounding=ROUND_FLOOR))
+            in_effect = int((plan["stop_loss_in_effect_under"] * buyin)
+                            .to_integral_value(rounding=ROUND_CEILING))
             out["stop_loss"] = {
                 "buyin": buyin, "entry": tier["entry"],
                 "floor": floor, "in_effect_under": in_effect,
@@ -1331,16 +1354,20 @@ def main(argv, db_path=DB):
     if "--plan" in argv:
         # Before the connection: reading the plan is no reason to make the
         # ledger's tables, and making them copies the whole of hands.db.
-        plan, origin = load_plan()
-        print(f"{plan['name']} -- {origin}")
-        for t in plan["tiers"]:
-            st = {None: "either", True: "straddled", False: "no straddle"}[t["straddle"]]
-            cur = plan["currency"]
-            print(f"  {t['name']:26} bb {t['bb']:<5} {st:12} buy-in {money(t['buyin'], cur)}"
-                  f"  entry {money(t['entry'], cur)}  target {money(t['target'], cur)}")
-        print(f"  stop-loss {plan['stop_loss_buyins']:g} buy-ins under the entry "
-              "of the tier you are playing, in effect only under "
-              f"{plan['stop_loss_in_effect_under']:g} buy-ins of its stake")
+        try:
+            plan, origin = load_plan()
+            print(f"{plan['name']} -- {origin}")
+            for t in plan["tiers"]:
+                st = {None: "either", True: "straddled", False: "no straddle"}[t["straddle"]]
+                cur = plan["currency"]
+                print(f"  {t['name']:26} bb {t['bb']:<5} {st:12} buy-in {money(t['buyin'], cur)}"
+                      f"  entry {money(t['entry'], cur)}  target {money(t['target'], cur)}")
+            print(f"  stop-loss {plan['stop_loss_buyins']:g} buy-ins under the entry "
+                  "of the tier you are playing, in effect only under "
+                  f"{plan['stop_loss_in_effect_under']:g} buy-ins of its stake")
+        except ValueError as e:
+            print(f"bankroll: {e}", file=sys.stderr)
+            return 1
         return 0
     con = sqlite3.connect(db_path)
     try:
@@ -1542,7 +1569,38 @@ def check(db_path=DB):
         p = summary(con, plan)["progress"]
         ok(p["playing"]["tier"] is None and "two tiers" in p["playing"]["why"],
            "10NL with the straddle not said is two tiers, and no stop-loss is guessed")
+        add_session(con, "clubwpt", "-60", "2026-09-03")
+        p = summary(con, plan)["progress"]
+        ok(p["playing"]["tier"] is None and "does not say its stake" in p["playing"]["why"],
+           "a session typed with no stake says so, and is not called mixed stakes")
         con.close()
+        ok(tenths(-1, 2000, sign=True) == "-0.0" and tenths(1, 2000, sign=True) == "+0.0"
+           and tenths(11999, 400) == "29.9" and tenths(-9900, 2000) == "-4.9",
+           "a count of buy-ins is cut toward zero and keeps its sign: a cent under "
+           "the entry is -0.0 from it, not +0.0")
+
+        # A plan's numbers that are not whole: exact against whole cents, and
+        # each line printed as an amount on its own side of it.
+        for gate, under, stake_text, cents_, fires in (
+                ("35.7", "5", "0.01/0.02", 14280, False),
+                ("35.7", "5", "0.01/0.02", 14279, True),
+                ("30", "5.00025", "0.05/0.10/0.20", 50000, False),
+                ("30", "5.00025", "0.05/0.10/0.20", 49999, True)):
+            odd = json.loads(json.dumps(DEFAULT_PLAN))
+            odd["stop_loss_in_effect_under"], odd["stop_loss_buyins"] = gate, under
+            odd = check_plan(odd)
+            con = sqlite3.connect(":memory:")
+            ensure(con)
+            set_account(con, "clubwpt", "USD")
+            add_entry(con, "clubwpt", "deposit", "164", "2026-09-01")
+            add_session(con, "clubwpt", f"{(cents_ - 16400) / 100:.2f}", "2026-09-02",
+                        stake_text=stake_text)
+            sl = summary(con, odd)["progress"]["stop_loss"]
+            shown = (sl["fires"] == (cents_ <= sl["floor"] and cents_ < sl["in_effect_under"]))
+            ok(sl["fires"] == fires and shown,
+               f"{money(cents_, 'USD')} with {under} under the entry and {gate} buy-ins: "
+               f"{'fires' if fires else 'quiet'}, and the amounts printed agree")
+            con.close()
 
         print("downswings on a series worked out by hand")
         series = [("2026-01-01", 10), ("2026-01-02", -10), ("2026-01-03", -15),
@@ -1600,13 +1658,38 @@ def check(db_path=DB):
            and got["stop_loss_in_effect_under"] == 30,
            "a bankroll.json replaces the default, and one that does not say when "
            "the stop-loss comes into effect gets thirty buy-ins")
-        never = json.loads(json.dumps(DEFAULT_PLAN))
-        never["stop_loss_in_effect_under"] = 0
+        for key, value in (("stop_loss_in_effect_under", 0),
+                           ("stop_loss_in_effect_under", float("nan")),
+                           ("stop_loss_buyins", "nan"),
+                           ("stop_loss_buyins", "Infinity")):
+            never = json.loads(json.dumps(DEFAULT_PLAN))
+            never[key] = value
+            try:
+                check_plan(json.loads(json.dumps(never)))
+                ok(False, f"{key} = {value!r} is refused: a stop-loss that can never fire")
+            except ValueError:
+                ok(True, f"{key} = {value!r} is refused: a stop-loss that can never fire")
+        for bad in ("0.05/0", "0NL", "$0"):
+            try:
+                stake(bad)
+                ok(False, f"a stake of {bad!r} is refused: a big blind of nothing")
+            except ValueError:
+                ok(True, f"a stake of {bad!r} is refused: a big blind of nothing")
+        global PLAN_FILE
+        kept, PLAN_FILE = PLAN_FILE, tmp / "broken.json"
         try:
-            check_plan(never)
-            ok(False, "a stop-loss never in effect is refused")
-        except ValueError:
-            ok(True, "a stop-loss never in effect is refused")
+            PLAN_FILE.write_text('{"tiers": []}', encoding="utf-8")
+            said = io.StringIO()
+            real_err, sys.stderr = sys.stderr, said
+            try:
+                code = main(["--plan"], db_path=tmp / "unused.db")
+            finally:
+                sys.stderr = real_err
+            ok(code == 1 and "no tiers" in said.getvalue()
+               and not (tmp / "unused.db").exists(),
+               "--plan says what is wrong with a bad bankroll.json, and opens no database")
+        finally:
+            PLAN_FILE = kept
         ok(plan["start"] == 16400 and plan["goal"] == 300000
            and plan["milestones"] == [30000, 60000, 120000, 300000],
            "the default runs $164 to $3,000, with milestones at 300, 600, 1,200, 3,000")
