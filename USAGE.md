@@ -908,7 +908,8 @@ Balance checks (what the site said, against the ledger):
 the 50NL challenge: $164.00 to $3,000.00, then 50NL   (the default plan, in bankroll.py)
   bankroll $261.60 on clubwpt -- 9% of the goal
   playing 10NL (last session 2026-09-08 on clubwpt): 10NL Deep, entry $300.00, buy-in $20.00
-  -1.9 buy-ins from the entry; stop-loss at $200.00 (5 buy-ins under)
+  13.0 buy-ins of 10NL Deep, -1.9 from the entry
+  stop-loss at $200.00: 5 buy-ins under the entry, in effect under 30 buy-ins ($600.00)
   needed for 10NL Straddle: $338.40 (16.9 buy-ins of 10NL Deep)
   (the bankroll alone would allow 2NL Deep; the stop-loss goes by
   the stake played, not by this)
@@ -925,8 +926,13 @@ Downswings in buy-ins (results only, USD):
 **The plan is measured in buy-ins of the stake you are PLAYING** -- the
 last session's, on any of the plan's sites -- never of the stake the
 bankroll would allow. The stop-loss sits five buy-ins under that tier's
-entry: at 10NL Deep, entry $300 and a buy-in $20, it is $200, and $250 is
-2.5 buy-ins under and quiet. A big blind two tiers share (10NL Deep and 10NL
+entry, and is not in effect at all until the bankroll is under thirty
+buy-ins of the stake. At 10NL Deep, entry $300 and a buy-in $20, it fires
+at $200, and $250 is 2.5 buy-ins under the entry and quiet. At 2NL Deep it
+is thirty that decides: $144 is five under the $164 entry but still 36
+buy-ins of $4, so it fires only under $120. A count of buy-ins is cut, not
+rounded -- 29.9975 is shown as 29.9 -- so a number beside the stop-loss
+never reads as the far side of it. A big blind two tiers share (10NL Deep and 10NL
 Straddle) is told apart by the straddle; a session typed as `10NL`, which
 does not say, places no tier and measures no stop-loss rather than guess.
 `0.05/0.10` is unstraddled and `0.05/0.10/0.20` is straddled.
@@ -937,7 +943,7 @@ it whole:
 
 ```json
 {"name": "my plan", "currency": "USD", "sites": [], "stop_loss_buyins": 5,
- "after": "50NL",
+ "stop_loss_in_effect_under": 30, "after": "50NL",
  "tiers": [{"name": "2NL Deep", "bb": "0.02", "straddle": null,
             "buyin": "4", "entry": "164", "target": "300"},
            {"name": "10NL Deep", "bb": "0.10", "straddle": false,
@@ -945,7 +951,10 @@ it whole:
 ```
 
 Each tier must begin where the one before ends; `sites` empty means every
-site whose account is in the plan's currency. A milestone -- each tier's
+site whose account is in the plan's currency. `stop_loss_buyins` is how far
+under the entry the stop-loss sits, and `stop_loss_in_effect_under` how few
+buy-ins of the stake the bankroll must be down to before it applies; a
+file that leaves the second out gets thirty. A milestone -- each tier's
 target -- crossed while the window is open says so once, in a box.
 
 **Win rates are in bb/100, per site and stake, with their n and error** --

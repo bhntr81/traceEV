@@ -21,7 +21,9 @@ and replaced when that room's hands arrive. A balance you type is a check:
 the gap is shown and never applied. Every site's currency is stated once
 and two currencies are never added. A plan -- the old one by default,
 yours in `bankroll.json` -- with milestones, the amount needed for the
-next tier, and a stop-loss, all in buy-ins of the stake you are playing.
+next tier, and a stop-loss, all in buy-ins of the stake you are playing:
+the stop-loss is five buy-ins under the tier's entry and is not in effect
+until the bankroll is under thirty buy-ins of the stake.
 Win rates in bb/100 per site and stake with their n, error and verdict;
 downswings in buy-ins and in dollars. `--import-old` reads the old
 `bankroll_tracker.db`, each day a balance check and a typed session, and

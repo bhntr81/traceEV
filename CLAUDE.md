@@ -336,7 +336,10 @@ Facts that stay true, and that have each been got wrong at least once:
   2NL's entry and said nothing. `bankroll.tier_for` takes the last session's
   stake, a big blind two tiers share is decided by the straddle, and a stake
   whose straddle is not known places no tier rather than guessing one. The
-  plan is opinion: `DEFAULT_PLAN` in code, the user's in `bankroll.json`.
+  rule itself is the user's, of 11 Oct 2026: five buy-ins under that tier's
+  entry, and not in effect until the bankroll is under thirty buy-ins of the
+  stake -- at 2NL Deep the thirty decides, $120 rather than $144. The plan is
+  opinion: `DEFAULT_PLAN` in code, the user's in `bankroll.json`.
 - **The interpreter that builds is the one that has Tk, and on this machine
   that is not the default one.** PyInstaller packages the runtime it is run
   on, so `python build.py` under an interpreter without tkinter produces a

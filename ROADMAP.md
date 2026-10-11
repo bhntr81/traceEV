@@ -1026,10 +1026,12 @@ its writes go through the same queue.
 synthetic fixtures, 993 hands) under 3.12 with Tk; under a 3.11 with no
 tkinter, 19 of 23, the four failures the four modules that import Tk, as
 on master. `bankroll.py --check`: the ledger and its
-gaps on figures worked out by hand; the stop-loss at the 10NL boundary --
-$250 quiet at -2.5 buy-ins, $200 and $199 firing, the old rule reading 2NL
-and saying nothing; a straddled $500 firing at 10NL Straddle; `10NL` with
-the straddle unsaid placing no tier; downswings on a hand-worked series;
+gaps on figures worked out by hand; the stop-loss at every tier's edge --
+at 10NL Deep $250 and $201 quiet, $200 and $199 firing, the old rule
+reading 2NL and saying nothing; a straddled $500 firing at 10NL Straddle
+and $520 not; at 2NL Deep $144 quiet for being 36 buy-ins, $120 quiet at
+exactly 30, $119.99 firing; 20NL at $1,000 and $1,000.01; `10NL` with the
+straddle unsaid placing no tier; downswings on a hand-worked series;
 the old importer on a made-up file with a bad row, an unreadable stake, a
 second table and the same file twice; a rebuild of a copy of the CI
 database leaving every ledger row as it was; and no module's schema
@@ -1037,10 +1039,30 @@ dropping a ledger table. `app.py --check` drives the tab through the queue
 on a copy and checks it draws what the command line prints.
 
 **What was decided, and is opinion.** The stop-loss is five buy-ins under
-the entry of the tier played, as the old plan said; at 10NL Deep that is
-$200, so $250 is 2.5 buy-ins under and quiet. The 20NL tier's straddle is
+the entry of the tier played, as the old plan said, and -- the user's rule,
+given on reading the first version -- not in effect until the bankroll is
+under thirty buy-ins of the stake. At 10NL Deep that fires at $200, so $250
+is 2.5 buy-ins under and quiet; at 2NL Deep the thirty decides, under $120
+rather than at $144. A count of buy-ins is cut rather than rounded, because
+$119.99 rounded read "30.0 buy-ins" beside a stop-loss that had fired for
+being under thirty. The 20NL tier's straddle is
 "either", because the plan called it "effectively 40NL" without saying
 which. Both are one line in `bankroll.json`.
+
+**Four checks that passed only on a database nobody uses.** CI's is built
+fresh, so it never has a ledger; yours will after the first look at the
+tab. Asked of a database that had one, `bankroll.py --check` failed on
+"copied before the ledger's tables were made" -- nothing is made when they
+exist, so nothing is copied -- and its rebuild half counted your rows as
+its own; `app.py --check` looked for its test deposit at the top of a
+ledger that, from tomorrow, has newer rows, and a deposit that carried a
+real bankroll across a milestone opened a box that waited for a click and
+hung the check. Found by reading the plan once (`--plan` made the tables;
+it no longer opens the database), and each fixed and then run against a
+copy of the CI database with a lived-in ledger $0.50 under a milestone.
+The sittings' derivation had the same blind spot, closed earlier in the
+run: hands imported before `hands.straddle` hold NULL, the CI database
+holds none, and `int(None)` stopped every import on the databases that do.
 
 **Left undone:** the old `bankroll_tracker.db` has been imported only as a
 made-up file built from the description of its schema; the real one is on
