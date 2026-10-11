@@ -994,6 +994,62 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 33 — the bankroll, as a ledger (11 Oct 2026)
+
+**Goal:** bankroll tracking into scope, by the user's decision on 11 Oct
+2026: the money half of a tracker, from the same hands and under the same
+rules, replacing a separate Tk script with its own `bankroll_tracker.db`.
+Everything that script did, none of the seven things it did wrong.
+
+**What it rests on.** Results come from hands wherever there are hands, so
+the first question was where money per sitting already lived, and the
+answer was nowhere: `sessions` carried big blinds and EV but not dollars,
+and computing them beside it would have been the new money SQL the rules
+forbid. The sittings derivation now sums `spots.net` -- the rows it already
+summed for `net_bb` -- into `sessions.net`, with the stake and straddle of
+a sitting played at one, and `sessions.py --check` holds each site's
+sittings to its hands within five cents. `importer.current` sends a database
+without those columns to a rebuild rather than an update.
+
+**What was built.** `bankroll.py`: a ledger of deposits, withdrawals,
+bonuses, rakeback and transfers in whole cents, typed sessions for rooms
+with no hand histories, balance checks that are compared and never
+applied, accounts that state each site's currency, and a plan whose
+stop-loss and move-up key on the stake played. Win rates per site and stake
+from one `matching_seats` and `results_of` per stake, with the verdict
+line; downswings in buy-ins and dollars. An importer for the old file and
+its CSV. `bankroll_view.py`: the tab, which works nothing out -- it draws
+`bankroll.summary` and `bankroll.report` from the window's one worker, and
+its writes go through the same queue.
+
+**Result: PASS**, 23 of 23 checks on the CI database (FPDB's corpus and the
+synthetic fixtures, 993 hands) under 3.12 with Tk; under a 3.11 with no
+tkinter, 19 of 23, the four failures the four modules that import Tk, as
+on master. `bankroll.py --check`: the ledger and its
+gaps on figures worked out by hand; the stop-loss at the 10NL boundary --
+$250 quiet at -2.5 buy-ins, $200 and $199 firing, the old rule reading 2NL
+and saying nothing; a straddled $500 firing at 10NL Straddle; `10NL` with
+the straddle unsaid placing no tier; downswings on a hand-worked series;
+the old importer on a made-up file with a bad row, an unreadable stake, a
+second table and the same file twice; a rebuild of a copy of the CI
+database leaving every ledger row as it was; and no module's schema
+dropping a ledger table. `app.py --check` drives the tab through the queue
+on a copy and checks it draws what the command line prints.
+
+**What was decided, and is opinion.** The stop-loss is five buy-ins under
+the entry of the tier played, as the old plan said; at 10NL Deep that is
+$200, so $250 is 2.5 buy-ins under and quiet. The 20NL tier's straddle is
+"either", because the plan called it "effectively 40NL" without saying
+which. Both are one line in `bankroll.json`.
+
+**Left undone:** the old `bankroll_tracker.db` has been imported only as a
+made-up file built from the description of its schema; the real one is on
+the user's PC. No real hands of the user's were in this container, so every
+figure above is the corpus's. ClubWPT Gold stays typed until
+`bhntr81/clubwpt-ocr` can export, and the replacement rule (a sitting of
+the site over the same time) has been checked against the corpus's own
+sittings, not against a real export.
+
 ## Run 32 — an audit for wrong numbers, and the hands the board makes (24 Sep 2026)
 
 **Goal:** find figures that are wrong and plausible, which is the failure this

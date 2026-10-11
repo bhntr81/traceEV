@@ -8,6 +8,52 @@ Newest first.
 
 ---
 
+## The bankroll -- 11 Oct 2026
+
+### Added -- `bankroll.py` and a Bankroll tab
+
+Bankroll tracking is in scope by the user's decision, and it replaces a
+separate script with its own database. It is a ledger -- deposits,
+withdrawals, bonuses, rakeback, transfers between sites, and results --
+where the results are your sittings from the hands and, for a room with no
+hand histories, sessions you type, marked typed wherever they are counted
+and replaced when that room's hands arrive. A balance you type is a check:
+the gap is shown and never applied. Every site's currency is stated once
+and two currencies are never added. A plan -- the old one by default,
+yours in `bankroll.json` -- with milestones, the amount needed for the
+next tier, and a stop-loss, all in buy-ins of the stake you are playing.
+Win rates in bb/100 per site and stake with their n, error and verdict;
+downswings in buy-ins and in dollars. `--import-old` reads the old
+`bankroll_tracker.db`, each day a balance check and a typed session, and
+drops nothing. In the window, the **bankroll** tab.
+
+### Fixed, by not repeating them -- seven faults in the script it replaces
+
+Profit was the difference between two balances, so a deposit was winnings,
+a back-dated day was measured against the newest balance, and deleting a
+day left every later one wrong; it is a ledger now. The stop-loss took the
+tier from the bankroll, so it could fire only in the first tier -- at 10NL
+with $250 it measured from 2NL's entry -- and it keys on the stake played
+now. A schema change dropped the table; these tables are only ever
+created if missing, and the check reads every module for a DROP of one. A
+second session on a day replaced the first; sessions are rows. Dollars per
+100 hands and dollar downswings added stakes together; rates are bb/100
+per stake and downswings are in buy-ins too. "Import CSV (H2N/DriveHUD)"
+read a layout of its own, and is called what it is. The title said $40
+where the plan began at $164, and two stages were both Phase 4; the plan
+is checked for unique names and for each tier beginning where the last
+ended.
+
+### Changed -- sittings carry their money
+
+`sessions` has `net`, `bb` and `straddle`: the dollars of a sitting summed
+from the same `spots` rows as its big blinds, and its stake when it was
+played at one. A database cut before them is rebuilt on the next import
+rather than updated, because an update would leave the old sittings
+without them.
+
+---
+
 ## A sharper, plainer window -- 6 Oct 2026
 
 ### Changed -- text drawn at the screen's real resolution on Windows

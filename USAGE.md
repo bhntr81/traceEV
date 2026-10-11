@@ -847,6 +847,142 @@ window.
 
 ---
 
+### The bankroll
+
+```bash
+python bankroll.py                                  # the bankroll, the plan, rates, downswings
+python bankroll.py --account clubwpt USD            # say which currency a site keeps
+python bankroll.py --deposit clubwpt 300 --date 2026-09-01
+python bankroll.py --withdraw pokerstars 100 --note "rent"
+python bankroll.py --bonus clubwpt 5                # also --rakeback
+python bankroll.py --transfer pokerstars acr 50     # --to-amount when the two differ
+python bankroll.py --session clubwpt -40 --date 2026-09-05 --hours 3 \
+                   --hands 260 --stake 0.05/0.10    # a room with no hand histories
+python bankroll.py --balance clubwpt 265            # "the site says $265"
+python bankroll.py --entries                        # every row, with its id
+python bankroll.py --delete s2                      # one row, by that id
+python bankroll.py --plan                           # the plan in effect
+python bankroll.py --import-old bankroll_tracker.db --site clubwpt
+python bankroll.py --import-csv old.csv --site clubwpt
+```
+
+In the window it is the **bankroll** tab, the last one: the same report on
+the left, every row you have entered on the right, a bar to the plan's goal
+across the top, and a button for each of the commands above. The filter does
+not narrow it -- a bankroll for the hands on a monotone flop is not a
+bankroll -- and the line under the tabs says so while it is open.
+
+**It is a ledger, not a list of balances.** What you have is
+
+    deposits - withdrawals + bonuses + rakeback +/- transfers + results
+
+and the results are your sittings, from the hands, wherever TraceEV has
+them: the same sittings `sessions.py --list` prints, each with its money
+summed from `won - posted - invested` and never from `won`, tournaments
+left out. A room with no hand histories -- ClubWPT Gold until the reader in
+`bhntr81/clubwpt-ocr` can export, an app room without a converter -- gets a
+typed `--session`. A typed session is counted as typed wherever it is
+counted, so a figure says how much of it is your word, and it is
+**replaced**, not added to, once a sitting of that site from the hands
+covers the same time.
+
+**A balance you type is a check, not a correction.** `--balance` records
+what the site says you have; the report sets it beside what the ledger says
+you had at that moment, and the gap is a deposit, a withdrawal, a bonus or
+a session not entered. It is never applied: the results stay what the
+hands say, and the gap stays on the screen until you find it.
+
+**Currencies are never added.** The hand histories carry no currency this
+program keeps, so each site's is said once with `--account`. A site's
+results with no currency stated are listed on their own -- with the command
+that states it -- and summed into nothing.
+
+```
+USD: bankroll $261.60
+  clubwpt           $261.60   results -$43.40, -$43.40 of it typed, deposit $300.00, bonus $5.00
+  7.5 hours, -$5.78/hour over 670 hands
+
+Balance checks (what the site said, against the ledger):
+  2026-09-10       clubwpt    said     $265.00  ledger     $261.60  gap $3.40
+
+the 50NL challenge: $164.00 to $3,000.00, then 50NL   (the default plan, in bankroll.py)
+  bankroll $261.60 on clubwpt -- 9% of the goal
+  playing 10NL (last session 2026-09-08 on clubwpt): 10NL Deep, entry $300.00, buy-in $20.00
+  -1.9 buy-ins from the entry; stop-loss at $200.00 (5 buy-ins under)
+  needed for 10NL Straddle: $338.40 (16.9 buy-ins of 10NL Deep)
+  (the bankroll alone would allow 2NL Deep; the stop-loss goes by
+  the stake played, not by this)
+     $300.00  reached 2026-09-01
+     $600.00  not yet
+
+Win rates, per stake (bb/100 with its error, over n hands):
+  clubwpt      10NL                -64.8 bb/100   n=670   typed: no error, the hands are not here
+
+Downswings in buy-ins (results only, USD):
+  NOW: 2.2 BI under the peak of 0.0 BI on 2026-09-03; at worst 3.3 BI under, at -3.3 BI on 2026-09-05
+```
+
+**The plan is measured in buy-ins of the stake you are PLAYING** -- the
+last session's, on any of the plan's sites -- never of the stake the
+bankroll would allow. The stop-loss sits five buy-ins under that tier's
+entry: at 10NL Deep, entry $300 and a buy-in $20, it is $200, and $250 is
+2.5 buy-ins under and quiet. A big blind two tiers share (10NL Deep and 10NL
+Straddle) is told apart by the straddle; a session typed as `10NL`, which
+does not say, places no tier and measures no stop-loss rather than guess.
+`0.05/0.10` is unstraddled and `0.05/0.10/0.20` is straddled.
+
+The default plan is the one this replaced, in `bankroll.DEFAULT_PLAN`. Your
+own goes in `bankroll.json` beside `stats.json`, gitignored, and replaces
+it whole:
+
+```json
+{"name": "my plan", "currency": "USD", "sites": [], "stop_loss_buyins": 5,
+ "after": "50NL",
+ "tiers": [{"name": "2NL Deep", "bb": "0.02", "straddle": null,
+            "buyin": "4", "entry": "164", "target": "300"},
+           {"name": "10NL Deep", "bb": "0.10", "straddle": false,
+            "buyin": "20", "entry": "300", "target": "600"}]}
+```
+
+Each tier must begin where the one before ends; `sites` empty means every
+site whose account is in the plan's currency. A milestone -- each tier's
+target -- crossed while the window is open says so once, in a box.
+
+**Win rates are in bb/100, per site and stake, with their n and error** --
+the error the sessions view measures from the hands. Under 30 hands a rate
+is called an anecdote; inside twice its error it is said to say nothing
+yet, which over a few hundred hands is what nearly every rate does. A typed
+session has no hands to measure an error from, and says so. There is no
+"dollars per 100 hands": 100 hands at 2NL and 100 at 10NL are not the same
+amount of anything.
+
+**Downswings are in buy-ins as well as dollars**, each result sized in
+buy-ins of its own stake, so a downswing that moved from 2NL to 10NL is not
+read as five times worse than it was. Results only: a withdrawal is not a
+downswing. Each finished one has its peak, its trough, the day it started,
+the day it was back and how long that took; the one still going says where
+it stands now and how deep it has been.
+
+**Importing the old tracker.** `--import-old` reads `bankroll_tracker.db`
+and turns each day into a balance check and a typed session. The old file
+knew only the balance at the end of each day, so the session's result is the
+change from the day before -- which counts a deposit made that day as
+winnings, the old script's mistake -- and every one is marked as a balance
+change from the old tracker wherever it is counted. Enter the deposits and
+withdrawals the old file never knew and the balance checks will show where
+each one went; delete or correct a day with `--delete` and `--session`.
+Nothing is dropped: a row the importer cannot read stops the import and is
+named, a stake it cannot read is kept in the note, another table in the
+file is named so you can see it was not read, and the same file twice is
+refused. `--import-csv` reads the old script's own `Date,Bankroll` CSV
+layout the same way.
+
+The ledger lives in `hands.db` beside your notes and tags, in tables no
+rebuild touches; the database is copied to `hands.db.bak-*` the first time
+they are made.
+
+---
+
 ### Marking hands, and notes on players
 
 The two things a tracker remembers for you. A tag is a word on a hand;
