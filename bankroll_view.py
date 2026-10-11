@@ -30,6 +30,10 @@ class BankrollTab:
         # Writes the worker has finished, so a caller can wait for one.
         self.writes = 0
         self.last_bankroll = None
+        # Set while the window's check writes through the tab, whose rows
+        # can carry a real bankroll across a milestone: the box would wait
+        # for a click nobody makes, and the check with it.
+        self.quiet = False
         self.shown = None
 
         bar = ttk.Frame(parent)
@@ -171,7 +175,7 @@ class BankrollTab:
         """A box when this window sees the bankroll cross one, and only then."""
         now = s["progress"]["bankroll"]
         before, self.last_bankroll = self.last_bankroll, now
-        if before is None:
+        if before is None or self.quiet:
             return
         crossed = [m for m in s["plan"]["milestones"] if before < m <= now]
         if crossed:
@@ -359,6 +363,7 @@ def check_tab(app, db):
         drawn = tab.text.get("1.0", "end").rstrip("\n").split("\n")
         if drawn != lines:
             fails.append("the bankroll tab says something the command line does not")
+        tab.quiet = True
         before = len(tab.tree.get_children())
         done = tab.writes
         tab._write(bankroll.set_account, "checkroom", "USD")
@@ -366,8 +371,12 @@ def check_tab(app, db):
         tab._write(bankroll.add_entry, "checkroom", "deposit", "1.23", "2026-10-11",
                    "app.py --check")
         _wait(app, lambda: len(tab.tree.get_children()) > before)
+        # Found by its note, not by being first: the ledger is newest first,
+        # and a real one has rows dated after the day this was written.
         rows = tab.tree.get_children()
-        if len(rows) != before + 1 or "1.23" not in str(tab.tree.item(rows[0], "values")):
+        mine = [r for r in rows if "app.py --check" in tab.tree.item(r, "values")]
+        if len(rows) != before + 1 or len(mine) != 1 \
+                or "1.23" not in str(tab.tree.item(mine[0], "values")):
             fails.append("a deposit added through the tab did not arrive in its ledger")
         con = sqlite3.connect(real) if Path(real).exists() else None
         if con is not None:
@@ -379,6 +388,7 @@ def check_tab(app, db):
             con.close()
     finally:
         tab.db = real
+        tab.quiet = False
         for key in [k for k in app.cache if k[0] == "bankroll"]:
             del app.cache[key]
         shutil.rmtree(tmp, ignore_errors=True)
