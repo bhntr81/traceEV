@@ -37,6 +37,7 @@ CHECKS = [
     ("importer", "the site detector, against hands already loaded"),
     ("equity", "the hand evaluator, against published equities"),
     ("query", "the filter surface: every filter runs, and every one narrows"),
+    ("bankroll", "the ledger adds up, the stop-loss keys on the stake played, and a rebuild leaves it"),
     ("diag", "a failure in any of the three places reaches the log"),
     ("update", "the updater reports honestly and can only fast-forward"),
     ("app", "the window, its filter dialog, and the dark theme"),
