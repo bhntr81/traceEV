@@ -23,3 +23,7 @@ TraceEV.log*
 # screenshots taken while working on the window
 *.png
 ai.json
+
+# the bankroll plan somebody set for themselves (bankroll.py --plan);
+# the defaults are in bankroll.py
+bankroll.json

@@ -603,6 +603,12 @@ def current(con):
     # rebuild is on no row yet, and an update writing its rows by name would
     # fail on it.
     import decisions
+    # The sittings' own money and stake too, which the bankroll sums: a
+    # `sessions` table from before them would be written by an update
+    # whose INSERT has three more values than it has columns.
+    sitting = {r[1] for r in con.execute("PRAGMA table_info(sessions)")}
+    if not set(sessions.MONEY_COLUMNS) <= sitting:
+        return False
     return set(decisions.SCHEMA_COLUMNS) | set(lines.LINE_COLUMNS) \
         | set(lines.NUM_COLUMNS) \
         | set(strength.COLUMNS) | set(players.NAMES) | set(sessions.NAMES) <= cols

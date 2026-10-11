@@ -6,17 +6,22 @@ converter's export. The folder is still `Desktop/poker_analysis`; the program,
 the window, the log and the build are TraceEV.
 
 **Scope, and it is narrow on purpose: the tracking and filtering half of a
-Hand2Note, and a HUD over it. No solver.** A tracker says what people do; a
-solver says what is correct. The HUD was cut with the solver on 5 Sep 2026
-and brought back on 3 Oct 2026 by the user's decision: it shows what people
-do, at the table, from the same stat engine, so it is the same product. It is
-built on incremental import, and a number on it is held to every rule below
-that a number in a report is. The solver modules that used to share this folder — `walk`,
-`leaks`, `poptree`, `bestresponse`, `postflop`, `gtowizard/` — were deleted
-on 5 Sep 2026, 2,733 lines of a different product. They are in the history
-at `4927a11` if they are ever wanted. **Nothing here reaches them, and
-nothing should reimport them**: if a solver is wanted it is a separate
-repository, not a folder that quietly grows back.
+Hand2Note, a HUD over it, and the bankroll it adds up to. No solver.** A
+tracker says what people do; a solver says what is correct. The HUD was cut
+with the solver on 5 Sep 2026 and brought back on 3 Oct 2026 by the user's
+decision: it shows what people do, at the table, from the same stat engine,
+so it is the same product. It is built on incremental import, and a number
+on it is held to every rule below that a number in a report is. Bankroll
+tracking came in on 11 Oct 2026, by the user's decision and on the same
+grounds: it is the money half of a tracker, from the same hands and under
+the same rules, not a second program. It replaced a separate script with its
+own database and kept none of its arithmetic; `bankroll.py` says why. The
+solver modules that used to share this folder — `walk`, `leaks`, `poptree`,
+`bestresponse`, `postflop`, `gtowizard/` — were deleted on 5 Sep 2026, 2,733
+lines of a different product. They are in the history at `4927a11` if they
+are ever wanted. **Nothing here reaches them, and nothing should reimport
+them**: if a solver is wanted it is a separate repository, not a folder that
+quietly grows back.
 
 Not the screenshot reader either. That is a separate project in
 `Desktop/gto_pipeline`. If a module named `card_reader`, `table_ocr`,
@@ -308,12 +313,39 @@ Facts that stay true, and that have each been got wrong at least once:
   `query.py --results` selects decisions and then sums whole hands. A player
   in position on a monotone flop won or lost the whole pot, not the part
   after the flop.
+- **A bankroll is a ledger, never a column of balances.** The script it
+  replaced kept one balance a day and called the difference profit, which
+  counted every deposit as winnings, measured a back-dated day against the
+  newest balance, and left every later day wrong when one was deleted. Here
+  it is deposits, withdrawals, bonuses, rakeback and transfers, plus
+  results; results are sittings from hands, which carry their money
+  (`sessions.net`, summed from `spots.net` by the derivation that sums
+  their big blinds), or sessions typed for a room with no hand histories,
+  marked typed wherever they are counted and replaced -- not added to -- by
+  a sitting of the same site over the same time. A balance the user types
+  is a reconciliation point: the gap is shown and never applied. The
+  ledger is the user's data, in `hands.db` beside notes and outside
+  `importer.CHAIN`, and nothing drops it.
+- **A currency is stated, never assumed, and two are never added.** The
+  parsers keep no currency, so each site's is said once (`bankroll.py
+  --account`), and the results of a site nobody has stated one for are
+  shown on their own and summed into nothing.
+- **A plan's stop-loss keys on the stake PLAYED, not the stake the bankroll
+  allows.** The old script took the tier from the balance, so its stop-loss
+  could only ever fire in the first tier: at 10NL with $250 it measured from
+  2NL's entry and said nothing. `bankroll.tier_for` takes the last session's
+  stake, a big blind two tiers share is decided by the straddle, and a stake
+  whose straddle is not known places no tier rather than guessing one. The
+  rule itself is the user's, of 11 Oct 2026: five buy-ins under that tier's
+  entry, and not in effect until the bankroll is under thirty buy-ins of the
+  stake -- at 2NL Deep the thirty decides, under $120 rather than at $144.
+  The plan is opinion: `DEFAULT_PLAN` in code, the user's in `bankroll.json`.
 - **The interpreter that builds is the one that has Tk, and on this machine
   that is not the default one.** PyInstaller packages the runtime it is run
   on, so `python build.py` under an interpreter without tkinter produces a
   windowed program with no Tk: a window that never appears, from a build with
   no console to say why. The 3.11 install here has no tkinter -- it also
-  fails four of `check.py`'s twenty-two for the same reason, and all four are
+  fails four of `check.py`'s twenty-three for the same reason, and all four are
   exactly the modules that import Tk, which is how to tell that apart from a
   regression. Build with the 3.14 install, which has Tk 9.0 and PyInstaller.
   The workflow builds on 3.11 with Tk 8.6 via `setup-python`, so the shipped

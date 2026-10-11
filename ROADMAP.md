@@ -994,6 +994,95 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## Run 33 — the bankroll, as a ledger (11 Oct 2026)
+
+**Goal:** bankroll tracking into scope, by the user's decision on 11 Oct
+2026: the money half of a tracker, from the same hands and under the same
+rules, replacing a separate Tk script with its own `bankroll_tracker.db`.
+Everything that script did, none of the seven things it did wrong.
+
+**What it rests on.** Results come from hands wherever there are hands, so
+the first question was where money per sitting already lived, and the
+answer was nowhere: `sessions` carried big blinds and EV but not dollars,
+and computing them beside it would have been the new money SQL the rules
+forbid. The sittings derivation now sums `spots.net` -- the rows it already
+summed for `net_bb` -- into `sessions.net`, with the stake and straddle of
+a sitting played at one, and `sessions.py --check` holds each site's
+sittings to its hands within five cents. `importer.current` sends a database
+without those columns to a rebuild rather than an update.
+
+**What was built.** `bankroll.py`: a ledger of deposits, withdrawals,
+bonuses, rakeback and transfers in whole cents, typed sessions for rooms
+with no hand histories, balance checks that are compared and never
+applied, accounts that state each site's currency, and a plan whose
+stop-loss and move-up key on the stake played. Win rates per site and stake
+from one `matching_seats` and `results_of` per stake, with the verdict
+line; downswings in buy-ins and dollars. An importer for the old file and
+its CSV. `bankroll_view.py`: the tab, which works nothing out -- it draws
+`bankroll.summary` and `bankroll.report` from the window's one worker, and
+its writes go through the same queue.
+
+**Result: PASS**, 23 of 23 checks on the CI database (FPDB's corpus and the
+synthetic fixtures, 993 hands) under 3.12 with Tk; under a 3.11 with no
+tkinter, 19 of 23, the four failures the four modules that import Tk, as
+on master. `bankroll.py --check`: the ledger and its
+gaps on figures worked out by hand; the stop-loss at every tier's edge --
+at 10NL Deep $250 and $201 quiet, $200 and $199 firing, the old rule
+reading 2NL and saying nothing; a straddled $500 firing at 10NL Straddle
+and $520 not; at 2NL Deep $144 quiet for being 36 buy-ins, $120 quiet at
+exactly 30, $119.99 firing; 20NL at $1,000 and $1,000.01; `10NL` with the
+straddle unsaid placing no tier; downswings on a hand-worked series;
+the old importer on a made-up file with a bad row, an unreadable stake, a
+second table and the same file twice; a rebuild of a copy of the CI
+database leaving every ledger row as it was; and no module's schema
+dropping a ledger table. `app.py --check` drives the tab through the queue
+on a copy and checks it draws what the command line prints.
+
+**What was decided, and is opinion.** The stop-loss is five buy-ins under
+the entry of the tier played, as the old plan said, and -- the user's rule,
+given on reading the first version -- not in effect until the bankroll is
+under thirty buy-ins of the stake. At 10NL Deep that fires at $200, so $250
+is 2.5 buy-ins under and quiet; at 2NL Deep the thirty decides, under $120
+rather than at $144. The buy-in counts beside the stop-loss are cut rather
+than rounded, because $119.99 rounded read "30.0 buy-ins" beside a
+stop-loss that had fired for being under thirty. The 20NL tier's straddle is
+"either", because the plan called it "effectively 40NL" without saying
+which. The stop-loss's two numbers and the straddle are each a line in
+`bankroll.json`.
+
+**An adversarial review of the stop-loss change** -- three reviewers, on the
+rule, on the text, and trying to break it, each finding put to a skeptic --
+confirmed eight, all fixed: a cent under the entry printed "+0.0 from the
+entry"; a plan number of NaN or Infinity loaded and switched the stop-loss
+off; fractional plan numbers were compared in floats, so $142.80 read as
+under a gate of exactly $142.80; `--plan` on a bad `bankroll.json` gave a
+traceback; a session typed with no stake was called "mixed stakes"; a
+typed big blind of 0 took the whole report down; and two sentences of the
+documentation said more than the code does.
+
+**Four checks that passed only on a database nobody uses.** CI's is built
+fresh, so it never has a ledger; yours will after the first look at the
+tab. Asked of a database that had one, `bankroll.py --check` failed on
+"copied before the ledger's tables were made" -- nothing is made when they
+exist, so nothing is copied -- and its rebuild half counted your rows as
+its own; `app.py --check` looked for its test deposit at the top of a
+ledger that, from tomorrow, has newer rows, and a deposit that carried a
+real bankroll across a milestone opened a box that waited for a click and
+hung the check. Found by reading the plan once (`--plan` made the tables;
+it no longer opens the database), and each fixed and then run against a
+copy of the CI database with a lived-in ledger $0.50 under a milestone.
+The sittings' derivation had the same blind spot, closed earlier in the
+run: hands imported before `hands.straddle` hold NULL, the CI database
+holds none, and `int(None)` stopped every import on the databases that do.
+
+**Left undone:** the old `bankroll_tracker.db` has been imported only as a
+made-up file built from the description of its schema; the real one is on
+the user's PC. No real hands of the user's were in this container, so every
+figure above is the corpus's. ClubWPT Gold stays typed until
+`bhntr81/clubwpt-ocr` can export, and the replacement rule (a sitting of
+the site over the same time) has been checked against the corpus's own
+sittings, not against a real export.
+
 ## Run 32 — an audit for wrong numbers, and the hands the board makes (24 Sep 2026)
 
 **Goal:** find figures that are wrong and plausible, which is the failure this
