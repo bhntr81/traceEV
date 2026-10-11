@@ -66,9 +66,20 @@ DROP TABLE IF EXISTS sessions;
 CREATE TABLE sessions (
   session_id INT PRIMARY KEY,
   site TEXT, started TEXT, ended TEXT, minutes REAL,
-  hands INT, tables INT, net_bb REAL, ev_bb REAL, bb100 REAL, ev100 REAL);
+  hands INT, tables INT, net_bb REAL, ev_bb REAL, bb100 REAL, ev100 REAL,
+  net REAL, bb REAL, straddle INT);
 CREATE INDEX sessions_site ON sessions(site, started);
 """
+
+# The sitting's money and its stake, for the bankroll. `net` is the same
+# hands' profit as `net_bb`, in the site's own money -- `spots.net`, which
+# is `won - posted - invested` -- so a bankroll is a sum of sittings rather
+# than a query per sitting. `bb` is the big blind when the sitting was one
+# stake and NULL when it mixed two, and `straddle` 1 or 0 likewise, because
+# a stake in the bankroll plan is a big blind AND whether it is straddled:
+# two of its tiers are both 10NL. Columns of a derived table: a database
+# built before them gets them from a rebuild (`importer.current` asks).
+MONEY_COLUMNS = ("net", "bb", "straddle")
 
 
 def migrate(con):
@@ -92,7 +103,8 @@ def hero_hands(con):
     return con.execute("""
         SELECT h.hand_id, h.site, h.played_at, h.table_id, h.fmt,
                s.net_bb,
-               COALESCE(e.ev_bb, s.net_bb) AS ev_bb
+               COALESCE(e.ev_bb, s.net_bb) AS ev_bb,
+               s.net, h.bb, h.straddle > 0
         FROM hands h
         JOIN spots s ON s.hand_id = h.hand_id AND s.seat = h.hero_seat
         LEFT JOIN hand_ev e ON e.hand_id = h.hand_id AND e.seat = h.hero_seat
@@ -145,12 +157,22 @@ def plan(con):
         net = sum(r[5] for r in money)
         ev = sum(r[6] for r in money)
         n = len(hands)
+        stakes = {r[8] for r in money}
+        # NULL is "not known": a hand imported before `hands.straddle`
+        # existed has none until `importer.py --reread`, and a sitting with
+        # one such hand is not known either. `int(None)` here once stopped
+        # the whole derivation on exactly the databases that have them.
+        straddled = {r[9] for r in money}
+        straddle = straddled.pop() if len(straddled) == 1 else None
         sessions.append((
             sid, site, started.isoformat(sep=" "), ended.isoformat(sep=" "),
             round(minutes, 1), n, len({r[3] for r, _w in hands}),
             round(net, 2), round(ev, 2),
             round(100 * net / len(money), 2) if money else None,
-            round(100 * ev / len(money), 2) if money else None))
+            round(100 * ev / len(money), 2) if money else None,
+            round(sum(r[7] or 0.0 for r in money), 2) if money else None,
+            stakes.pop() if len(stakes) == 1 else None,
+            None if straddle is None else int(straddle)))
 
         # Tables open at each hand: distinct tables dealt within the window
         # before it. The window slides over hands already in time order, so
@@ -169,7 +191,7 @@ def plan(con):
 def write(con, sessions, stamps):
     """The sittings into their table, and their columns onto `decisions`."""
     con.execute("DELETE FROM sessions")
-    con.executemany("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    con.executemany("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     sessions)
 
     # Onto every decision in the hand, not only hero's: the sitting is a
@@ -330,6 +352,24 @@ def check(db_path=DB):
           f"{net_h:+,.1f}{'' if same else '   <-- DISAGREE'}")
     if not same:
         fails.append("session money does not add up to your money")
+
+    # And in the sites' own money, which is what the bankroll sums: per
+    # site, because two sites' money is not one number (see bankroll.py).
+    for site, cash_s, cash_h in con.execute("""
+            SELECT s.site, s.cash, h.cash FROM
+              (SELECT site, SUM(net) cash FROM sessions GROUP BY site) s
+            JOIN (SELECT h.site, SUM(p.net) cash FROM hands h JOIN spots p
+                  ON p.hand_id = h.hand_id AND p.seat = h.hero_seat
+                  WHERE h.hero_seat IS NOT NULL AND h.game = 'HOLDEM'
+                  AND h.fmt <> 'MTT' GROUP BY h.site) h USING (site)"""):
+        if abs((cash_s or 0) - (cash_h or 0)) >= 0.05:
+            print(f"money in {site}'s sessions {cash_s or 0:+,.2f}  vs its hands "
+                  f"{cash_h or 0:+,.2f}   <-- DISAGREE")
+            fails.append(f"{site}: session money does not add up to its hands")
+    one = con.execute("SELECT COUNT(*), SUM(bb IS NOT NULL), SUM(straddle IS NOT NULL) "
+                      "FROM sessions WHERE net IS NOT NULL").fetchone()
+    print(f"money in each site's sittings agrees with its hands; "
+          f"{one[1]} of {one[0]} sittings at one stake, {one[2]} one way on straddles")
 
     # No sitting holds a gap longer than the rule. Read back from the stamps
     # rather than trusted from the split.
