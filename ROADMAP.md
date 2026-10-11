@@ -1043,11 +1043,22 @@ the entry of the tier played, as the old plan said, and -- the user's rule,
 given on reading the first version -- not in effect until the bankroll is
 under thirty buy-ins of the stake. At 10NL Deep that fires at $200, so $250
 is 2.5 buy-ins under and quiet; at 2NL Deep the thirty decides, under $120
-rather than at $144. A count of buy-ins is cut rather than rounded, because
-$119.99 rounded read "30.0 buy-ins" beside a stop-loss that had fired for
-being under thirty. The 20NL tier's straddle is
+rather than at $144. The buy-in counts beside the stop-loss are cut rather
+than rounded, because $119.99 rounded read "30.0 buy-ins" beside a
+stop-loss that had fired for being under thirty. The 20NL tier's straddle is
 "either", because the plan called it "effectively 40NL" without saying
-which. Both are one line in `bankroll.json`.
+which. The stop-loss's two numbers and the straddle are each a line in
+`bankroll.json`.
+
+**An adversarial review of the stop-loss change** -- three reviewers, on the
+rule, on the text, and trying to break it, each finding put to a skeptic --
+confirmed eight, all fixed: a cent under the entry printed "+0.0 from the
+entry"; a plan number of NaN or Infinity loaded and switched the stop-loss
+off; fractional plan numbers were compared in floats, so $142.80 read as
+under a gate of exactly $142.80; `--plan` on a bad `bankroll.json` gave a
+traceback; a session typed with no stake was called "mixed stakes"; a
+typed big blind of 0 took the whole report down; and two sentences of the
+documentation said more than the code does.
 
 **Four checks that passed only on a database nobody uses.** CI's is built
 fresh, so it never has a ledger; yours will after the first look at the
