@@ -1466,6 +1466,10 @@ kicker, A-high, pair + draw), then expression stats.
 
 ## Hand2Note, page by page — what it has that this does not (16 Sep 2026)
 
+**Superseded on 29 Oct 2026** by "the gaps the 16 Sep audit left, and what
+the user chose", above: what is still open is listed there, with the user's
+decision on each.
+
 Read from the manual's Features and Custom Stats pages and their
 screenshots, saved under `Desktop/h2n_manual`. HUD items were out of scope
 by decision when this was written and are listed only so the list is
@@ -1701,6 +1705,255 @@ Its foundation is incremental import. Every import today re-derives every
 table, three quarters of a minute at twelve thousand hands, and a HUD needs a
 new hand counted in a second or two. Nothing is built until the design is
 signed off.
+
+
+## 29 Oct 2026 — HUD build reference: a Hand2Note architecture write-up, checked against the code
+
+The user pasted a description of how Hand2Note is built, to look back at
+when the HUD is built. It is kept here in full, each claim marked against
+what TraceEV already has. **The write-up is a third-party summary, not
+Hand2Note's documentation**; where it and this project's established
+decisions disagree, the decision column says which wins and why.
+
+### Phase 1 — the parsing engine (real-time text processing)
+
+> Poker sites save hand histories as local text files in real time as you
+> play. H2N watches these directories, reads the raw text, and extracts
+> fields with regex or custom string parsers.
+
+**Have:** one parser per site (`pokerstars.py`, `acr.py`, `ignition.py`,
+`partypoker.py`, `clubwptgold.py`) behind `sites.py`'s registry, into
+`importer.py`. "Import new" (`app.py` `import_new`) calls
+`importer.refresh()`, which rescans and imports only unseen hands.
+**Missing:** the *watching*. Nothing polls or watches the folders; an import
+runs only when asked. The foundation the 3 Oct section asked for is
+built: an import derives only the new hands (`importer.update`, through the
+temporary `dirty` table, checked by `importer.py --check`). What remains
+for the HUD is the watcher on top of it, and measuring that one new hand
+reaches `stats.py` in the second or two the HUD needs.
+
+### Phase 2 — the database schema (the relational tree)
+
+> Instead of storing plain strings, every hand becomes a structured tree of
+> actions. The schema must record, for every hand:
+>
+> *Preflop context:* seat map (absolute seat index and SB/BB/UTG/MP/CO/BTN);
+> effective stack = `min(player stack, max opponent remaining stack)` in bb;
+> the sequence of preflop choices (limp, raise, fold, 3-bet, cold 4-bet,
+> squeeze).
+>
+> *Postflop and board context:* exact flop, turn, river cards; board
+> texture flags `Is_Monotone`, `Is_Two_Tone`, `Is_Rainbow`, `Is_Paired`,
+> `Straight_Draw_Present`; every bet/raise as an absolute amount **and** as
+> `bet amount / total pot before the action`; a showdown registry mapping
+> hole cards (Card1, Card2) to the player when the hand reaches showdown.
+
+| Write-up asks for | TraceEV |
+|---|---|
+| Seat map, positions | have: `seats.seat`, `seats.position` |
+| Effective stack in bb | have: `decisions.eff_stack`, `eff_bb`, plus `spr` |
+| Preflop action sequence | have: `actions` rows in order; `decisions.facing` (unopened/open/3bet/4bet), `first_in`, `was_agg`; limp, squeeze, 4-bet as stats |
+| Board cards | have: `hands.board` |
+| Texture flags | have: `fl_mono`, `fl_twotone`, `fl_paired`, `fl_conn` (stands in for "straight draw present"), `fl_hi`; rainbow is `NOT fl_mono AND NOT fl_twotone`; plus turn/river changes `tn_*`, `rv_*` |
+| Sizing relative to pot | have: `decisions.pot_frac` from `pot_before`, and `size_bb` |
+| Showdown registry | have: `seats.cards`, `decisions.combo`. Ignition records every player's cards, folded hands included, so its ranges are not showdown-only |
+
+### Phase 3 — the stat engine (cases ÷ opportunities)
+
+> Stats are computed dynamically or cached as fractions under a strict
+> boolean filter: `Stat % = Cases / Opportunities × 100`. Example, flop
+> c-bet, per player per hand:
+>
+> ```python
+> def evaluate_flop_cbet_opportunity(hand_data, player_id):
+>     # Denominator (opportunities)
+>     was_last_preflop_aggressor = (hand_data.preflop.last_aggressor == player_id)
+>     saw_flop = (player_id in hand_data.flop.active_players)
+>     checked_to_aggressor = check_if_checked_to(hand_data.flop, player_id)
+>     if was_last_preflop_aggressor and saw_flop and checked_to_aggressor:
+>         denominator += 1
+>         # Numerator (cases)
+>         if hand_data.flop.actions[player_id].first_action == "BET":
+>             numerator += 1
+>     return numerator, denominator
+> ```
+
+**Have:** every `Stat(...)` in `stats.py` is exactly an opportunity
+condition and a case condition over `decisions`; c-bet uses `is_pfa`,
+`checked_to` and `street`. A rate with no opportunities is `None`, not 0%.
+**Missing:** a **cold 4-bet** stat — one `Stat(...)` over existing columns
+(facing a 3-bet, `was_agg = 0`, raises).
+
+### Phase 4 — the overlay / HUD engine
+
+> It hooks into the poker client's window handles (HWND) to put a
+> transparent UI on top of the poker table.
+
+**Not built.** Today HWNDs are used only to style TraceEV's own windows
+(`app.py` around line 253); `PlayerNoteOverlay` (`app.py` around line 3045)
+is the nearest thing to a HUD panel. Pieces needed:
+
+1. Find each table window per site and follow its moves, resizes, closes.
+2. A transparent, always-on-top, click-through window over it, one panel
+   per seat, laid out per site and table size.
+3. Map seat → player name → stats from `stats.py` (one engine; the HUD is
+   a view, per the 3 Oct decision).
+
+Windows-only, and only on sites that allow a HUD and name players (ACR,
+PokerStars — see README scope).
+
+### Advanced modules in the write-up
+
+**Reg-vs-fish classification.**
+> A background thread tags players: fish if VPIP ≥ 40% or PFR ≤ 7% after a
+> 50-hand baseline. When computing a reg's stats, exclude hands where a
+> tracked fish was in the pot.
+
+**Have, and keep ours:** `players.classify` (`players.py`) uses Wilson
+intervals and answers "unknown" until the evidence is clear — a fixed
+threshold at 50 hands mislabels many players on small samples. Excluding
+fish pots is a **filter, not a forced rule** here (`n_fish`, `fish_left`,
+`fish_right`, `fish_dist_*`, `fish_blinds`), so both views stay askable.
+
+**Positional caching.**
+> Pre-aggregate stats into positional cross-sections so the HUD does not run
+> live queries while multi-tabling: `BTN_vs_BB_3BET`,
+> `SB_vs_BTN_FOLD_TO_STEAL`, `CO_vs_MP_COLD_4BET`.
+
+**Have the dimensions, not the cache:** `vs_pos`, `opener_pos`, `pfa_pos`
+and the pot-matchup column make every such cross-section a query. Whether
+the HUD needs a pre-aggregated cache is to be **measured** when it exists,
+not assumed.
+
+**13×13 range grid.**
+> Read the showdown registry for a filtered action and project hand
+> frequencies onto the 13×13 grid.
+
+**Have:** `population.grid()` / `print_grid()` (`population.py`); cells
+under the minimum sample stay blank rather than read 0%.
+
+### What this write-up adds to the work list
+
+1. Cold 4-bet stat (small).
+2. A folder watcher over the existing incremental import, with its latency
+   measured (prerequisite for the HUD).
+3. The HUD itself — phase 4 above.
+
+
+## 29 Oct 2026 — the gaps the 16 Sep audit left, and what the user chose
+
+The 16 Sep page-by-page audit below has been closed almost entirely by Runs
+22-31 and the 4-5 Oct work. Re-checked against the code today, what is left
+falls into three groups: the HUD and what lives in it, the items that audit
+listed and nobody built, and the items it never looked at because it read
+only the manual's Features and Custom Stats pages. **The user's word on the
+last group: overlooked, not decided against.** The line in Run 11 (around
+line 943) putting auto-import and the emulator out of scope is superseded by
+this section, as the HUD's was on 3 Oct.
+
+Every item below was searched for in the code before it was listed; "not
+found" means a search, not a memory.
+
+### Chosen: build
+
+**The HUD, and ClubWPT Gold through the OCR tracker.**
+
+1. *Auto-import while playing.* `importer.refresh()` already loads only new
+   files and `importer.update` derives only new hands; nothing calls it
+   except the "Import new" button. Needed: a watcher (a poll on the scanned
+   folders is enough to start) and a measured time from a hand being written
+   to its stats changing. ClubWPT Gold writes no hand histories, so for it
+   the watched folder is wherever CWPTGTracker's export lands.
+2. *The HUD* — phase 4 of the reference section above: find the table
+   windows, a transparent click-through panel per seat, seat -> name ->
+   `stats.py`. With it, the things that only exist on a HUD: the stat
+   **popup** at the table, **badges** (rule-based icons), and the
+   **showdowns indicator** (new showdowns per opponent since sitting down).
+3. *ClubWPT Gold integration.* **Paused by the user on 29 Oct 2026 until
+   the OCR reads reliably** — it is not yet 100%, and a HUD would put its
+   misreads in front of the player at the table. Settled the same day:
+   ClubWPT Gold **does permit a HUD** (the user's confirmation), and
+   CWPTGTracker already **tracks and saves hands live**, so the live hands
+   exist on its side; the work is getting them to TraceEV and deciding how
+   far to trust them. CWPTGTracker (`../clubwpt-ocr`,
+   `chatgpt_original/poker_tracker`) also finds the table window and knows
+   every seat's position on it as normalised regions, which is the hardest
+   part of item 2 done already for one client. Still open for when it
+   resumes:
+   - **Which hands feed the HUD.** TraceEV imports only *reviewed* native
+     JSONL (`CLUBWPTGOLD_IMPORT.txt`): verified USD, no all-ins, no side
+     pots. That is right for reports and far too slow for a HUD, which
+     needs tonight's hands counted tonight. Either a second, lower trust
+     tier of ClubWPT hands that the HUD may use and the reports may not,
+     or the HUD reads only reviewed history. The PAF that a HUD number is
+     held to every rule a report number is says the tier must be visible
+     on the HUD, not silent.
+   - **Who is in the seat.** As of 15 Oct names are read reliably on seats
+     2/5/8 only (225 right, 0 wrong of 234); other seats are `unknown`. A
+     HUD panel on an unknown seat must show nothing, never the last
+     player's numbers — the same reason a note is never attached to the
+     next stranger in the chair.
+
+**A visual hand replayer.** There is a replayer: `HandWindow`
+(`app.py`, "One hand, replayed in a window of its own") and `query.py --hand
+ID`, which list the hand street by street with the pot before each decision.
+What Hand2Note has and this does not is the *drawn* table: seats round an
+oval, stacks and bets moving, cards turning over, step forward/back and play.
+It belongs in `HandWindow` beside the text, not in place of it — the text is
+what copies and shares. The Windows-side "Results/playback" UI work set
+aside in the 15 Oct reconciliation (below) should be read first; it may
+already hold part of this.
+
+**From the 16 Sep list, never built:**
+
+4. *Colour labels on players* — none found; notes and hand marks exist, a
+   colour per player does not. With them, picking a cohort by label.
+5. *A cohort by expression* — "VPIP - PFR > 15" in the players picker.
+   `stats.Expression` already parses Hand2Note's formulas; the picker
+   accepts only stat intervals and reg/fish.
+6. *Strength groups, boards and size buckets editable in the window.* Today
+   `strength.WEAK`/`STRONG`, `BOARDS` and the size breaks in `lines.py` are
+   code. The PAF that "where weak stops is opinion, and lives in one list"
+   stands: the window edits that one list (saved per user, like
+   `stats.json`), it does not grow a second.
+7. *Share a hand as an image or a link.* Text only today (`--share`).
+8. *Docking panes.* Detach copies a tab into a window; it does not dock
+   inside the main window or come back next run.
+9. *Cold 4-bet* — **built 29 Oct 2026**, `cold_fourbet` in `stats.py`;
+   see CHANGELOG.
+10. *Out-of-queue (dead) posts as a filter.* Ignition's parser reads
+    `Posts dead chip`; nothing filters on it.
+11. *Opportunities per 1000 hands.* The actions view prints how often hero
+    *took* the spot per 1000 hands, not how often it was offered.
+12. *"The selected action is the last action on the street."* No switch
+    found. Possibly already expressible with `--node`/`--my-node`; check
+    that first, and make it a switch only if it is not.
+13. *Fish exclusion as one global setting* rather than `--regs-only` /
+    `--vs-reg` on each question.
+
+**Never in the audit, found missing today:**
+
+14. *Import another tracker's database* (Hand2Note, PokerTracker 4,
+    Holdem Manager) — no code found.
+15. *More than one database*, switched in the window — no code found;
+    `hands.db` is the only one.
+16. *Hand2Note's emulator.* **Not identified.** It is not the replayer.
+    Read what it does in Hand2Note's own documentation before deciding;
+    until then it is neither in nor out.
+
+### Chosen: not now
+
+**Tournaments.** MTT and SNG hands are parsed and kept out of money and the
+derived tables (PAF: tournament chips are not dollars). ICM and tournament
+stats wait until the user asks.
+
+### Order
+
+The HUD path first, because the user named it first and items 1 and 3 gate
+it: 9, 11 and 12 (each small, and the stats the HUD will show), then 1, then
+2 on the sites that write hand histories (ACR, PokerStars). 3 resumes when
+the OCR does. The visual replayer and 4-8, 10, 13
+after, in the user's order; 14-16 last.
 
 
 ## ClubWPT native source reconciliation — 15 Oct 2026

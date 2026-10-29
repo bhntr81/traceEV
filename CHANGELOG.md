@@ -8,6 +8,24 @@ Newest first.
 
 ---
 
+## Cold 4-bet -- 29 Oct 2026
+
+A `cold_fourbet` stat: facing a 3bet preflop with no action yet on the
+street, and raising. Blinds count, as in Hand2Note, because a posted blind
+is not a voluntary action. It is the half of "4bet" the existing stat
+deliberately leaves out: `fourbet` asks only the original raiser
+(`was_agg=1`), and a seat that called the open and then raised the 3bet is
+in neither.
+
+`test_cold_fourbet.py` holds it to two synthetic PokerStars hands counted
+by hand (`fixtures/synthetic/...cold.fourbet.txt`, hands #900000000007-8).
+The first draft numbered them 5 and 6; #900000000005 was already in
+`raise.sizing.txt`, and loading the folder together dropped one silently.
+
+Checked on FPDB's corpus, now downloaded to `Desktop/hand_samples` on this
+machine: 998 hands, 206 chances, 6 cold 4bets, and the two read through by
+hand are what the name says (a BB over an SB 3bet, a button over a CO 3bet).
+
 ## Reviewed native ClubWPT Gold import — 15 Oct 2026
 
 Integrated the reviewed native JSONL contract from the separately reconstructed

@@ -34,6 +34,7 @@ CHECKS = [
     ("players", "who each player is, and whether the classes survive a split"),
     ("sessions", "every hand you played is in exactly one sitting"),
     ("stats", "the stat engine, against spots where they overlap"),
+    ("test_cold_fourbet", "cold 4-bets: chances and cases against seats counted by hand"),
     ("opponents", "opponent profiles: deviations really clear their intervals"),
     ("importer", "the site detector, against hands already loaded"),
     ("test_clubwptgold", "native reviewed ClubWPT Gold: actions, settlement and file round trips"),
