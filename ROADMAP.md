@@ -1928,9 +1928,11 @@ already hold part of this.
     action's count (cases) was not. Both are now, and the denominator,
     which counted every hand in the database, counts the same games only;
     see CHANGELOG.
-12. *"The selected action is the last action on the street."* No switch
-    found. Possibly already expressible with `--node`/`--my-node`; check
-    that first, and make it a switch only if it is not.
+12. *"The selected action is the last action on the street"* — **settled
+    29 Oct 2026, no switch needed**: a street written whole in a line
+    pattern is the last action on it (`*/B/`), one ending in `*` is how it
+    began (`*/B*`). Checking it found that a `*` crossed streets, so
+    `*/XR*` was a third turn and river check-raises; fixed, see CHANGELOG.
 13. *Fish exclusion as one global setting* rather than `--regs-only` /
     `--vs-reg` on each question.
 

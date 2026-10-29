@@ -8,6 +8,33 @@ Newest first.
 
 ---
 
+## Line patterns keep each wildcard inside its street -- 29 Oct 2026
+
+### Fixed -- `*/XR*` was a check-raise on any street after preflop
+
+GLOB's `*` matches "/", so the leading `*` that every line pattern uses
+for "whatever happened preflop" could swallow the flop too. The manual's
+own example and preset, `--my-line "*/XR*"`, "check-raised the flop",
+took `C/XC/XR` -- a turn check-raise. On FPDB's corpus 25 of its 81
+player-hands were not flop check-raises; `*/B/` ("bet the flop") was 255
+of 684 not a flop bet; `*/BF` and `*/*C/*C/*C` had the same fault. Every
+preset written with a leading `*/` read part of a later street.
+
+`query.street_glob` pins the number of "/" in the column to the number in
+the pattern, so no wildcard can cross one; a pattern ending in `*` may run
+on into later streets, and only through that last `*`. It applies to
+`--line`, `--node`, `--my-line` and `--my-node` whenever the pattern names
+streets; one with no "/" means what it always did. Checked against a
+street-by-street reading in Python on the corpus -- six patterns, none
+wrong, none missed -- and by `test_line_streets.py`. `query.py --check`
+on the corpus prints the same before and after, index use included
+(159/161, the same two unindexed).
+
+Found while answering the 29 Oct gap list's item 12, Hand2Note's "the
+selected action is the last action on the street", which needed no new
+switch: a street written whole is the last action on it (`*/B/`), one
+ending in `*` is how it began (`*/B*`). USAGE says so.
+
 ## Spot frequency per action, over the same games -- 29 Oct 2026
 
 The actions view printed "the spot comes up N times per 1000 of your hands".

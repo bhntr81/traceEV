@@ -280,6 +280,18 @@ makes it the one to measure a spot with: `--my-node "*/X"` on the flop is
 no action on is not in your line at all, so a preflop fold is a
 one-segment line and never matches a flop pattern.
 
+A wildcard stays inside its street: in `*/XR*` the first `*` is preflop
+and nothing else, so a check-raise on the turn is not a flop
+check-raise. Only a `*` at the very end may run on into later streets,
+which is what "and then anything" means. (Until 29 Oct 2026 a `*` could
+cross streets, and `*/XR*` was a third turn and river check-raises.)
+
+That makes Hand2Note's "the selected action is the last action on the
+street" a matter of how a street is written. Written whole, it was all
+the player did there: `*/B/` bet the flop and did nothing more on it, so
+a bet that was raised and re-raised (`BR`) is not in it. Ended with `*`,
+it is how the street began: `*/B*` takes `B`, `BC`, `BF` and `BR` alike.
+
 ### What was done there, and what it made
 
 ```bash
