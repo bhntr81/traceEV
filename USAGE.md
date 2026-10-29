@@ -4,6 +4,18 @@ Every command, what it does, and how to read what comes back.
 
 ---
 
+## Player notes in the window
+
+In **Reports**, set **split by** to **player** and click a player row. TraceEV
+opens that player's full Stats view for the resolved site and a small notes
+window. This resets the report's other filters. **Save** stores the note for
+that site and player in the existing database; **Cancel**, Escape, or closing
+the window discards unsaved edits. If a name resolves to more than one site
+in the displayed report, filter to one site first so the note is saved to the
+right identity.
+
+---
+
 ## Feedback and feature requests
 
 **✉ Feedback**, on the bar beside **Chat with AI** (and in the Help menu), opens a
@@ -268,6 +280,18 @@ makes it the one to measure a spot with: `--my-node "*/X"` on the flop is
 no action on is not in your line at all, so a preflop fold is a
 one-segment line and never matches a flop pattern.
 
+A wildcard stays inside its street: in `*/XR*` the first `*` is preflop
+and nothing else, so a check-raise on the turn is not a flop
+check-raise. Only a `*` at the very end may run on into later streets,
+which is what "and then anything" means. (Until 29 Oct 2026 a `*` could
+cross streets, and `*/XR*` was a third turn and river check-raises.)
+
+That makes Hand2Note's "the selected action is the last action on the
+street" a matter of how a street is written. Written whole, it was all
+the player did there: `*/B/` bet the flop and did nothing more on it, so
+a bet that was raised and re-raised (`BR`) is not in it. Ended with `*`,
+it is how the street began: `*/B*` takes `B`, `BC`, `BF` and `BR` alike.
+
 ### What was done there, and what it made
 
 ```bash
@@ -282,8 +306,13 @@ judged by what happened from the bet on rather than charged with the
 blinds and calls before it. In big blinds, averaged over the hands the
 action was taken in, with its standard error -- the honest part: a spot
 taken a few dozen times has an error bar wider than the number, and the
-number is then not a finding. For your own hands the spot's frequency
-per thousand hands is printed too. Beside the profit: how often the hand
+number is then not a finding. For your own hands, Hand2Note's spot
+frequency is printed under the table: how often per thousand hands the
+spot came up, and how often each action in it was taken. "Hands" means
+your hands in the same games -- the filter's site, stake, dates, table
+size, hour, session and ante/straddle flags -- and not the spot's other
+conditions, so `--site acr` divides by your ACR hands, never by every
+hand in the database. Beside the profit: how often the hand
 was won, how often it went to showdown, and how often it won there. In
 the window it is the **actions** tab.
 
@@ -621,11 +650,18 @@ at 5 to 7 big blinds is a single-raised pot whatever anybody did after.
 
 `--ante`, `--no-ante`, `--straddle` and `--no-straddle` are what was
 posted before the cards. A straddle is read where a site writes one --
-"posts straddle", which no site with sample files here has yet been seen
-to -- and an ante wherever it is posted. Hands imported before 4 Oct 2026
-have neither written down and match none of the four until
+"posts straddle", or PokerMaster's converter's "posts big blind" at twice
+the stake's -- and an ante wherever it is posted. Hands imported before
+4 Oct 2026 have neither written down and match none of the four until
 `python importer.py --reread` over their folders; a filter that matches
-nothing for that reason says so.
+nothing for that reason says so. A PokerMaster straddle read before
+29 Oct 2026 needs the same `--reread`.
+
+`--out-of-queue` and `--no-out-of-queue` are Hand2Note's "out of queue
+posts": somebody outside the blinds paid in before the cards -- a
+returning player's big blind, a dead small blind -- so the pot is bigger
+and one more player is in it before anybody acts. The ante and the
+straddle do not count; a seat that posted more than both does.
 
 ### Hero in the pot, or out of it
 
@@ -1563,6 +1599,61 @@ against half a minute for a rebuild. More than a fifth of the database at
 once, or a database a rebuild never finished, is rebuilt instead, and so is
 anything an update fails part way through. `python importer.py --check`
 replays a thousand hands both ways and fails on any row that differs.
+
+### Importing while you play
+
+**Import → Import new hands while open** keeps importing for as long as
+the window is open, and stays on the next time it opens (the setting is
+kept in the database, so a merged copy opened to look something up does
+not start reading your live folders into itself). Every two seconds it
+looks at each hand-history file's size and time, and reads only the files
+that changed -- and only once a file has held still for one look, because
+a site appends a hand as it ends and a file caught in the middle of that
+ends in half a hand. A hand is counted two to four seconds after the site
+writes it: on a thousand hands a quiet look over 960 files took 30 ms and
+a new hand's load and derivation 0.2 s. The banner says how many have come
+in and when the last did, and the tab you are on redraws when one does.
+
+A hand that is not finished is never stored, by this or by any other
+import. On the sites whose histories end each hand with a summary --
+PokerStars, ACR, Ignition and the app rooms -- a hand without it is left
+for the next import (`Site.ends` in `sites.py`). Before 29 Oct 2026 a hand
+cut off after its hole cards was stored with no actions and the pot so
+far, and every import after skipped it as already known. PartyPoker writes
+no summary, so there the wait for a file to hold still is the protection;
+an import you start by hand while a PartyPoker table is still writing can
+still catch half a hand, and `importer.py --reread` on that file mends it.
+
+### The HUD
+
+**HUD → Show the HUD over tables** (Windows) puts a panel on each seat of
+every poker table window whose title starts with the name of a table you
+hold hands for. Each panel reads:
+
+```
+22/16/9  68        VPIP / PFR / 3-bet, then hands
+71/64/-/36         fold to 3-bet / c-bet / fold to c-bet / went to showdown
+```
+
+The figures are the player's rates pulled towards the pool by
+`stats.SHRINK` -- the same "w/ pool" column the player profile prints --
+not the raw rates, so a 3-bet of 100% on two chances does not read as
+100%. `-` is no chances at all. The pool is the player's own stakes, minus
+them, exactly as in the profile; `python hud.py --check` holds every panel
+to that. The seats are the latest hand's, so a panel changes when the next
+hand arrives -- turning the HUD on turns on importing while open for that
+reason.
+
+Drag a panel to where it belongs; it stays there for that site and table
+size, on every table, and **Forget where I dragged the panels** puts them
+back round the table. Only sites that name their players have a HUD: an
+Ignition seat is not a person, and shows nothing.
+
+To see the panels as text on any platform:
+
+```bash
+python hud.py pokerstars "Lampland"
+```
 
 ---
 

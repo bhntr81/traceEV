@@ -15,3 +15,12 @@ actually verified. Do not invent test commands or claim unavailable checks passe
 For folders without CLAUDE.md, begin with README.md, README.txt, or NOTES.txt if
 present. Treat screenshots and generated results as user data; do not overwrite
 or regenerate them without task-specific authorization.
+
+## Shared optimizer and prompt-writing workflow
+
+Follow `/home/kali/Programming/Projects/AGENTS.md`: use the `coder_optimization` playbook and
+task/review guidance; assign a dedicated prompt-writing agent to read the latest
+output and write the next bounded prompt, then have the primary agent execute
+and verify it within the authorized scope. Preserve this project's specific
+constraints and model requirements. This standing workflow supersedes older
+wording that made optimizer guidance optional; it adds no runtime dependency.

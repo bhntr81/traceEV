@@ -27,6 +27,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import sites
@@ -158,14 +159,15 @@ def shallow(folder):
 
 def files_under(paths):
     """
-    Every .txt beneath the given files and folders, without duplicates.
+    Every text/JSONL history beneath the given files and folders, once.
 
     All the way down, except in the folders `shallow` names.
     """
     seen, out = set(), []
     for p in paths:
         p = Path(os.path.expandvars(str(p)))
-        found = (sorted(p.glob("*.txt") if shallow(p) else p.rglob("*.txt"))
+        found = (sorted(f for f in (p.glob("*") if shallow(p) else p.rglob("*"))
+                        if f.suffix.lower() in (".txt", ".jsonl"))
                  if p.is_dir() else [p])
         for f in found:
             key = str(f).lower()
@@ -295,12 +297,95 @@ def refresh(db_path=DB, progress=None):
     found = scan()
     if not found:
         return {"added": 0, "known": 0, "files": 0, "unknown": 0,
-                "by_site": {}, "places": 0}
+                "unfinished": 0, "by_site": {}, "places": 0}
     got = load([p["path"] for p in found], db_path, progress)
     got["places"] = len(found)
     if got["added"]:
         update(got["ids"], db_path, progress)
     return got
+
+
+def auto_import(db_path=DB, on=None):
+    """
+    Whether the window imports while it is open; passing `on` records it.
+
+    Kept with the hands rather than beside the program, because it is a
+    choice about this database: a merged copy opened to look something up
+    should not start reading the live folders into itself.
+    """
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(META)
+        if on is not None:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('auto_import', ?)",
+                        ("1" if on else "0",))
+            con.commit()
+        row = con.execute("SELECT value FROM meta WHERE key='auto_import'"
+                          ).fetchone()
+        return bool(row and row[0] == "1")
+    finally:
+        con.close()
+
+
+class Watcher:
+    """
+    Import while playing: each poll loads the files that changed, and only them.
+
+    `refresh` reads every file in every place to find what is new, which is
+    right after a session and far too slow every two seconds. This keeps
+    each file's size and modification time and hands `load` only the files
+    whose pair moved -- the derivation behind it is already incremental
+    (`update`), so a new hand costs its own rows and nothing else.
+
+    A changed file is read only once it has held still for a whole poll.
+    A client appends a hand when it ends, and a file caught mid-write ends
+    in half a hand; `Site.ends` turns those away on the sites that write a
+    summary, and this wait is what protects the ones that do not.
+
+    The places are found once and again every `RESCAN` seconds rather than
+    every poll, because finding them means opening every file to see whose
+    it is.
+    """
+
+    RESCAN = 300
+
+    def __init__(self, db_path=DB):
+        self.db_path = db_path
+        self.places, self.found_at = None, None
+        self.loaded = {}     # path -> (mtime_ns, size) when last read, or as primed
+        self.last = {}       # path -> the same pair at the previous poll
+
+    def poll(self, progress=None, now=None):
+        now = time.monotonic() if now is None else now
+        if self.places is None or now - self.found_at >= self.RESCAN:
+            self.places = [p["path"] for p in scan()]
+            self.found_at = now
+        first = not self.last
+        mark = high_water(self.db_path) if first else None
+        ready, now_seen = [], {}
+        for f in files_under(self.places):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            sig = (st.st_mtime_ns, st.st_size)
+            now_seen[f] = sig
+            if first and mark is not None and st.st_mtime <= mark:
+                # Read by an import before this window opened.
+                self.loaded[f] = sig
+            elif self.loaded.get(f) != sig and self.last.get(f) == sig:
+                ready.append(f)
+        self.last = now_seen
+        got = {"added": 0, "known": 0, "files": 0, "unknown": 0,
+               "unfinished": 0, "by_site": {}, "ids": []}
+        if ready:
+            got = load(ready, self.db_path, progress)
+            if got["added"]:
+                update(got["ids"], self.db_path, progress)
+            for f in ready:
+                self.loaded[f] = now_seen[f]
+        got["places"] = len(self.places)
+        return got
 
 
 def load(paths, db_path=DB, progress=None):
@@ -321,16 +406,24 @@ def load(paths, db_path=DB, progress=None):
     """
     got = survey(paths)
     result = {"added": 0, "known": 0, "files": 0, "unknown": len(got["unknown"]),
-              "by_site": {}, "ids": []}
+              "unfinished": 0, "by_site": {}, "ids": []}
     # Recorded here rather than in `refresh`, so that every road into the
     # loader marks how far it has read -- Import a folder and Find hands on
     # this computer read the same files and would otherwise leave the
     # window still offering to fetch them.
     read = recognised(got)
+    con = sqlite3.connect(db_path)
+    try:
+        result = _load_survey(con, got, result, progress)
+    finally:
+        # A rejected native history must close and roll back its pending rows.
+        con.close()
     if read:
         high_water(db_path, max(f.stat().st_mtime for f in read))
+    return result
 
-    con = sqlite3.connect(db_path)
+
+def _load_survey(con, got, result, progress):
     migrate(con)
     known = {r[0] for r in con.execute("SELECT hand_id FROM hands")}
     for site in sites.SITES:
@@ -349,6 +442,11 @@ def load(paths, db_path=DB, progress=None):
             for block in site.module.split_hands(text):
                 parsed = site.module.parse_hand(block, source=f.name)
                 if not parsed:
+                    continue
+                if site.ends and site.ends not in block:
+                    # Still being written: not stored and not known, so the
+                    # next import reads it whole. See `Site.ends`.
+                    result["unfinished"] += 1
                     continue
                 h = dict(parsed["hand"], site=site.key)
                 if h["hand_id"] in known:
@@ -382,7 +480,6 @@ def load(paths, db_path=DB, progress=None):
         result["added"] += added
         result["known"] += skipped
         result["files"] += n_files
-    con.close()
     return result
 
 
@@ -682,7 +779,8 @@ def source_index():
     # looking further costs time and never a hand that is not the user's.
     for place in (Path(os.path.expandvars(p)) for p in places()):
         if place.exists():
-            for f in place.rglob("*.txt"):
+            for f in sorted(f for f in place.rglob("*")
+                            if f.suffix.lower() in (".txt", ".jsonl")):
                 index.setdefault(f.name, f)
     return index
 
@@ -705,10 +803,17 @@ def export(con, hand_ids, out, log=print):
             "SELECT hand_id, source, site FROM hands WHERE hand_id IN (%s)"
             % ",".join("?" * len(hand_ids)), list(hand_ids)):
         wanted.setdefault((source, site), set()).add(hid)
+    selected_sites = {site for source, site in wanted}
+    headers = {getattr(sites.of(site).module, "EXPORT_HEADER", None) for site in selected_sites}
+    if len(selected_sites) > 1 and any(headers):
+        raise ValueError("Export native histories separately from other sites")
+    header = next(iter(headers), None)
     index = source_index()
     written, missing = 0, []
     out = Path(out)
     with open(out, "w", encoding="utf-8") as fh:
+        if header:
+            fh.write(header + "\n")
         for (source, site), ids in sorted(wanted.items()):
             f = index.get(source)
             if f is None:
@@ -897,14 +1002,20 @@ def check(db_path=DB):
 
     # An export is the hands back out as text, and the proof is that they
     # load again: a fresh database fed the export holds exactly the hands
-    # that were asked for. Ten hands, one from each site that has files
+    # that were asked for. Up to ten hands from each site that has files
     # on disk, through the whole loop.
     con = sqlite3.connect(db_path)
-    sample = [r[0] for r in con.execute(
-        "SELECT hand_id FROM hands WHERE source IS NOT NULL "
-        "ORDER BY played_at DESC LIMIT 10")]
+    samples = {}
+    for hid, site in con.execute(
+            "SELECT hand_id, site FROM hands WHERE source IS NOT NULL "
+            "ORDER BY played_at DESC"):
+        sample = samples.setdefault(site, [])
+        if len(sample) < 10:
+            sample.append(hid)
     con.close()
-    if sample:
+    # Native envelopes have a file header incompatible with other sites' text.
+    # Each site's export must prove its own round trip in a separate file.
+    for sample in samples.values():
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "export.txt"
             con = sqlite3.connect(db_path)

@@ -16,6 +16,7 @@ hands.db.bak*
 stats.json
 filters.json
 views.json
+hud.json
 
 # runtime log
 TraceEV.log*

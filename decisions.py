@@ -462,11 +462,16 @@ def derive(hands, seats_by, acts_by, who, showdown):
             pot, call = a["pot_before"], a["to_call"]
             contributed = put_in.get(seat, 0.0)
             stack = (s.get("stack") or 0.0) - contributed
+            on_street = contributed - at_start.get(seat, 0.0)
             opp = [x for x in live if x != seat]
             # The stack that matters is the one that can actually be lost,
             # so it is capped by the biggest opponent still in the hand.
-            eff = min(stack, max(((by_seat[x].get("stack") or 0.0)
-                                  - put_in.get(x, 0.0)) for x in opp)) \
+            # Include their current bet, less our own street contribution:
+            # facing a shove still risks the call, even with nothing behind
+            # the shove. Chips from previous streets are already in the pot.
+            eff = min(stack, max(0.0, max(
+                (by_seat[x].get("stack") or 0.0)
+                - at_start.get(x, 0.0) - on_street for x in opp))) \
                 if opp else stack
 
             # What they are answering. Preflop a blind is not aggression, so
@@ -501,7 +506,6 @@ def derive(hands, seats_by, acts_by, who, showdown):
             # raise after the flop was recorded as not all in -- 9 of them in
             # FPDB's corpus, found the first time CI ran the checks on it.
             is_raise = a["action"] in ("R", "A") and total is not None
-            on_street = contributed - at_start.get(seat, 0.0)
             went_in = (total - on_street) if is_raise else amount
             said = a["allin"] if "allin" in a and a["allin"] is not None else 0
             allin = int(bool(said) or stack - went_in <= 0.005)
@@ -510,7 +514,11 @@ def derive(hands, seats_by, acts_by, who, showdown):
                 if call > 0:
                     # A raise measured the way a solver states one: what goes
                     # in on top of the call, over the pot you would call into.
-                    top = (total or (amount + call)) - call
+                    # `amount` is the new money added, whereas `total`
+                    # includes the player's earlier chips on this street.
+                    # Subtracting the call from that total counted those
+                    # chips twice and turned a 37.5% re-raise into 50%.
+                    top = amount - call
                     pot_frac = top / (pot + call) if pot + call else None
                     # And as a multiple of the bet faced, which is how a
                     # raise is said at the table: the raise-to over what

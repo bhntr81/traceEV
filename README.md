@@ -15,8 +15,8 @@ tells you what people **do**.
 
   * **A HUD, on the sites that allow one and name their players** -- ACR and
     PokerStars. It shows what the reports show, at the table, from the same
-    stat engine. Cut on 5 Sep 2026 and brought back on 3 Oct 2026; it is
-    being designed and is not built yet.
+    stat engine. Cut on 5 Sep 2026, brought back on 3 Oct 2026, and built
+    on 29 Oct 2026 (**HUD** menu, Windows); not yet tried at a live table.
   * **No solver.** Hand2Note contains none, and neither does this. A solver
     answers "what is correct"; a tracker answers "what happened". Mixing the
     two is how a tracker turns into a different product.

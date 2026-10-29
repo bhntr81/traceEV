@@ -118,6 +118,12 @@ STATS = [
          group="preflop", note="as the original raiser, not as a cold seat"),
     Stat("fourbet", "4bet", "street='preflop' AND facing='3bet' AND was_agg=1",
          "agg=1", group="preflop"),
+    Stat("cold_fourbet", "cold 4bet",
+         "street='preflop' AND facing='3bet' AND acted_before=0",
+         "agg=1", group="preflop",
+         note="4betting with nothing in yet but a blind -- the seat that sat "
+              "out the open and the 3bet. Blinds count, as in Hand2Note: a "
+              "posted blind is not a voluntary action"),
     Stat("fold_to_4bet", "fold to 4bet",
          "street='preflop' AND facing='4bet' AND was_agg=1", "action='F'",
          group="preflop", note="as the 3-bettor, not as a cold seat -- the "

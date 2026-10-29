@@ -1,0 +1,106 @@
+CLUBWPT GOLD NATIVE HISTORIES
+
+Updated TraceEV source recognizes reviewed native JSONL as site clubwptgold,
+with stable cwg-<client hand id> identifiers. It does not relabel these hands
+as PokerStars. The existing packaged executable has NOT been rebuilt here.
+Run "python app.py" to use the updated source.
+
+This is a conservative first import interface, not evidence that live OCR
+captures complete hands. Incomplete records remain review records.
+
+EXPORT FROM CWPTGTRACKER
+
+Use the existing "Export all as JSON Lines" to save source records. Then, in
+the CWPTGTracker folder:
+
+python -m poker_tracker.traceev_export --hands hands.jsonl --review-template review.json
+python -m poker_tracker.traceev_export --hands hands.jsonl --review review.json --output clubwptgold.jsonl
+
+Between those commands, complete the review file against the EXACT client
+Hand Analysis. Templates deliberately contain unknown values and complete=false.
+Do not mark an incomplete hand complete. Correct source records through the
+existing audited Saved hands workflow, export again, and generate a fresh
+review template. Old reviews reject changed source records by SHA-256.
+
+The exporter never opens SQLite, changes originals or starts capture.
+All destinations must be new files. It writes a rejection report alongside
+the output: clubwptgold.jsonl.report.json. Exit 0 means all records exported,
+2 means one or more were rejected, and 1 means input/output error. If none
+qualify, no import-ready history file is created.
+
+Import the resulting JSONL file or its folder through updated TraceEV source.
+Keep the original JSONL and review beside the exported history. Re-imports
+deduplicate by actual client hand id; they do not overwrite existing hands.
+Use the existing TraceEV reread workflow for corrected histories. Export
+selected native hands separately from other sites.
+
+REQUIRED EVIDENCE AND SUPPORTED SCOPE
+
+- NLHE cash, 2-9 players, standard small/big blinds, one board.
+- Actual client hand id; verified table, button, dealt seats, names, starting
+  stacks, hero cards, board and complete actions in their true order.
+- Source status=reviewed, no unresolved review_reasons, ended timestamp.
+- Review confirms game=HOLDEM, limit=NL, format=RING, amount_unit=currency
+  and currency=USD. USD must be the ACTUAL VERIFIED denomination. A profile
+  default does not establish it. Never convert or rename BB, coins or
+  sweepstakes units to USD to pass this gate.
+- Valid turn order, calls and full raises. Each contribution stays strictly
+  below the player's starting stack; all-ins are unsupported in version 1.
+- Explicit final pot, rake and additional house fee (jp_fee), payouts,
+  uncalled returns and any shown cards. Known zero is the string "0";
+  unknown stays unknown and prevents export.
+
+Version 1 rejects all-ins (including ambiguous all_in badges), side pots,
+antes, straddles, dead buttons, tournaments, other denominations, multiple
+boards, missing actions, unresolved amounts and unknown player identity.
+It never guesses winners or unseen opponent cards.
+
+REVIEW CONTRACT
+
+The review JSON has format="clubwptgold-review", integer version=1 and hands,
+an object keyed by source record local id. Each review entry contains:
+
+record_sha256  generated hash binding the original record
+site           "clubwptgold"
+complete       true only after independent complete-hand review
+reference      exact client history evidence reference, nonempty
+played_at      verified ISO timestamp including timezone
+game           "HOLDEM"
+limit          "NL"
+format         "RING"
+max_seats      verified table capacity, 2-9
+dealt_seats    every actually dealt seat number, clockwise numbering
+amount_unit    "currency"
+currency       "USD", independently confirmed
+all_in_sequences  [] (all-ins unsupported in v1)
+settlement     {pot, rake, jp_fee, payouts, returns, shown_cards}
+
+Payout entries: {seat, amount}.
+Return entries: {seat, street, amount}.
+Shown-card entries: {seat, cards}, where cards is a two-card array.
+Amounts are nonnegative decimal strings with at most four decimal places.
+The template deliberately leaves settlement amounts unknown.
+
+On source actions, amount is the incremental contribution; street_total is
+that player's cumulative contribution on the street. If both exist they
+must agree. Positions derive from verified button and clockwise seat numbers.
+Reviewed hand times are normalized to UTC in TraceEV.
+
+The native history starts with {"format":"clubwptgold","version":1} on a
+short line, then one {"record": <original>, "review": <review>} per line.
+The original record is preserved. Import validates its review hash, action
+sequence, betting order, amounts and settlement conservation. Audit references
+and original evidence remain in the source history file.
+
+VERIFICATION AND DEPLOYMENT LIMITS
+
+From TraceEV:
+python -m unittest test_clubwptgold -v
+
+From CWPTGTracker:
+python -m unittest discover -s tests -p test_traceev_export.py -v
+
+Tests use synthetic histories and temporary databases only. The stdlib-only
+clubwptgold.py contract is distributed in both folders; keep copies identical.
+No live DB import, full TraceEV suite, executable rebuild or independent
+recorded-hand acceptance was performed here. Those remain separate checks.

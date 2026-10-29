@@ -214,6 +214,37 @@ LINE_FLAGS = {
     "--turn": ("turn", "turn_sz"), "--river": ("river", "river_sz"),
 }
 
+LAST_STREET = 3     # slashes in a line that reached the river
+
+
+def street_glob(column, pattern):
+    """
+    `column GLOB pattern`, with every wildcard kept inside its own street.
+
+    GLOB's `*` matches "/" too, so `*/XR*` -- "check-raised the flop", the
+    preset and the manual's own example -- also matched `C/XC/XR`, a turn
+    check-raise: 25 of its 81 player-hands on FPDB's corpus were not flop
+    check-raises, and `*/B/` was 255 of 684 not a flop bet. Pinning the
+    number of slashes in the column to the number in the pattern leaves no
+    wildcard able to swallow one. A pattern ending in `*` is open-ended --
+    "and anything after" -- so there the column may run on to later streets,
+    and only that last `*` may cover them: the pattern is extended a street
+    at a time, each with its own count. The bare GLOB stays in front so a
+    pattern with a fixed start still seeks the index.
+
+    Only a pattern that names streets comes here. One with no "/" -- `XBC`
+    on the flop column, or `*XR*` for a check-raise anywhere -- has no
+    street for a wildcard to leave, and keeps meaning what it always did.
+    """
+    k = pattern.count("/")
+    slashes = f"(length({column}) - length(replace({column}, '/', '')))"
+    extra = range(k, LAST_STREET + 1) if pattern.endswith("*") else (k,)
+    pinned = " OR ".join(
+        f"({slashes} = {s} AND {column} GLOB {q(pattern + '/*' * (s - k))})"
+        for s in extra)
+    return f"({column} GLOB {q(pattern)} AND ({pinned or '0'}))"
+
+
 # strftime('%w') numbers the week from Sunday. Spelled out once, here,
 # for both the filter and the dimension.
 WEEKDAYS = {"sun": "0", "mon": "1", "tue": "2", "wed": "3",
@@ -229,6 +260,17 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            # exactly as the reporting options are.
            "--define", "--forget", "--label", "--do", "--per", "--save",
            "--define-expr", "--formula")
+
+# The hands where a seat outside the blinds posted: what it posted, less
+# the hand's ante, more than nothing and not the straddle. On FPDB's corpus
+# every hand it takes is a "posts dead" or a second big blind posted to come
+# in; the one straddle among them, PokerMaster's written as a big blind,
+# is read as a straddle by the parser since 29 Oct 2026.
+OUT_OF_QUEUE = ("SELECT s.hand_id FROM seats s JOIN hands h USING (hand_id) "
+                "WHERE COALESCE(s.position, '') NOT IN ('SB', 'BB') "
+                "AND s.posted - COALESCE(h.ante, 0) > 0.0001 "
+                "AND NOT (COALESCE(h.straddle, 0) > 0 AND "
+                "ABS(s.posted - COALESCE(h.ante, 0) - h.straddle) < 0.0001)")
 
 SWITCHES = {
     "--hero": "is_hero = 1",
@@ -294,6 +336,13 @@ SWITCHES = {
     "--no-ante": "hand_id IN (SELECT hand_id FROM hands WHERE ante = 0)",
     "--straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle > 0)",
     "--no-straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle = 0)",
+    # Hand2Note's "out of queue posts": somebody outside the blinds paid
+    # in before the cards -- a returning player's big blind, a dead small
+    # blind -- which puts more in the pot and one more player in it. The
+    # ante and the straddle are taken off what a seat posted first, so
+    # neither counts; a seat that posted more than both is the one.
+    "--out-of-queue": f"hand_id IN ({OUT_OF_QUEUE})",
+    "--no-out-of-queue": f"hand_id NOT IN ({OUT_OF_QUEUE})",
     "--drawing": "(fd IS NOT NULL OR sd IS NOT NULL)",
     # Both at once, which is the hand that plays like neither: a flush draw
     # with a straight draw beside it is usually a favourite against a pair.
@@ -957,7 +1006,8 @@ def build(argv):
                     # and played on are both "bet the flop". The window's
                     # line builder writes every pattern this way.
                     base = pattern[:-1]
-                    parts.append(f"({plain} GLOB {q(base)} OR {plain} GLOB {q(base + '/*')})")
+                    parts.append(f"({street_glob(plain, base)} OR "
+                                 f"{street_glob(plain, base + '/*')})")
                     described.append(f"my-line {pattern}")
                     continue
                 with_sizes = any(c in lines.BUCKETS for c in pattern)
@@ -972,8 +1022,9 @@ def build(argv):
                         f"without sizes, so a pattern containing "
                         f"{'/'.join(lines.BUCKETS)} can never match. Use --line "
                         f"or --node for sizes, or drop the size letters.")
-                parts.append(f"{sized if with_sizes else plain} "
-                             f"GLOB {q(pattern)}")
+                column = sized if with_sizes else plain
+                parts.append(street_glob(column, pattern) if "/" in pattern
+                             else f"{column} GLOB {q(pattern)}")
                 described.append(f"{a.lstrip('-')} {pattern}"
                                  + (" (sizes)" if with_sizes else ""))
                 continue
@@ -1968,7 +2019,7 @@ def actions_of(con, where, by=None):
     return out
 
 
-def show_actions(con, where, label, parts=(), by=None):
+def show_actions(con, where, label, parts=(), by=None, sample="1=1"):
     rows = actions_of(con, where, by)
     print()
     print(f"filter: {label}" + (f", by {by}" if by else ""))
@@ -1996,10 +2047,57 @@ def show_actions(con, where, label, parts=(), by=None):
     print("  the same street. --by size splits each action by how big it was, --by")
     print("  hand by what the player held.")
     if "is_hero = 1" in where:
-        hands = con.execute("SELECT COUNT(DISTINCT hand_id) FROM decisions "
-                            "WHERE is_hero = 1").fetchone()[0] or 1
-        taken = sum(r["n"] for r in rows)
-        print(f"  the spot comes up {1000 * taken / hands:.1f} times per 1000 of your hands")
+        f = frequency_of(con, where, sample)
+        if f["hands"]:
+            per = lambda k: 1000 * k / f["hands"]
+            print(f"  per 1000 of your hands: the spot {per(f['spot']):.1f}, "
+                  + ", ".join(f"{a} {per(k):.1f}" for a, k in f["actions"].items()))
+            print(f"  ({f['spot']:,} spots in {f['hands']:,} of your hands"
+                  + (" in the same games" if sample != "1=1" else "") + ")")
+
+
+# The flags that say which games were played rather than which spot in
+# them. A spot's frequency is per hand of the same games: the first version
+# divided an ACR spot by every hand hero had on every site, tournaments
+# included, which the spot itself never counts -- so `--site acr` read lower
+# the more of anything else there was in the database.
+SAMPLE_FLAGS = ("--site", "--stake", "--since", "--until", "--players",
+                "--hour", "--weekday", "--session-len", "--session-min",
+                "--tables")
+SAMPLE_SWITCHES = ("--ante", "--no-ante", "--straddle", "--no-straddle",
+                   "--standard")
+
+
+def sample_of(argv):
+    """The part of a filter that picks the games: a WHERE over `decisions`."""
+    kept, i = [], 0
+    while i < len(argv):
+        if argv[i] in SAMPLE_SWITCHES:
+            kept.append(argv[i])
+        elif argv[i] in SAMPLE_FLAGS and i + 1 < len(argv):
+            kept += argv[i:i + 2]
+            i += 1
+        i += 1
+    return build(kept)[0] if kept else "1=1"
+
+
+def frequency_of(con, where, sample="1=1"):
+    """
+    Hand2Note's spot frequency: how often the spot came up, and each action
+    in it was taken, against the hands hero played in the same games.
+
+    The spot is counted over the rows `actions_of` counts, so the numbers
+    here and the table above them describe the same decisions.
+    """
+    hands = con.execute(
+        f"SELECT COUNT(DISTINCT hand_id) FROM decisions WHERE is_hero = 1 "
+        f"AND ({sample}) AND fmt <> 'MTT' AND +bb > 0").fetchone()[0]
+    rows = con.execute(
+        f"SELECT action, COUNT(*) FROM decisions WHERE ({where}) "
+        f"AND fmt <> 'MTT' AND +bb > 0 AND stack_before IS NOT NULL "
+        f"AND showdown IS NOT NULL GROUP BY action ORDER BY 2 DESC").fetchall()
+    return {"hands": hands, "spot": sum(k for _a, k in rows),
+            "actions": {ACTION_NAMES.get(a, a): k for a, k in rows}}
 
 
 def overfolds_of(con, where, by=None):
@@ -4017,7 +4115,8 @@ def main(argv):
     elif mode == "--sessions":
         show_sessions(con, where, label, _parts)
     elif mode == "--actions":
-        show_actions(con, where, label, _parts, by=opt("--by"))
+        show_actions(con, where, label, _parts, by=opt("--by"),
+                     sample=sample_of(argv))
     elif mode == "--overfolds":
         show_overfolds(con, where, label, _parts, by=opt("--by"))
     elif mode == "--chart":

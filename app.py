@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import platform
 import webbrowser
@@ -89,6 +90,8 @@ query.VIEWS = HERE / "views.json"
 # it, and only by the Desktop file it kept from before there was a
 # settings file at all.
 ask.SETTINGS = HERE / "ai.json"
+# Where the HUD's panels were dragged to: the user's, like the rest.
+HUD_LAYOUT = HERE / "hud.json"
 
 # One palette, so a colour is changed in one place. The line colours are the
 # same four the graph has always used.
@@ -193,11 +196,15 @@ OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
              "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero",
              "--ante": "--no-ante", "--no-ante": "--ante",
-             "--straddle": "--no-straddle", "--no-straddle": "--straddle"}
+             "--straddle": "--no-straddle", "--no-straddle": "--straddle",
+             "--out-of-queue": "--no-out-of-queue",
+             "--no-out-of-queue": "--out-of-queue"}
 # What was posted before the cards. Each has its opposite, because the
 # usual question is "my cash numbers without the straddled hands in them".
 POSTS = [("--ante", "antes"), ("--no-ante", "no ante"),
-         ("--straddle", "a straddle"), ("--no-straddle", "no straddle")]
+         ("--straddle", "a straddle"), ("--no-straddle", "no straddle"),
+         ("--out-of-queue", "an out-of-queue post"),
+         ("--no-out-of-queue", "no out-of-queue post")]
 
 
 def pick_fonts():
@@ -658,6 +665,9 @@ class ImportMixin:
         m = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
         m.add_command(label="Import new hands", command=self.import_new)
+        m.add_checkbutton(label="Import new hands while open",
+                          variable=self.auto_var,
+                          command=self._toggle_auto_import)
         m.add_command(label="Find hands on this computer…",
                       command=self.import_autodetect)
         m.add_separator()
@@ -665,6 +675,20 @@ class ImportMixin:
         m.add_command(label="Import a file…", command=self.import_file)
         m.add_command(label="Merge another database…", command=self.import_db)
         bar.add_cascade(label="Import", menu=m)
+
+        # The HUD draws over the clients' own windows, and those are on
+        # Windows; elsewhere the entry says so rather than doing nothing.
+        hm = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                     activebackground=ACCENT, activeforeground=BG)
+        if sys.platform == "win32":
+            hm.add_checkbutton(label="Show the HUD over tables",
+                               variable=self.hud_var, command=self._toggle_hud)
+            hm.add_command(label="Forget where I dragged the panels",
+                           command=self._reset_hud_layout)
+        else:
+            hm.add_command(label="The HUD draws over Windows poker clients",
+                           state="disabled")
+        bar.add_cascade(label="HUD", menu=hm)
 
         # Read from the file each time it opens, so a view saved a moment
         # ago is in it without the menu having been told.
@@ -757,7 +781,8 @@ class ImportMixin:
 
         def go():
             try:
-                got = work(lines.put)
+                with self.import_lock:
+                    got = work(lines.put)
                 lines.put(("done", got))
             except Exception as e:
                 lines.put(("failed", f"{type(e).__name__}: {e}"))
@@ -787,6 +812,125 @@ class ImportMixin:
                 pass
             win.after(120, pump)
         win.after(120, pump)
+
+    # Two seconds, and a changed file waits one more to be sure it has
+    # stopped moving, so a hand is counted two to four seconds after the
+    # site writes it. Measured on 29 Oct 2026 at a thousand hands: a quiet
+    # poll over 960 files is 30 ms, a new hand's load and derivation 0.2 s.
+    AUTO_EVERY = 2000
+
+    def _toggle_auto_import(self):
+        on = self.auto_var.get()
+        importer.auto_import(DB, on)
+        diag.event("auto import", on=on)
+        if on:
+            self._auto_start()
+        else:
+            self.watcher = None
+            self._auto_say("")
+
+    def _auto_start(self):
+        """
+        Start polling, unless it already is.
+
+        One watcher for as long as it is on: its memory of what each file
+        looked like is the whole of what keeps a poll cheap. Each start is a
+        new generation, so a tick still queued from before the setting was
+        switched off and on again stops instead of running beside the new one.
+        """
+        if self.watcher is None:
+            self.watcher = importer.Watcher(DB)
+            self.auto_gen += 1
+            self.after(0, lambda g=self.auto_gen: self._auto_tick(g))
+
+    def _auto_tick(self, gen):
+        if self.watcher is None or gen != self.auto_gen:
+            return
+        # A manual import holds the lock for as long as it runs, and two
+        # writers in one database is how a derivation ends half done. The
+        # tick that finds it taken just waits for the next.
+        if not self.import_lock.acquire(blocking=False):
+            self.after(self.AUTO_EVERY, lambda: self._auto_tick(gen))
+            return
+        watcher = self.watcher
+
+        def go():
+            try:
+                got = watcher.poll()
+            except Exception:
+                diag._report("auto import", *sys.exc_info()[1:])
+                got = None
+            finally:
+                self.import_lock.release()
+            self.after(0, lambda: self._auto_done(gen, got))
+        threading.Thread(target=go, daemon=True).start()
+
+    def _auto_done(self, gen, got):
+        if got is None:
+            self._auto_say("importing while open stopped on an error -- "
+                           "see the log")
+            return
+        if got["added"]:
+            diag.event("auto import", added=got["added"],
+                       unfinished=got["unfinished"])
+            # As after any import: the derivation may have rebuilt tables
+            # under the old connection, and every cached answer is stale.
+            self.con = sqlite3.connect(DB, check_same_thread=False)
+            self.cache.clear()
+            self.load_options()
+            self.refresh()
+            self.auto_total += got["added"]
+            self._auto_say(f"importing while open: {self.auto_total} new "
+                           f"hands, the last at {time.strftime('%H:%M:%S')}")
+        self.after(self.AUTO_EVERY, lambda: self._auto_tick(gen))
+
+    def _auto_say(self, text):
+        """
+        The banner -- unless an update notice has it.
+
+        The update has first claim, for the reason `_say_hands` gives. The
+        "files written since your last import" notice has none once the
+        window is importing them itself.
+        """
+        shown = (str(self.banner.cget("text"))
+                 if self.banner.winfo_ismapped() else "")
+        if shown and not self.auto_owns and "Import new hands" not in shown:
+            return
+        self.auto_owns = bool(text)
+        if text:
+            self.banner.configure(text=text, foreground=GOOD)
+            self.banner.pack(side="left", padx=12)
+        else:
+            self.banner.pack_forget()
+
+    def _toggle_hud(self):
+        """
+        The HUD on or off -- and on means importing while open, too.
+
+        A HUD shows the hand that just finished only if something has read
+        it, which is why Hand2Note's runs with its auto-import and not
+        without. Switching the HUD on switches that on; switching it off
+        leaves it, because importing while open is wanted for its own sake.
+        """
+        import hud_overlay
+        if self.hud_var.get():
+            if not self.auto_var.get():
+                self.auto_var.set(True)
+                self._toggle_auto_import()
+            self.hud = hud_overlay.Overlay(self.master, DB,
+                                           layout_path=HUD_LAYOUT)
+        elif self.hud is not None:
+            self.hud.stop()
+            self.hud = None
+        diag.event("hud", on=self.hud_var.get())
+
+    def _reset_hud_layout(self):
+        import hud_overlay
+        hud_overlay.save_layout({}, HUD_LAYOUT)
+        if self.hud is not None:
+            self.hud.layout = {}
+            for key in list(self.hud.tables):
+                self.hud._place(key)
 
     def import_autodetect(self):
         found = importer.scan()
@@ -866,7 +1010,7 @@ class ImportMixin:
     def import_file(self):
         files = filedialog.askopenfilenames(
             title="hand history files",
-            filetypes=[("hand histories", "*.txt"), ("all files", "*.*")])
+            filetypes=[("hand histories", "*.txt *.jsonl"), ("all files", "*.*")])
         if files:
             self._run_import("importing",
                              lambda say: self._do_load(list(files), say))
@@ -939,6 +1083,8 @@ class App(ImportMixin, ttk.Frame):
                       "street_pot", "fish_left_seats", "fish_right_seats")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
+        self.player_note_overlays = {}
+        self.report_clicks_enabled = False
 
         self.results = queue.Queue()
         # Requests go through one queue to one worker, and a request that
@@ -950,6 +1096,11 @@ class App(ImportMixin, ttk.Frame):
         # never leave the interface thread at all.
         self.requests = queue.Queue()
         self.cache = {}
+        self.import_lock = threading.Lock()
+        self.watcher, self.auto_gen = None, 0
+        self.auto_total, self.auto_owns = 0, False
+        self.auto_var = tk.BooleanVar(value=importer.auto_import(DB))
+        self.hud_var, self.hud = tk.BooleanVar(value=False), None
         threading.Thread(target=self._worker, daemon=True).start()
         self.pending = 0
         self.news = None
@@ -973,6 +1124,9 @@ class App(ImportMixin, ttk.Frame):
         if check_updates:
             threading.Thread(target=self._look_for_hands, daemon=True).start()
             self.after(600, self._say_hands)
+            # Left on last time, on again: it is a setting, not an action.
+            if self.auto_var.get():
+                self._auto_start()
 
     def _look_for_hands(self):
         try:
@@ -1343,6 +1497,10 @@ class App(ImportMixin, ttk.Frame):
         self.tree["sessions"].bind("<Return>", self._open_session)
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        self.tree["report"].bind("<ButtonRelease-1>",
+                                  self._open_player_report)
+        self.tree["report"].bind(
+            "<Return>", lambda _event: self._open_player_report())
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -1678,6 +1836,10 @@ class App(ImportMixin, ttk.Frame):
 
     def refresh(self):
         view = self.nb.tab(self.nb.select(), "text") if self.tabs else "stats"
+        if view == "report":
+            # The old rows stay visible while an asynchronous report runs.
+            # Do not let one resolve against the new filter in that interval.
+            self.report_clicks_enabled = False
         if view in ("report", "results"):
             self.by_label.pack(side="left", padx=(0, 6))
             self.by.pack(side="left")
@@ -1816,6 +1978,80 @@ class App(ImportMixin, ttk.Frame):
         tv = self.tree["stats"]
         tv.delete(*tv.get_children())
         self._render_stats(tv, shown)
+
+    def _open_player_report(self, _event=None):
+        """Open the named player clicked in a report split by player."""
+        if (not self.report_clicks_enabled or self.by.get() != "player"
+                or self.nb.tab(self.nb.select(), "text") != "report"):
+            return
+        tv = self.tree["report"]
+        if _event is not None and hasattr(_event, "x"):
+            if (tv.identify_region(_event.x, _event.y) != "cell"
+                    or tv.identify_column(_event.x) != "#1"):
+                return
+            iid = tv.identify_row(_event.y)
+            if not iid:
+                return
+        else:
+            chosen = tv.selection()
+            if not chosen:
+                return
+            iid = chosen[0]
+        if iid == "player-help":
+            return
+        values = tv.item(iid, "values")
+        if not values:
+            return
+        player = str(values[0]).strip()
+        if not player or player.lower() in (
+                "none", "null", "nothing matches"):
+            return
+
+        site, needs_site = self._site_for_player_report(player)
+        if not needs_site:
+            return
+        if site is None:
+            messagebox.showinfo(
+                "Choose a site",
+                "This name appears on multiple sites in the displayed report. "
+                "Filter to one named site, then select the player again so "
+                "the note is attached to the right person.",
+                parent=self.master)
+            return
+
+        self.apply_argv(["--site", site, "--player", player, "--stats"])
+        self._show_player_note(site, player)
+
+    def _site_for_player_report(self, player):
+        """Resolve the clicked row within the report's current filter."""
+        if not getattr(self, "last", None):
+            return None, False
+        where = self.last[0]
+        rows = self.con.execute(
+            f"SELECT DISTINCT site FROM decisions WHERE ({where}) "
+            "AND player=?", (player,)).fetchall()
+        matches = {row[0] for row in rows}
+        named = set(sites.named())
+        if not matches or not matches.intersection(named):
+            return None, False
+        selected = self.vals["site"].get().strip()
+        if selected and not selected.startswith("any "):
+            return ((selected, False) if selected in named
+                    and matches == {selected} else (None, True))
+        if len(matches) != 1:
+            return None, True
+        site = next(iter(matches))
+        return (site, False) if site in named else (None, False)
+
+    def _show_player_note(self, site, player):
+        """Raise the existing note editor for this exact site/player pair."""
+        key = (site, player)
+        current = self.player_note_overlays.get(key)
+        if current is not None and current.winfo_exists():
+            current.lift()
+            current.focus_force()
+            return
+        self.player_note_overlays[key] = PlayerNoteOverlay(self, site, player)
 
     def _picked_stat(self, _event=None):
         chosen = self.tree["stats"].selection()
@@ -2328,6 +2564,8 @@ class App(ImportMixin, ttk.Frame):
             "", "", "", ""))
 
     def _render_report(self, tv, out):
+        if tv is self.tree["report"]:
+            self.report_clicks_enabled = out.get("dim") == "player"
         cols = ["by"] + [BY_KEY[c].label for c in out["cols"]] + ["n"]
         self._cols(tv, tuple(cols), [130] + [95] * len(out["cols"]) + [80],
                    {"by": "w"})
@@ -2339,6 +2577,10 @@ class App(ImportMixin, ttk.Frame):
                           values=[out["why"]] + [""] * len(cols[1:]),
                           tags=("note",))
             return
+        if out.get("dim") == "player":
+            tv.insert("", "end", iid="player-help", tags=("note",),
+                      values=["Click a player name to open stats and notes"]
+                             + [""] * len(cols[1:]))
         for k in out["keys"]:
             row = [str(k)]
             thin = False
@@ -2474,7 +2716,7 @@ class App(ImportMixin, ttk.Frame):
         out = filedialog.asksaveasfilename(
             parent=self.master, defaultextension=".txt",
             initialfile="traceev-hands.txt", title="Export these hands",
-            filetypes=[("hand histories", "*.txt")])
+            filetypes=[("hand histories", "*.txt *.jsonl")])
         if not out:
             return
 
@@ -2950,6 +3192,66 @@ class App(ImportMixin, ttk.Frame):
         if cohort_spec is not None:
             label += ", player cohort"
         return "all hands" if label == "everything" else label
+
+
+class PlayerNoteOverlay(tk.Toplevel):
+    """Edit one named player's note without blocking the stats window."""
+
+    def __init__(self, app, site, player):
+        super().__init__(app.master)
+        import notes
+
+        self.app = app
+        self.site = site
+        self.player = player
+        self.title(f"Player notes · {player}")
+        self.configure(background=BG)
+        self.geometry(f"{px(380)}x{px(250)}")
+        self.minsize(px(300), px(190))
+        self.transient(app.master)
+
+        ttk.Label(self, text=player, style="Title.TLabel").pack(
+            anchor="w", padx=14, pady=(12, 2))
+        ttk.Label(self, text=f"{site} · notes for this player only",
+                  style="Dim.TLabel").pack(anchor="w", padx=14, pady=(0, 8))
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=14)
+        self.text = tk.Text(body, height=6, wrap="word", background=BG,
+                            foreground=INK, insertbackground=INK,
+                            font=(UI, 10), borderwidth=1)
+        scroll = ttk.Scrollbar(body, orient="vertical",
+                               command=self.text.yview)
+        self.text.configure(yscrollcommand=scroll.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.text.insert("1.0", notes.note_of(app.con, site, player))
+
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=14, pady=12)
+        ttk.Button(foot, text="CANCEL", command=self.cancel).pack(side="right")
+        ttk.Button(foot, text="SAVE", style="Accent.TButton",
+                   command=self.save).pack(side="right", padx=(0, 8))
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Escape>", lambda _e: self.cancel())
+        self.bind("<Control-Return>", lambda _e: self.save())
+        self.text.focus_set()
+        self.lift()
+
+    def save(self):
+        import notes
+        try:
+            notes.note(self.app.con, self.site, self.player,
+                       self.text.get("1.0", "end-1c"))
+        except sqlite3.Error as error:
+            messagebox.showerror("Player note not saved", str(error),
+                                 parent=self)
+            return
+        self.destroy()
+
+    def cancel(self):
+        """Closing the overlay leaves its unsaved edits alone."""
+        self.destroy()
 
 
 class CohortDialog(tk.Toplevel):
@@ -5341,7 +5643,7 @@ def check(db_path=DB):
 
     mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
             "filters.json": query.SAVED, "ai.json": ask.SETTINGS,
-            "views.json": query.VIEWS}
+            "views.json": query.VIEWS, "hud.json": HUD_LAYOUT}
     astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)
     print(f"the user's files sit beside it {len(mine) - len(astray)}/{len(mine)}")
     if astray:

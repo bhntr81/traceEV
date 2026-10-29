@@ -8,6 +8,187 @@ Newest first.
 
 ---
 
+## Out-of-queue posts as a filter -- 29 Oct 2026
+
+`--out-of-queue` and `--no-out-of-queue`, Hand2Note's "out of queue
+posts", and a pair of switches in the filter dialog: the hands where a seat
+outside the blinds posted more than its ante and other than the straddle --
+a returning player's big blind, ACR's "posts dead". On FPDB's corpus the
+rule takes 31 hands; the five read in their histories were each a second
+big blind posted to come in or a "posts dead", apart from the straddle below.
+`test_out_of_queue.py` holds it to a new synthetic hand, #900000000009, a
+big blind posted from the cutoff; the straddle hand is not in it.
+
+### Fixed -- PokerMaster's straddle was read as a big blind
+
+PokerMaster's converter writes a straddle as "posts big blind $8" at
+$2/$4, so the hand's straddle stayed 0 and `--straddle` missed it, and the
+first draft of this filter called it out of queue. A big blind larger than
+the stake's is now the straddle (`pokerstars.py`); PokerStars' own second
+big blind is a returning post and is the stake's exactly. Hands already
+held need `importer.py --reread`. The corpus loads 999 hands, the new
+fixture the one more, and the site and parser checks pass.
+
+## The HUD -- 29 Oct 2026
+
+The first HUD, item 2 of the 29 Oct gap list; its decisions are in
+ROADMAP ("HUD decisions"), each with the convention it follows.
+
+`hud.py` is the numbers, on any platform: the latest hand's seats at a
+table (identities from `spots`), and each seat's panel -- VPIP / PFR /
+3-bet and hands, then F3B / c-bet / fold to c-bet / WTSD -- shrunk towards
+the pool the player profile uses, `-` where there was no chance. The pool
+is computed once per set of stakes and the player subtracted, which
+`hud.py --check` holds to `players.pool_for` seat by seat: 1,967 of 1,967
+on FPDB's corpus. 37 ms a table, median; 245 ms the worst.
+
+`hud_overlay.py` is the panels: a borderless, always-on-top window per
+seat, placed round the table window, following it, redrawn when a new hand
+arrives at that table, gone when the window closes; dragged panels keep
+their place per site, table size and seat in `hud.json`. Windows are found
+with `EnumWindows` on Windows and handed in anywhere else, which is how
+`test_hud_overlay.py` runs on a virtual display. The **HUD** menu turns it
+on, and turns on importing while open with it.
+
+Two faults found before they shipped, both in the pool. A player with no
+chances at a stat showed the pool's own rate as theirs -- `41` fold to
+3-bet for a seat that had never faced one; it is `-` now. And a name that
+was hero in one file and a seat in another had its hero hands subtracted
+from a pool that never held them, leaving 48 of 1,603 pools wrong.
+
+Not yet done: tried at a live ACR or PokerStars table, which is the test
+`windows_win32` and the title match have not had.
+
+## Importing while the window is open -- 29 Oct 2026
+
+**Import → Import new hands while open**, the first piece of the HUD
+(ROADMAP, 29 Oct gap list, item 1). `importer.Watcher` keeps each file's
+size and modification time and hands `load` only the files that changed,
+once they have held still for a poll; the derivation behind it was already
+incremental. The window polls every two seconds on a thread, behind a lock
+that a manual import also takes, so the two never write at once. On and
+off is kept in the database (`importer.auto_import`). Measured on FPDB's
+corpus: a quiet poll over 960 files 30 ms, a new hand loaded and derived in
+0.2 s, so a hand is in the stats two to four seconds after it is written.
+`test_watcher.py` plays a session into a folder a hand at a time; the
+window itself was driven on a virtual display, two hands written while it
+was open and both counted.
+
+### Fixed -- a hand read while still being written was stored half done
+
+Cut a PokerStars file off after the last hand's hole cards and the loader
+stored that hand with no actions and no pot; cut an Ignition file the same
+way and it stored a $0.35 pot for a hand that ended at $6.91. Every import
+after skipped it as already known, so it stayed that way. A manual import
+mid-session could always do this; a poll every two seconds would have done
+it routinely. `Site.ends` names the text a finished hand contains --
+`*** SUMMARY ***` on every site that writes one, which on FPDB's corpus is
+all 2,512 hands those parsers accept -- and a hand without it is neither
+stored nor marked known, so the next import reads it whole. PartyPoker
+writes no summary; the watcher's wait for a file to hold still is its
+protection. The corpus still loads 998 hands, as before.
+
+## Line patterns keep each wildcard inside its street -- 29 Oct 2026
+
+### Fixed -- `*/XR*` was a check-raise on any street after preflop
+
+GLOB's `*` matches "/", so the leading `*` that every line pattern uses
+for "whatever happened preflop" could swallow the flop too. The manual's
+own example and preset, `--my-line "*/XR*"`, "check-raised the flop",
+took `C/XC/XR` -- a turn check-raise. On FPDB's corpus 25 of its 81
+player-hands were not flop check-raises; `*/B/` ("bet the flop") was 255
+of 684 not a flop bet; `*/BF` and `*/*C/*C/*C` had the same fault. Every
+preset written with a leading `*/` read part of a later street.
+
+`query.street_glob` pins the number of "/" in the column to the number in
+the pattern, so no wildcard can cross one; a pattern ending in `*` may run
+on into later streets, and only through that last `*`. It applies to
+`--line`, `--node`, `--my-line` and `--my-node` whenever the pattern names
+streets; one with no "/" means what it always did. Checked against a
+street-by-street reading in Python on the corpus -- six patterns, none
+wrong, none missed -- and by `test_line_streets.py`. `query.py --check`
+on the corpus prints the same before and after, index use included
+(159/161, the same two unindexed).
+
+Found while answering the 29 Oct gap list's item 12, Hand2Note's "the
+selected action is the last action on the street", which needed no new
+switch: a street written whole is the last action on it (`*/B/`), one
+ending in `*` is how it began (`*/B*`). USAGE says so.
+
+## Spot frequency per action, over the same games -- 29 Oct 2026
+
+The actions view printed "the spot comes up N times per 1000 of your hands".
+The 16 Sep audit listed the opportunities count as missing; it was there --
+the spot is the opportunity -- and what was missing was each action's own
+count, Hand2Note's cases. Both are printed now.
+
+### Fixed -- the per-1000 figure divided by every hand in the database
+
+The denominator was every hand hero had, on every site, tournaments
+included, whatever the filter said; the numerator was the filtered spot,
+cash only. So `--site ignition` on FPDB's corpus read 280 per 1000 where
+the true figure is 402 (272 spots in 676 Ignition hands, not 970), and
+the more of anything else the database held, the rarer every spot looked.
+The denominator is now hero's hands in the same games: the filter's site,
+stake, dates, table size, hour, session and ante/straddle flags
+(`query.SAMPLE_FLAGS`), cash only, as the spot is. `test_spot_frequency.py`
+holds it to the synthetic hands counted by hand.
+
+## Cold 4-bet -- 29 Oct 2026
+
+A `cold_fourbet` stat: facing a 3bet preflop with no action yet on the
+street, and raising. Blinds count, as in Hand2Note, because a posted blind
+is not a voluntary action. It is the half of "4bet" the existing stat
+deliberately leaves out: `fourbet` asks only the original raiser
+(`was_agg=1`), and a seat that called the open and then raised the 3bet is
+in neither.
+
+`test_cold_fourbet.py` holds it to two synthetic PokerStars hands counted
+by hand (`fixtures/synthetic/...cold.fourbet.txt`, hands #900000000007-8).
+The first draft numbered them 5 and 6; #900000000005 was already in
+`raise.sizing.txt`, and loading the folder together dropped one silently.
+
+Checked on FPDB's corpus, now downloaded to `Desktop/hand_samples` on this
+machine: 998 hands, 206 chances, 6 cold 4bets, and the two read through by
+hand are what the name says (a BB over an SB 3bet, a button over a CO 3bet).
+
+## Reviewed native ClubWPT Gold import — 15 Oct 2026
+
+Integrated the reviewed native JSONL contract from the separately reconstructed
+Windows snapshot ceb1b422 into the newer Linux source. ClubWPT Gold has its own
+site identity; source hashes bind complete reviewed USD NLHE cash hands to their
+independent history evidence. Unsupported units, missing actions/settlement,
+all-ins and side pots are rejected. JSONL discovery retains shallow drop-folder
+protection; re-export retains the native header and rejects mixed-site output.
+Import connections close on errors and failed imports do not advance the watermark.
+See CLUBWPTGOLD_IMPORT.txt and the latest ROADMAP reconciliation note. No Windows
+executable rebuild or real recorded-hand acceptance is claimed.
+
+## Raises and stacks counted from the chips -- 15 Oct 2026
+
+### Fixed -- raise sizes counted earlier contributions twice
+
+The fraction of a pot raised is the new money above the call, divided by
+the pot after calling. Both `decisions` and `bets` subtracted the call
+from the street's raise-to total instead, which includes chips already in
+the pot. In a worked flop hand a 37.5% re-raise came out as 50%, changing
+the size filter and the sized action line. Both now use the amount added.
+All-in raises with no raise-to total use the same calculation.
+
+### Fixed -- a shove left its responder with zero effective stack
+
+Effective stack counted only an opponent's chips behind and forgot the
+bet already in front of them. Facing a shove to $0.90 after putting in
+$0.30 showed zero effective stack and zero SPR, although another $0.60
+could be lost. The cap now includes the opponent's current street money,
+less the acting player's contribution, and still excludes previous streets
+and folded opponents. Depth and SPR filters therefore see the chips still
+at risk. The nine checks in `test_raise_sizing.py` use three invented hands
+and exercise both rebuilding and the actual incremental update path.
+
+Existing databases need `python importer.py --rebuild` to correct old rows.
+No schema or raw history changes are needed.
+
 ## A sharper, plainer window -- 6 Oct 2026
 
 ### Changed -- text drawn at the screen's real resolution on Windows

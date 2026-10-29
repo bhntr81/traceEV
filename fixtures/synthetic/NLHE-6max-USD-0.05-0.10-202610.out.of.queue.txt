@@ -1,0 +1,30 @@
+PokerStars Game #900000000009:  Hold'em No Limit ($0.05/$0.10 USD) - 2026/10/06 12:00:00 ET
+Table 'Queue' 6-max Seat #4 is the button
+Seat 1: Ann ($10 in chips) 
+Seat 2: Bob ($10 in chips) 
+Seat 3: Dave ($10 in chips) 
+Seat 4: Button ($10 in chips) 
+Seat 5: Small ($10 in chips) 
+Seat 6: Big ($10 in chips) 
+Small: posts small blind $0.05
+Big: posts big blind $0.10
+Dave: posts big blind $0.10
+*** HOLE CARDS ***
+Ann: folds 
+Bob: folds 
+Dave: checks 
+Button: raises $0.20 to $0.30
+Small: folds 
+Big: folds 
+Dave: folds 
+Uncalled bet ($0.20) returned to Button
+Button collected $0.35 from pot
+Button: doesn't show hand 
+*** SUMMARY ***
+Total pot $0.35 | Rake $0 
+Seat 1: Ann folded before Flop (didn't bet)
+Seat 2: Bob folded before Flop (didn't bet)
+Seat 3: Dave folded before Flop
+Seat 4: Button (button) collected ($0.35)
+Seat 5: Small (small blind) folded before Flop
+Seat 6: Big (big blind) folded before Flop
