@@ -294,8 +294,13 @@ judged by what happened from the bet on rather than charged with the
 blinds and calls before it. In big blinds, averaged over the hands the
 action was taken in, with its standard error -- the honest part: a spot
 taken a few dozen times has an error bar wider than the number, and the
-number is then not a finding. For your own hands the spot's frequency
-per thousand hands is printed too. Beside the profit: how often the hand
+number is then not a finding. For your own hands, Hand2Note's spot
+frequency is printed under the table: how often per thousand hands the
+spot came up, and how often each action in it was taken. "Hands" means
+your hands in the same games -- the filter's site, stake, dates, table
+size, hour, session and ante/straddle flags -- and not the spot's other
+conditions, so `--site acr` divides by your ACR hands, never by every
+hand in the database. Beside the profit: how often the hand
 was won, how often it went to showdown, and how often it won there. In
 the window it is the **actions** tab.
 

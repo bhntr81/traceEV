@@ -8,6 +8,25 @@ Newest first.
 
 ---
 
+## Spot frequency per action, over the same games -- 29 Oct 2026
+
+The actions view printed "the spot comes up N times per 1000 of your hands".
+The 16 Sep audit listed the opportunities count as missing; it was there --
+the spot is the opportunity -- and what was missing was each action's own
+count, Hand2Note's cases. Both are printed now.
+
+### Fixed -- the per-1000 figure divided by every hand in the database
+
+The denominator was every hand hero had, on every site, tournaments
+included, whatever the filter said; the numerator was the filtered spot,
+cash only. So `--site ignition` on FPDB's corpus read 280 per 1000 where
+the true figure is 402 (272 spots in 676 Ignition hands, not 970), and
+the more of anything else the database held, the rarer every spot looked.
+The denominator is now hero's hands in the same games: the filter's site,
+stake, dates, table size, hour, session and ante/straddle flags
+(`query.SAMPLE_FLAGS`), cash only, as the spot is. `test_spot_frequency.py`
+holds it to the synthetic hands counted by hand.
+
 ## Cold 4-bet -- 29 Oct 2026
 
 A `cold_fourbet` stat: facing a 3bet preflop with no action yet on the

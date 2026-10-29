@@ -1968,7 +1968,7 @@ def actions_of(con, where, by=None):
     return out
 
 
-def show_actions(con, where, label, parts=(), by=None):
+def show_actions(con, where, label, parts=(), by=None, sample="1=1"):
     rows = actions_of(con, where, by)
     print()
     print(f"filter: {label}" + (f", by {by}" if by else ""))
@@ -1996,10 +1996,57 @@ def show_actions(con, where, label, parts=(), by=None):
     print("  the same street. --by size splits each action by how big it was, --by")
     print("  hand by what the player held.")
     if "is_hero = 1" in where:
-        hands = con.execute("SELECT COUNT(DISTINCT hand_id) FROM decisions "
-                            "WHERE is_hero = 1").fetchone()[0] or 1
-        taken = sum(r["n"] for r in rows)
-        print(f"  the spot comes up {1000 * taken / hands:.1f} times per 1000 of your hands")
+        f = frequency_of(con, where, sample)
+        if f["hands"]:
+            per = lambda k: 1000 * k / f["hands"]
+            print(f"  per 1000 of your hands: the spot {per(f['spot']):.1f}, "
+                  + ", ".join(f"{a} {per(k):.1f}" for a, k in f["actions"].items()))
+            print(f"  ({f['spot']:,} spots in {f['hands']:,} of your hands"
+                  + (" in the same games" if sample != "1=1" else "") + ")")
+
+
+# The flags that say which games were played rather than which spot in
+# them. A spot's frequency is per hand of the same games: the first version
+# divided an ACR spot by every hand hero had on every site, tournaments
+# included, which the spot itself never counts -- so `--site acr` read lower
+# the more of anything else there was in the database.
+SAMPLE_FLAGS = ("--site", "--stake", "--since", "--until", "--players",
+                "--hour", "--weekday", "--session-len", "--session-min",
+                "--tables")
+SAMPLE_SWITCHES = ("--ante", "--no-ante", "--straddle", "--no-straddle",
+                   "--standard")
+
+
+def sample_of(argv):
+    """The part of a filter that picks the games: a WHERE over `decisions`."""
+    kept, i = [], 0
+    while i < len(argv):
+        if argv[i] in SAMPLE_SWITCHES:
+            kept.append(argv[i])
+        elif argv[i] in SAMPLE_FLAGS and i + 1 < len(argv):
+            kept += argv[i:i + 2]
+            i += 1
+        i += 1
+    return build(kept)[0] if kept else "1=1"
+
+
+def frequency_of(con, where, sample="1=1"):
+    """
+    Hand2Note's spot frequency: how often the spot came up, and each action
+    in it was taken, against the hands hero played in the same games.
+
+    The spot is counted over the rows `actions_of` counts, so the numbers
+    here and the table above them describe the same decisions.
+    """
+    hands = con.execute(
+        f"SELECT COUNT(DISTINCT hand_id) FROM decisions WHERE is_hero = 1 "
+        f"AND ({sample}) AND fmt <> 'MTT' AND +bb > 0").fetchone()[0]
+    rows = con.execute(
+        f"SELECT action, COUNT(*) FROM decisions WHERE ({where}) "
+        f"AND fmt <> 'MTT' AND +bb > 0 AND stack_before IS NOT NULL "
+        f"AND showdown IS NOT NULL GROUP BY action ORDER BY 2 DESC").fetchall()
+    return {"hands": hands, "spot": sum(k for _a, k in rows),
+            "actions": {ACTION_NAMES.get(a, a): k for a, k in rows}}
 
 
 def overfolds_of(con, where, by=None):
@@ -4017,7 +4064,8 @@ def main(argv):
     elif mode == "--sessions":
         show_sessions(con, where, label, _parts)
     elif mode == "--actions":
-        show_actions(con, where, label, _parts, by=opt("--by"))
+        show_actions(con, where, label, _parts, by=opt("--by"),
+                     sample=sample_of(argv))
     elif mode == "--overfolds":
         show_overfolds(con, where, label, _parts, by=opt("--by"))
     elif mode == "--chart":

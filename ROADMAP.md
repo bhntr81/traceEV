@@ -1923,8 +1923,11 @@ already hold part of this.
    see CHANGELOG.
 10. *Out-of-queue (dead) posts as a filter.* Ignition's parser reads
     `Posts dead chip`; nothing filters on it.
-11. *Opportunities per 1000 hands.* The actions view prints how often hero
-    *took* the spot per 1000 hands, not how often it was offered.
+11. *Spot frequency per 1000 hands* — **built 29 Oct 2026.** The listing
+    above had it backwards: the spot (opportunities) was printed and each
+    action's count (cases) was not. Both are now, and the denominator,
+    which counted every hand in the database, counts the same games only;
+    see CHANGELOG.
 12. *"The selected action is the last action on the street."* No switch
     found. Possibly already expressible with `--node`/`--my-node`; check
     that first, and make it a switch only if it is not.
