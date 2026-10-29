@@ -1858,7 +1858,12 @@ found" means a search, not a memory.
 
 **The HUD, and ClubWPT Gold through the OCR tracker.**
 
-1. *Auto-import while playing.* `importer.refresh()` already loads only new
+1. **Built 29 Oct 2026** — Import → Import new hands while open
+   (`importer.Watcher`); a hand reaches the stats 2-4 s after it is
+   written, measured at a thousand hands, and is never stored half
+   written. Still to measure on the user's full database on Windows, and
+   to tune for the HUD (a one-second poll halves the wait). See CHANGELOG.
+   As planned: *Auto-import while playing.* `importer.refresh()` already loads only new
    files and `importer.update` derives only new hands; nothing calls it
    except the "Import new" button. Needed: a watcher (a poll on the scanned
    folders is enough to start) and a measured time from a hand being written

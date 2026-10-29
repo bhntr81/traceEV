@@ -8,6 +8,35 @@ Newest first.
 
 ---
 
+## Importing while the window is open -- 29 Oct 2026
+
+**Import → Import new hands while open**, the first piece of the HUD
+(ROADMAP, 29 Oct gap list, item 1). `importer.Watcher` keeps each file's
+size and modification time and hands `load` only the files that changed,
+once they have held still for a poll; the derivation behind it was already
+incremental. The window polls every two seconds on a thread, behind a lock
+that a manual import also takes, so the two never write at once. On and
+off is kept in the database (`importer.auto_import`). Measured on FPDB's
+corpus: a quiet poll over 960 files 30 ms, a new hand loaded and derived in
+0.2 s, so a hand is in the stats two to four seconds after it is written.
+`test_watcher.py` plays a session into a folder a hand at a time; the
+window itself was driven on a virtual display, two hands written while it
+was open and both counted.
+
+### Fixed -- a hand read while still being written was stored half done
+
+Cut a PokerStars file off after the last hand's hole cards and the loader
+stored that hand with no actions and no pot; cut an Ignition file the same
+way and it stored a $0.35 pot for a hand that ended at $6.91. Every import
+after skipped it as already known, so it stayed that way. A manual import
+mid-session could always do this; a poll every two seconds would have done
+it routinely. `Site.ends` names the text a finished hand contains --
+`*** SUMMARY ***` on every site that writes one, which on FPDB's corpus is
+all 2,512 hands those parsers accept -- and a hand without it is neither
+stored nor marked known, so the next import reads it whole. PartyPoker
+writes no summary; the watcher's wait for a file to hold still is its
+protection. The corpus still loads 998 hands, as before.
+
 ## Line patterns keep each wildcard inside its street -- 29 Oct 2026
 
 ### Fixed -- `*/XR*` was a check-raise on any street after preflop

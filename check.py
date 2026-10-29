@@ -37,6 +37,7 @@ CHECKS = [
     ("test_cold_fourbet", "cold 4-bets: chances and cases against seats counted by hand"),
     ("opponents", "opponent profiles: deviations really clear their intervals"),
     ("importer", "the site detector, against hands already loaded"),
+    ("test_watcher", "importing while open: only changed, settled, finished hands"),
     ("test_clubwptgold", "native reviewed ClubWPT Gold: actions, settlement and file round trips"),
     ("equity", "the hand evaluator, against published equities"),
     ("query", "the filter surface: every filter runs, and every one narrows"),

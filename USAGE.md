@@ -1593,6 +1593,30 @@ once, or a database a rebuild never finished, is rebuilt instead, and so is
 anything an update fails part way through. `python importer.py --check`
 replays a thousand hands both ways and fails on any row that differs.
 
+### Importing while you play
+
+**Import → Import new hands while open** keeps importing for as long as
+the window is open, and stays on the next time it opens (the setting is
+kept in the database, so a merged copy opened to look something up does
+not start reading your live folders into itself). Every two seconds it
+looks at each hand-history file's size and time, and reads only the files
+that changed -- and only once a file has held still for one look, because
+a site appends a hand as it ends and a file caught in the middle of that
+ends in half a hand. A hand is counted two to four seconds after the site
+writes it: on a thousand hands a quiet look over 960 files took 30 ms and
+a new hand's load and derivation 0.2 s. The banner says how many have come
+in and when the last did, and the tab you are on redraws when one does.
+
+A hand that is not finished is never stored, by this or by any other
+import. On the sites whose histories end each hand with a summary --
+PokerStars, ACR, Ignition and the app rooms -- a hand without it is left
+for the next import (`Site.ends` in `sites.py`). Before 29 Oct 2026 a hand
+cut off after its hole cards was stored with no actions and the pot so
+far, and every import after skipped it as already known. PartyPoker writes
+no summary, so there the wait for a file to hold still is the protection;
+an import you start by hand while a PartyPoker table is still writing can
+still catch half a hand, and `importer.py --reread` on that file mends it.
+
 ---
 
 ## Keeping it up to date

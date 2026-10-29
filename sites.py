@@ -79,6 +79,15 @@ class Site:
     # format. The parser is shared and this is what tells the rooms apart;
     # empty for the room whose format it is.
     brand: str = ""
+    # Text every FINISHED hand contains, or "" where the format has none.
+    # A client writes a hand as it ends, and a file read a moment too soon
+    # holds the first half of one: loaded, it was stored with no actions and
+    # the pot so far, and every later import skipped it as a hand already
+    # known -- for ever. A hand without this is left for the next import.
+    # PartyPoker writes no summary at all, so it is protected only by the
+    # watcher waiting for a file to stop changing; a reviewed ClubWPT record
+    # is one JSON line, whole or a parse error.
+    ends: str = ""
 
     def header(self, line):
         """True if this line begins one of THIS site's hands."""
@@ -90,16 +99,19 @@ SITES = (
     Site("clubwptgold", clubwptgold, names=True, reveals=False, rake=True,
          places=(), about="ClubWPT Gold -- complete reviewed native tracker JSONL; USD only"),
     Site("ignition", ignition, names=False, reveals=True, rake=False,
+         ends="*** SUMMARY ***",
          places=(r"%USERPROFILE%\Ignition Casino Poker\Hand History",
                  r"%USERPROFILE%\Bovada Poker\Hand History"),
          about="Ignition; Bovada and Bodog are the same network and format"),
     Site("acr", acr, names=True, reveals=False, rake=True,
+         ends="*** SUMMARY ***",
          places=(r"%LOCALAPPDATA%\AmericasCardroom\handHistory",
                  r"%LOCALAPPDATA%\BlackChipPoker\handHistory",
                  r"%USERPROFILE%\Documents\AmericasCardroom"),
          about="ACR -- the Winning Poker Network, shared with Black Chip, "
                "YaPoker and True Poker"),
     Site("pokerstars", pokerstars, names=True, reveals=False, rake=True,
+         ends="*** SUMMARY ***",
          places=(r"%LOCALAPPDATA%\PokerStars\HandHistory",
                  r"%LOCALAPPDATA%\PokerStars.EU\HandHistory",
                  r"%LOCALAPPDATA%\PokerStars.UK\HandHistory"),
@@ -115,10 +127,10 @@ SITES = (
     # line, so each is the PokerStars parser told which name to answer to.
     # A player is an app id and it is the same person tomorrow.
     Site("pokerbros", pokerstars, names=True, reveals=False, rake=True,
-         places=(), brand="PokerBros",
+         places=(), brand="PokerBros", ends="*** SUMMARY ***",
          about="PokerBros -- an app room, read from a converter's export"),
     Site("pokermaster", pokerstars, names=True, reveals=False, rake=True,
-         places=(), brand="PokerMaster",
+         places=(), brand="PokerMaster", ends="*** SUMMARY ***",
          about="PokerMaster -- an app room, read from a converter's export"),
 )
 

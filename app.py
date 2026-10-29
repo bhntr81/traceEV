@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import platform
 import webbrowser
@@ -658,6 +659,9 @@ class ImportMixin:
         m = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
                     activebackground=ACCENT, activeforeground=BG)
         m.add_command(label="Import new hands", command=self.import_new)
+        m.add_checkbutton(label="Import new hands while open",
+                          variable=self.auto_var,
+                          command=self._toggle_auto_import)
         m.add_command(label="Find hands on this computer…",
                       command=self.import_autodetect)
         m.add_separator()
@@ -757,7 +761,8 @@ class ImportMixin:
 
         def go():
             try:
-                got = work(lines.put)
+                with self.import_lock:
+                    got = work(lines.put)
                 lines.put(("done", got))
             except Exception as e:
                 lines.put(("failed", f"{type(e).__name__}: {e}"))
@@ -787,6 +792,96 @@ class ImportMixin:
                 pass
             win.after(120, pump)
         win.after(120, pump)
+
+    # Two seconds, and a changed file waits one more to be sure it has
+    # stopped moving, so a hand is counted two to four seconds after the
+    # site writes it. Measured on 29 Oct 2026 at a thousand hands: a quiet
+    # poll over 960 files is 30 ms, a new hand's load and derivation 0.2 s.
+    AUTO_EVERY = 2000
+
+    def _toggle_auto_import(self):
+        on = self.auto_var.get()
+        importer.auto_import(DB, on)
+        diag.event("auto import", on=on)
+        if on:
+            self._auto_start()
+        else:
+            self.watcher = None
+            self._auto_say("")
+
+    def _auto_start(self):
+        """
+        Start polling, unless it already is.
+
+        One watcher for as long as it is on: its memory of what each file
+        looked like is the whole of what keeps a poll cheap. Each start is a
+        new generation, so a tick still queued from before the setting was
+        switched off and on again stops instead of running beside the new one.
+        """
+        if self.watcher is None:
+            self.watcher = importer.Watcher(DB)
+            self.auto_gen += 1
+            self.after(0, lambda g=self.auto_gen: self._auto_tick(g))
+
+    def _auto_tick(self, gen):
+        if self.watcher is None or gen != self.auto_gen:
+            return
+        # A manual import holds the lock for as long as it runs, and two
+        # writers in one database is how a derivation ends half done. The
+        # tick that finds it taken just waits for the next.
+        if not self.import_lock.acquire(blocking=False):
+            self.after(self.AUTO_EVERY, lambda: self._auto_tick(gen))
+            return
+        watcher = self.watcher
+
+        def go():
+            try:
+                got = watcher.poll()
+            except Exception:
+                diag._report("auto import", *sys.exc_info()[1:])
+                got = None
+            finally:
+                self.import_lock.release()
+            self.after(0, lambda: self._auto_done(gen, got))
+        threading.Thread(target=go, daemon=True).start()
+
+    def _auto_done(self, gen, got):
+        if got is None:
+            self._auto_say("importing while open stopped on an error -- "
+                           "see the log")
+            return
+        if got["added"]:
+            diag.event("auto import", added=got["added"],
+                       unfinished=got["unfinished"])
+            # As after any import: the derivation may have rebuilt tables
+            # under the old connection, and every cached answer is stale.
+            self.con = sqlite3.connect(DB, check_same_thread=False)
+            self.cache.clear()
+            self.load_options()
+            self.refresh()
+            self.auto_total += got["added"]
+            self._auto_say(f"importing while open: {self.auto_total} new "
+                           f"hands, the last at {time.strftime('%H:%M:%S')}")
+        self.after(self.AUTO_EVERY, lambda: self._auto_tick(gen))
+
+    def _auto_say(self, text):
+        """
+        The banner -- unless an update notice has it.
+
+        The update has first claim, for the reason `_say_hands` gives. The
+        "files written since your last import" notice has none once the
+        window is importing them itself.
+        """
+        shown = (str(self.banner.cget("text"))
+                 if self.banner.winfo_ismapped() else "")
+        if shown and not self.auto_owns and "Import new hands" not in shown:
+            return
+        self.auto_owns = bool(text)
+        if text:
+            self.banner.configure(text=text, foreground=GOOD)
+            self.banner.pack(side="left", padx=12)
+        else:
+            self.banner.pack_forget()
 
     def import_autodetect(self):
         found = importer.scan()
@@ -952,6 +1047,10 @@ class App(ImportMixin, ttk.Frame):
         # never leave the interface thread at all.
         self.requests = queue.Queue()
         self.cache = {}
+        self.import_lock = threading.Lock()
+        self.watcher, self.auto_gen = None, 0
+        self.auto_total, self.auto_owns = 0, False
+        self.auto_var = tk.BooleanVar(value=importer.auto_import(DB))
         threading.Thread(target=self._worker, daemon=True).start()
         self.pending = 0
         self.news = None
@@ -975,6 +1074,9 @@ class App(ImportMixin, ttk.Frame):
         if check_updates:
             threading.Thread(target=self._look_for_hands, daemon=True).start()
             self.after(600, self._say_hands)
+            # Left on last time, on again: it is a setting, not an action.
+            if self.auto_var.get():
+                self._auto_start()
 
     def _look_for_hands(self):
         try:

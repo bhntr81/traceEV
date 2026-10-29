@@ -236,6 +236,12 @@ Facts that stay true, and that have each been got wrong at least once:
   alternative is the silent `continue` that dropped 391 tournament calls
   and 367 folds without a sound; a fold not recorded is a seat that never
   folds and reaches every showdown.
+- **A hand is stored only when it is finished.** A client appends a hand
+  as it ends, and a file read mid-write ends in half of one: stored, it had
+  no actions and the pot so far, and every later import skipped it as
+  known. `Site.ends` is the text a finished hand contains, and the loader
+  leaves a hand without it for next time; PartyPoker has none, so
+  `importer.Watcher` also waits for a file to hold still before reading.
 - **`won` is added, never set.** A seat collects twice in a hand with a
   side pot and in a hand run twice, and `won = amount` recorded the
   second collection alone -- $4.88 for a $49.68 pot -- on both sites.

@@ -27,6 +27,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import sites
@@ -296,12 +297,95 @@ def refresh(db_path=DB, progress=None):
     found = scan()
     if not found:
         return {"added": 0, "known": 0, "files": 0, "unknown": 0,
-                "by_site": {}, "places": 0}
+                "unfinished": 0, "by_site": {}, "places": 0}
     got = load([p["path"] for p in found], db_path, progress)
     got["places"] = len(found)
     if got["added"]:
         update(got["ids"], db_path, progress)
     return got
+
+
+def auto_import(db_path=DB, on=None):
+    """
+    Whether the window imports while it is open; passing `on` records it.
+
+    Kept with the hands rather than beside the program, because it is a
+    choice about this database: a merged copy opened to look something up
+    should not start reading the live folders into itself.
+    """
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(META)
+        if on is not None:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('auto_import', ?)",
+                        ("1" if on else "0",))
+            con.commit()
+        row = con.execute("SELECT value FROM meta WHERE key='auto_import'"
+                          ).fetchone()
+        return bool(row and row[0] == "1")
+    finally:
+        con.close()
+
+
+class Watcher:
+    """
+    Import while playing: each poll loads the files that changed, and only them.
+
+    `refresh` reads every file in every place to find what is new, which is
+    right after a session and far too slow every two seconds. This keeps
+    each file's size and modification time and hands `load` only the files
+    whose pair moved -- the derivation behind it is already incremental
+    (`update`), so a new hand costs its own rows and nothing else.
+
+    A changed file is read only once it has held still for a whole poll.
+    A client appends a hand when it ends, and a file caught mid-write ends
+    in half a hand; `Site.ends` turns those away on the sites that write a
+    summary, and this wait is what protects the ones that do not.
+
+    The places are found once and again every `RESCAN` seconds rather than
+    every poll, because finding them means opening every file to see whose
+    it is.
+    """
+
+    RESCAN = 300
+
+    def __init__(self, db_path=DB):
+        self.db_path = db_path
+        self.places, self.found_at = None, None
+        self.loaded = {}     # path -> (mtime_ns, size) when last read, or as primed
+        self.last = {}       # path -> the same pair at the previous poll
+
+    def poll(self, progress=None, now=None):
+        now = time.monotonic() if now is None else now
+        if self.places is None or now - self.found_at >= self.RESCAN:
+            self.places = [p["path"] for p in scan()]
+            self.found_at = now
+        first = not self.last
+        mark = high_water(self.db_path) if first else None
+        ready, now_seen = [], {}
+        for f in files_under(self.places):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            sig = (st.st_mtime_ns, st.st_size)
+            now_seen[f] = sig
+            if first and mark is not None and st.st_mtime <= mark:
+                # Read by an import before this window opened.
+                self.loaded[f] = sig
+            elif self.loaded.get(f) != sig and self.last.get(f) == sig:
+                ready.append(f)
+        self.last = now_seen
+        got = {"added": 0, "known": 0, "files": 0, "unknown": 0,
+               "unfinished": 0, "by_site": {}, "ids": []}
+        if ready:
+            got = load(ready, self.db_path, progress)
+            if got["added"]:
+                update(got["ids"], self.db_path, progress)
+            for f in ready:
+                self.loaded[f] = now_seen[f]
+        got["places"] = len(self.places)
+        return got
 
 
 def load(paths, db_path=DB, progress=None):
@@ -322,7 +406,7 @@ def load(paths, db_path=DB, progress=None):
     """
     got = survey(paths)
     result = {"added": 0, "known": 0, "files": 0, "unknown": len(got["unknown"]),
-              "by_site": {}, "ids": []}
+              "unfinished": 0, "by_site": {}, "ids": []}
     # Recorded here rather than in `refresh`, so that every road into the
     # loader marks how far it has read -- Import a folder and Find hands on
     # this computer read the same files and would otherwise leave the
@@ -358,6 +442,11 @@ def _load_survey(con, got, result, progress):
             for block in site.module.split_hands(text):
                 parsed = site.module.parse_hand(block, source=f.name)
                 if not parsed:
+                    continue
+                if site.ends and site.ends not in block:
+                    # Still being written: not stored and not known, so the
+                    # next import reads it whole. See `Site.ends`.
+                    result["unfinished"] += 1
                     continue
                 h = dict(parsed["hand"], site=site.key)
                 if h["hand_id"] in known:
