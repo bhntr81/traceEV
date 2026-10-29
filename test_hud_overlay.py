@@ -63,8 +63,8 @@ class OverlayChecks(unittest.TestCase):
     def test_panels_sit_round_the_table_and_follow_it(self):
         self.assertTrue(self.wait(lambda: len(self.texts()) == 6))
         self.assertNotIn(("pokerstars", "TraceEV"), self.overlay.tables)
-        # Small, seat 5: VPIP 2 of 4 hands, so "4" closes the first line.
-        self.assertTrue(self.texts()[5].splitlines()[0].endswith("  4"))
+        # Small, seat 5: VPIP 2 of 5 hands, so "5" closes the first line.
+        self.assertTrue(self.texts()[5].splitlines()[0].endswith("  5"))
         p = self.table()["panels"][1]
         fx, fy = hud_overlay.ring(6, 1)
         self.assertTrue(self.wait(lambda: (p.winfo_x(), p.winfo_y()) ==

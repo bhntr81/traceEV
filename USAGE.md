@@ -650,11 +650,18 @@ at 5 to 7 big blinds is a single-raised pot whatever anybody did after.
 
 `--ante`, `--no-ante`, `--straddle` and `--no-straddle` are what was
 posted before the cards. A straddle is read where a site writes one --
-"posts straddle", which no site with sample files here has yet been seen
-to -- and an ante wherever it is posted. Hands imported before 4 Oct 2026
-have neither written down and match none of the four until
+"posts straddle", or PokerMaster's converter's "posts big blind" at twice
+the stake's -- and an ante wherever it is posted. Hands imported before
+4 Oct 2026 have neither written down and match none of the four until
 `python importer.py --reread` over their folders; a filter that matches
-nothing for that reason says so.
+nothing for that reason says so. A PokerMaster straddle read before
+29 Oct 2026 needs the same `--reread`.
+
+`--out-of-queue` and `--no-out-of-queue` are Hand2Note's "out of queue
+posts": somebody outside the blinds paid in before the cards -- a
+returning player's big blind, a dead small blind -- so the pot is bigger
+and one more player is in it before anybody acts. The ante and the
+straddle do not count; a seat that posted more than both does.
 
 ### Hero in the pot, or out of it
 

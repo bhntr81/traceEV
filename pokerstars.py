@@ -209,6 +209,14 @@ def parse_hand(text, source=""):
                 antes[s["seat"]] = antes.get(s["seat"], 0.0) + (_money(pm.group(1)) or 0.0)
             if rest.startswith("posts straddle"):
                 straddle = max(straddle, _money(pm.group(1)) or 0.0)
+            # PokerMaster's converter writes a straddle as a second big
+            # blind at twice the size -- "posts big blind $8" at $2/$4, in a
+            # file FPDB named `w.Straddle`. PokerStars' own second big blind
+            # is a returning player's post and is the big blind exactly, so
+            # a big blind larger than the stake's is the straddle.
+            if rest.startswith("posts big blind") and \
+                    (_money(pm.group(1)) or 0.0) > (_money(bb) or 0.0) + 1e-9:
+                straddle = max(straddle, _money(pm.group(1)) or 0.0)
             continue
         if rest.startswith(("shows", "mucks", "doesn't show")):
             cm = CARDS_RE.search(rest)

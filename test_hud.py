@@ -38,11 +38,12 @@ class HudChecks(unittest.TestCase):
             [(s["seat"], s["player"], s["is_hero"]) for s in self.table["seats"]])
 
     def test_counts_are_the_players_own(self):
-        # "Small" is in the small blind in hands 1, 2, 7 and 8: 3-bets in 1,
-        # folds in 2, cold 4-bets in 7, folds to the squeeze in 8.
+        # "Small" is in the small blind in hands 1, 2, 7, 8 and 9: 3-bets in
+        # 1, folds in 2, cold 4-bets in 7, folds to the squeeze in 8, folds
+        # to the button's raise in 9.
         small = self.panels["Small"]
-        self.assertEqual(4, small["hands"])
-        self.assertEqual((4, 2), (small["stats"]["vpip"]["n"],
+        self.assertEqual(5, small["hands"])
+        self.assertEqual((5, 2), (small["stats"]["vpip"]["n"],
                                   small["stats"]["vpip"]["k"]))
 
     def test_the_pool_is_pool_for_exactly(self):

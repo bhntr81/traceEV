@@ -21,7 +21,7 @@ class SpotFrequencyChecks(unittest.TestCase):
         self.db = Path(self.tmp.name) / "hands.db"
         got = importer.load(sorted(SYNTHETIC.glob("*.txt")), db_path=self.db,
                             progress=None)
-        self.assertEqual(7, got["added"])
+        self.assertEqual(8, got["added"])
         with contextlib.redirect_stdout(io.StringIO()):
             importer.rebuild(db_path=self.db, progress=None)
         self.con = sqlite3.connect(self.db)

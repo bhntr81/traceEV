@@ -196,11 +196,15 @@ OPPOSITES = {"--hero": "--pool", "--pool": "--hero", "--ip": "--oop",
              "--vs-reg": "--vs-fish", "--vs-fish": "--vs-reg",
              "--vs-hero": "--vs-pool", "--vs-pool": "--vs-hero",
              "--ante": "--no-ante", "--no-ante": "--ante",
-             "--straddle": "--no-straddle", "--no-straddle": "--straddle"}
+             "--straddle": "--no-straddle", "--no-straddle": "--straddle",
+             "--out-of-queue": "--no-out-of-queue",
+             "--no-out-of-queue": "--out-of-queue"}
 # What was posted before the cards. Each has its opposite, because the
 # usual question is "my cash numbers without the straddled hands in them".
 POSTS = [("--ante", "antes"), ("--no-ante", "no ante"),
-         ("--straddle", "a straddle"), ("--no-straddle", "no straddle")]
+         ("--straddle", "a straddle"), ("--no-straddle", "no straddle"),
+         ("--out-of-queue", "an out-of-queue post"),
+         ("--no-out-of-queue", "no out-of-queue post")]
 
 
 def pick_fonts():

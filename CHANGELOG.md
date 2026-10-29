@@ -8,6 +8,27 @@ Newest first.
 
 ---
 
+## Out-of-queue posts as a filter -- 29 Oct 2026
+
+`--out-of-queue` and `--no-out-of-queue`, Hand2Note's "out of queue
+posts", and a pair of switches in the filter dialog: the hands where a seat
+outside the blinds posted more than its ante and other than the straddle --
+a returning player's big blind, ACR's "posts dead". On FPDB's corpus the
+rule takes 31 hands; the five read in their histories were each a second
+big blind posted to come in or a "posts dead", apart from the straddle below.
+`test_out_of_queue.py` holds it to a new synthetic hand, #900000000009, a
+big blind posted from the cutoff; the straddle hand is not in it.
+
+### Fixed -- PokerMaster's straddle was read as a big blind
+
+PokerMaster's converter writes a straddle as "posts big blind $8" at
+$2/$4, so the hand's straddle stayed 0 and `--straddle` missed it, and the
+first draft of this filter called it out of queue. A big blind larger than
+the stake's is now the straddle (`pokerstars.py`); PokerStars' own second
+big blind is a returning post and is the stake's exactly. Hands already
+held need `importer.py --reread`. The corpus loads 999 hands, the new
+fixture the one more, and the site and parser checks pass.
+
 ## The HUD -- 29 Oct 2026
 
 The first HUD, item 2 of the 29 Oct gap list; its decisions are in

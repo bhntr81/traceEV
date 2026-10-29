@@ -1929,8 +1929,9 @@ already hold part of this.
    inside the main window or come back next run.
 9. *Cold 4-bet* — **built 29 Oct 2026**, `cold_fourbet` in `stats.py`;
    see CHANGELOG.
-10. *Out-of-queue (dead) posts as a filter.* Ignition's parser reads
-    `Posts dead chip`; nothing filters on it.
+10. *Out-of-queue posts as a filter* — **built 29 Oct 2026**,
+    `--out-of-queue` / `--no-out-of-queue`; found PokerMaster's straddle
+    being read as a big blind on the way. See CHANGELOG.
 11. *Spot frequency per 1000 hands* — **built 29 Oct 2026.** The listing
     above had it backwards: the spot (opportunities) was printed and each
     action's count (cases) was not. Both are now, and the denominator,
@@ -1984,6 +1985,20 @@ title match against real ACR and PokerStars windows.
 **Tournaments.** MTT and SNG hands are parsed and kept out of money and the
 derived tables (PAF: tournament chips are not dollars). ICM and tournament
 stats wait until the user asks.
+
+### Live testing, saved for last
+
+**The user's rule, 29 Oct 2026: every test that needs him -- a live
+table, his Windows PC, his real `hands.db` -- waits until the end.** Work
+goes on with what can be verified here; each such test is added to this
+list instead of being asked for. **The HUD is on hold** until then: built,
+checked on Xvfb, not developed further.
+
+1. `python check.py` on the Windows machine against the real database
+   (PR #39), and how far saved reports with `*/` line patterns moved.
+2. Import while open, timed on the full database during a session.
+3. The HUD at a live ACR / PokerStars table: `windows_win32`, the title
+   match, panel placement, a hand arriving.
 
 ### Order
 

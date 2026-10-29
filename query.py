@@ -261,6 +261,17 @@ OPTIONS = ("--by", "--show", "--min", "--out", "--hand", "--versus",
            "--define", "--forget", "--label", "--do", "--per", "--save",
            "--define-expr", "--formula")
 
+# The hands where a seat outside the blinds posted: what it posted, less
+# the hand's ante, more than nothing and not the straddle. On FPDB's corpus
+# every hand it takes is a "posts dead" or a second big blind posted to come
+# in; the one straddle among them, PokerMaster's written as a big blind,
+# is read as a straddle by the parser since 29 Oct 2026.
+OUT_OF_QUEUE = ("SELECT s.hand_id FROM seats s JOIN hands h USING (hand_id) "
+                "WHERE COALESCE(s.position, '') NOT IN ('SB', 'BB') "
+                "AND s.posted - COALESCE(h.ante, 0) > 0.0001 "
+                "AND NOT (COALESCE(h.straddle, 0) > 0 AND "
+                "ABS(s.posted - COALESCE(h.ante, 0) - h.straddle) < 0.0001)")
+
 SWITCHES = {
     "--hero": "is_hero = 1",
     "--pool": "is_hero = 0",
@@ -325,6 +336,13 @@ SWITCHES = {
     "--no-ante": "hand_id IN (SELECT hand_id FROM hands WHERE ante = 0)",
     "--straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle > 0)",
     "--no-straddle": "hand_id IN (SELECT hand_id FROM hands WHERE straddle = 0)",
+    # Hand2Note's "out of queue posts": somebody outside the blinds paid
+    # in before the cards -- a returning player's big blind, a dead small
+    # blind -- which puts more in the pot and one more player in it. The
+    # ante and the straddle are taken off what a seat posted first, so
+    # neither counts; a seat that posted more than both is the one.
+    "--out-of-queue": f"hand_id IN ({OUT_OF_QUEUE})",
+    "--no-out-of-queue": f"hand_id NOT IN ({OUT_OF_QUEUE})",
     "--drawing": "(fd IS NOT NULL OR sd IS NOT NULL)",
     # Both at once, which is the hand that plays like neither: a flush draw
     # with a straight draw beside it is usually a favourite against a pair.

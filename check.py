@@ -46,6 +46,7 @@ CHECKS = [
     ("query", "the filter surface: every filter runs, and every one narrows"),
     ("test_spot_frequency", "spot frequency per 1000 hands: the same games, counted by hand"),
     ("test_line_streets", "line patterns: every wildcard stays inside its own street"),
+    ("test_out_of_queue", "out-of-queue posts: a returning big blind is one, a straddle is not"),
     ("diag", "a failure in any of the three places reaches the log"),
     ("update", "the updater reports honestly and can only fast-forward"),
     ("app", "the window, its filter dialog, and the dark theme"),
