@@ -90,6 +90,8 @@ query.VIEWS = HERE / "views.json"
 # it, and only by the Desktop file it kept from before there was a
 # settings file at all.
 ask.SETTINGS = HERE / "ai.json"
+# Where the HUD's panels were dragged to: the user's, like the rest.
+HUD_LAYOUT = HERE / "hud.json"
 
 # One palette, so a colour is changed in one place. The line colours are the
 # same four the graph has always used.
@@ -670,6 +672,20 @@ class ImportMixin:
         m.add_command(label="Merge another database…", command=self.import_db)
         bar.add_cascade(label="Import", menu=m)
 
+        # The HUD draws over the clients' own windows, and those are on
+        # Windows; elsewhere the entry says so rather than doing nothing.
+        hm = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
+                     activebackground=ACCENT, activeforeground=BG)
+        if sys.platform == "win32":
+            hm.add_checkbutton(label="Show the HUD over tables",
+                               variable=self.hud_var, command=self._toggle_hud)
+            hm.add_command(label="Forget where I dragged the panels",
+                           command=self._reset_hud_layout)
+        else:
+            hm.add_command(label="The HUD draws over Windows poker clients",
+                           state="disabled")
+        bar.add_cascade(label="HUD", menu=hm)
+
         # Read from the file each time it opens, so a view saved a moment
         # ago is in it without the menu having been told.
         v = tk.Menu(bar, tearoff=0, background=PANEL, foreground=INK,
@@ -883,6 +899,35 @@ class ImportMixin:
         else:
             self.banner.pack_forget()
 
+    def _toggle_hud(self):
+        """
+        The HUD on or off -- and on means importing while open, too.
+
+        A HUD shows the hand that just finished only if something has read
+        it, which is why Hand2Note's runs with its auto-import and not
+        without. Switching the HUD on switches that on; switching it off
+        leaves it, because importing while open is wanted for its own sake.
+        """
+        import hud_overlay
+        if self.hud_var.get():
+            if not self.auto_var.get():
+                self.auto_var.set(True)
+                self._toggle_auto_import()
+            self.hud = hud_overlay.Overlay(self.master, DB,
+                                           layout_path=HUD_LAYOUT)
+        elif self.hud is not None:
+            self.hud.stop()
+            self.hud = None
+        diag.event("hud", on=self.hud_var.get())
+
+    def _reset_hud_layout(self):
+        import hud_overlay
+        hud_overlay.save_layout({}, HUD_LAYOUT)
+        if self.hud is not None:
+            self.hud.layout = {}
+            for key in list(self.hud.tables):
+                self.hud._place(key)
+
     def import_autodetect(self):
         found = importer.scan()
         if not found:
@@ -1051,6 +1096,7 @@ class App(ImportMixin, ttk.Frame):
         self.watcher, self.auto_gen = None, 0
         self.auto_total, self.auto_owns = 0, False
         self.auto_var = tk.BooleanVar(value=importer.auto_import(DB))
+        self.hud_var, self.hud = tk.BooleanVar(value=False), None
         threading.Thread(target=self._worker, daemon=True).start()
         self.pending = 0
         self.news = None
@@ -5593,7 +5639,7 @@ def check(db_path=DB):
 
     mine = {"hands.db": query.DB, "stats.json": stats.CUSTOM,
             "filters.json": query.SAVED, "ai.json": ask.SETTINGS,
-            "views.json": query.VIEWS}
+            "views.json": query.VIEWS, "hud.json": HUD_LAYOUT}
     astray = sorted(n for n, p in mine.items() if Path(p).parent != HERE)
     print(f"the user's files sit beside it {len(mine) - len(astray)}/{len(mine)}")
     if astray:

@@ -8,6 +8,36 @@ Newest first.
 
 ---
 
+## The HUD -- 29 Oct 2026
+
+The first HUD, item 2 of the 29 Oct gap list; its decisions are in
+ROADMAP ("HUD decisions"), each with the convention it follows.
+
+`hud.py` is the numbers, on any platform: the latest hand's seats at a
+table (identities from `spots`), and each seat's panel -- VPIP / PFR /
+3-bet and hands, then F3B / c-bet / fold to c-bet / WTSD -- shrunk towards
+the pool the player profile uses, `-` where there was no chance. The pool
+is computed once per set of stakes and the player subtracted, which
+`hud.py --check` holds to `players.pool_for` seat by seat: 1,967 of 1,967
+on FPDB's corpus. 37 ms a table, median; 245 ms the worst.
+
+`hud_overlay.py` is the panels: a borderless, always-on-top window per
+seat, placed round the table window, following it, redrawn when a new hand
+arrives at that table, gone when the window closes; dragged panels keep
+their place per site, table size and seat in `hud.json`. Windows are found
+with `EnumWindows` on Windows and handed in anywhere else, which is how
+`test_hud_overlay.py` runs on a virtual display. The **HUD** menu turns it
+on, and turns on importing while open with it.
+
+Two faults found before they shipped, both in the pool. A player with no
+chances at a stat showed the pool's own rate as theirs -- `41` fold to
+3-bet for a seat that had never faced one; it is `-` now. And a name that
+was hero in one file and a seat in another had its hero hands subtracted
+from a pool that never held them, leaving 48 of 1,603 pools wrong.
+
+Not yet done: tried at a live ACR or PokerStars table, which is the test
+`windows_win32` and the title match have not had.
+
 ## Importing while the window is open -- 29 Oct 2026
 
 **Import → Import new hands while open**, the first piece of the HUD

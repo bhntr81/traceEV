@@ -1869,7 +1869,10 @@ found" means a search, not a memory.
    folders is enough to start) and a measured time from a hand being written
    to its stats changing. ClubWPT Gold writes no hand histories, so for it
    the watched folder is wherever CWPTGTracker's export lands.
-2. *The HUD* — phase 4 of the reference section above: find the table
+2. **Built 29 Oct 2026, not yet tried at a live table** — `hud.py` (the
+   numbers), `hud_overlay.py` (the panels), the **HUD** menu; decisions
+   below. Popup, badges and the showdowns indicator are still to come.
+   As planned: *The HUD* — phase 4 of the reference section above: find the table
    windows, a transparent click-through panel per seat, seat -> name ->
    `stats.py`. With it, the things that only exist on a HUD: the stat
    **popup** at the table, **badges** (rule-based icons), and the
@@ -1950,6 +1953,31 @@ already hold part of this.
 16. *Hand2Note's emulator.* **Not identified.** It is not the replayer.
     Read what it does in Hand2Note's own documentation before deciding;
     until then it is neither in nor out.
+
+### HUD decisions, 29 Oct 2026 -- by convention, recorded so they are not re-asked
+
+The user's standing rule: a product question that PokerTracker, Hold'em
+Manager or Hand2Note already settle is settled by them. Each decision says
+which convention it follows, and where this project's own rule wins instead.
+
+| | decision | why |
+|---|---|---|
+| H1 | One panel per seat, yours included | every tracker's default |
+| H2 | VPIP / PFR / 3-bet and the hands count, then F3B / c-bet / fold to c-bet / WTSD | the default layout of HM and H2N; a HUD is read at a glance and the glance is trained on it |
+| H3 | The figure shown is the rate **shrunk towards the pool**, not the raw rate | **project rule over convention** (PAF: a rate shown needs the pool behind it); a HUD is believed faster than any report |
+| H4 | No chances shows `-`, never the pool's rate | convention; shrunk at n=0 the figure would be everybody else's |
+| H5 | A player's numbers are all their cash hands on that site, all stakes; the pool is `players.pool_for`'s (their own stakes, minus them) | the profile's definition, so the HUD and the profile never disagree |
+| H6 | Who is at the table is the latest hand's seats | the only seats a history can know; every tracker updates its HUD after each hand |
+| H7 | A window is a table when its title starts with a table name we hold hands for; the longest name wins | how clients title tables; matching on the name every hand already carries needs no per-site setup |
+| H8 | Panels start round an oval and are dragged; positions kept per site, table size and seat (`hud.json`) | HM, PT and H2N all keep the layout per site and table size |
+| H9 | Turning the HUD on turns on importing while open | H2N's HUD runs only with its auto-import |
+| H10 | Only sites with names (ACR, PokerStars, PartyPoker, the app rooms); an unnamed seat shows nothing | README scope; an Ignition seat is not a person |
+
+Still open, by convention when they come: the stat popup on a click (H2N's
+extended popup), badges, the showdowns indicator, colour ranges on values,
+"preferred seat" for clients that rotate the table, and a HUD per table size
+rather than one. Not yet verified on Windows at all: `windows_win32` and the
+title match against real ACR and PokerStars windows.
 
 ### Chosen: not now
 

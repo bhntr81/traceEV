@@ -1617,6 +1617,37 @@ no summary, so there the wait for a file to hold still is the protection;
 an import you start by hand while a PartyPoker table is still writing can
 still catch half a hand, and `importer.py --reread` on that file mends it.
 
+### The HUD
+
+**HUD → Show the HUD over tables** (Windows) puts a panel on each seat of
+every poker table window whose title starts with the name of a table you
+hold hands for. Each panel reads:
+
+```
+22/16/9  68        VPIP / PFR / 3-bet, then hands
+71/64/-/36         fold to 3-bet / c-bet / fold to c-bet / went to showdown
+```
+
+The figures are the player's rates pulled towards the pool by
+`stats.SHRINK` -- the same "w/ pool" column the player profile prints --
+not the raw rates, so a 3-bet of 100% on two chances does not read as
+100%. `-` is no chances at all. The pool is the player's own stakes, minus
+them, exactly as in the profile; `python hud.py --check` holds every panel
+to that. The seats are the latest hand's, so a panel changes when the next
+hand arrives -- turning the HUD on turns on importing while open for that
+reason.
+
+Drag a panel to where it belongs; it stays there for that site and table
+size, on every table, and **Forget where I dragged the panels** puts them
+back round the table. Only sites that name their players have a HUD: an
+Ignition seat is not a person, and shows nothing.
+
+To see the panels as text on any platform:
+
+```bash
+python hud.py pokerstars "Lampland"
+```
+
 ---
 
 ## Keeping it up to date
