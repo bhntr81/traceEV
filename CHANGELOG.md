@@ -8,6 +8,43 @@ Newest first.
 
 ---
 
+## Reviewed native ClubWPT Gold import — 15 Oct 2026
+
+Integrated the reviewed native JSONL contract from the separately reconstructed
+Windows snapshot ceb1b422 into the newer Linux source. ClubWPT Gold has its own
+site identity; source hashes bind complete reviewed USD NLHE cash hands to their
+independent history evidence. Unsupported units, missing actions/settlement,
+all-ins and side pots are rejected. JSONL discovery retains shallow drop-folder
+protection; re-export retains the native header and rejects mixed-site output.
+Import connections close on errors and failed imports do not advance the watermark.
+See CLUBWPTGOLD_IMPORT.txt and the latest ROADMAP reconciliation note. No Windows
+executable rebuild or real recorded-hand acceptance is claimed.
+
+## Raises and stacks counted from the chips -- 15 Oct 2026
+
+### Fixed -- raise sizes counted earlier contributions twice
+
+The fraction of a pot raised is the new money above the call, divided by
+the pot after calling. Both `decisions` and `bets` subtracted the call
+from the street's raise-to total instead, which includes chips already in
+the pot. In a worked flop hand a 37.5% re-raise came out as 50%, changing
+the size filter and the sized action line. Both now use the amount added.
+All-in raises with no raise-to total use the same calculation.
+
+### Fixed -- a shove left its responder with zero effective stack
+
+Effective stack counted only an opponent's chips behind and forgot the
+bet already in front of them. Facing a shove to $0.90 after putting in
+$0.30 showed zero effective stack and zero SPR, although another $0.60
+could be lost. The cap now includes the opponent's current street money,
+less the acting player's contribution, and still excludes previous streets
+and folded opponents. Depth and SPR filters therefore see the chips still
+at risk. The nine checks in `test_raise_sizing.py` use three invented hands
+and exercise both rebuilding and the actual incremental update path.
+
+Existing databases need `python importer.py --rebuild` to correct old rows.
+No schema or raw history changes are needed.
+
 ## A sharper, plainer window -- 6 Oct 2026
 
 ### Changed -- text drawn at the screen's real resolution on Windows

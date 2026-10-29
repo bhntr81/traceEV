@@ -1,0 +1,59 @@
+PokerStars Hand #900000000003: Hold'em No Limit ($0.05/$0.10 USD) - 2026/10/03 13:00:00 ET
+Table 'RaiseSizing' 2-max Seat #1 is the button
+Seat 1: SizingHero ($10 in chips)
+Seat 2: SizingVillain ($10 in chips)
+SizingHero: posts small blind $0.05
+SizingVillain: posts big blind $0.10
+*** HOLE CARDS ***
+Dealt to SizingHero [As Kd]
+SizingHero: raises $0.20 to $0.30
+SizingVillain: raises $0.60 to $0.90
+SizingHero: raises $1.20 to $2.10
+SizingVillain: folds
+Uncalled bet ($1.20) returned to SizingHero
+SizingHero collected $1.80 from pot
+*** SUMMARY ***
+Total pot $1.80 | Rake $0.00
+Seat 1: SizingHero (button) (small blind) collected ($1.80)
+Seat 2: SizingVillain (big blind) folded before Flop
+
+PokerStars Hand #900000000004: Hold'em No Limit ($0.05/$0.10 USD) - 2026/10/03 13:01:00 ET
+Table 'RaiseSizing' 2-max Seat #1 is the button
+Seat 1: SizingHero ($10 in chips)
+Seat 2: SizingVillain ($10 in chips)
+SizingHero: posts small blind $0.05
+SizingVillain: posts big blind $0.10
+*** HOLE CARDS ***
+Dealt to SizingHero [As Kd]
+SizingHero: raises $0.20 to $0.30
+SizingVillain: calls $0.20
+*** FLOP *** [Kh 8d 3c]
+SizingHero: bets $0.30
+SizingVillain: raises $0.60 to $0.90
+SizingHero: raises $0.90 to $1.80
+SizingVillain: folds
+Uncalled bet ($0.90) returned to SizingHero
+SizingHero collected $2.40 from pot
+*** SUMMARY ***
+Total pot $2.40 | Rake $0.00
+Board [Kh 8d 3c]
+Seat 1: SizingHero (button) (small blind) collected ($2.40)
+Seat 2: SizingVillain (big blind) folded on the Flop
+
+PokerStars Hand #900000000005: Hold'em No Limit ($0.05/$0.10 USD) - 2026/10/03 13:02:00 ET
+Table 'RaiseSizing' 2-max Seat #1 is the button
+Seat 1: SizingHero ($10 in chips)
+Seat 2: SizingVillain ($0.90 in chips)
+SizingHero: posts small blind $0.05
+SizingVillain: posts big blind $0.10
+*** HOLE CARDS ***
+Dealt to SizingHero [As Kd]
+SizingHero: raises $0.20 to $0.30
+SizingVillain: raises $0.60 to $0.90 and is all-in
+SizingHero: folds
+Uncalled bet ($0.60) returned to SizingVillain
+SizingVillain collected $0.60 from pot
+*** SUMMARY ***
+Total pot $0.60 | Rake $0.00
+Seat 1: SizingHero (button) (small blind) folded before Flop
+Seat 2: SizingVillain (big blind) collected ($0.60)

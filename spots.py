@@ -486,7 +486,9 @@ def derive(con, hands, seats_by, acts_by, seat_ids):
             if to_call > 0:
                 # A raise, measured the way a solver states one: what you put
                 # in on top of the call, over the pot you would call into.
-                top = (total or (amount + to_call)) - to_call
+                # The street total includes chips already in the pot.
+                # Only the new money above the call is the raise itself.
+                top = amount - to_call
                 pot_frac = top / (pot_before + to_call) if pot_before + to_call else None
             else:
                 pot_frac = amount / pot_before if pot_before else None

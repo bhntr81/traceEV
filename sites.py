@@ -43,6 +43,7 @@ import acr
 import ignition
 import partypoker
 import pokerstars
+import clubwptgold
 
 DB = Path(__file__).parent / "hands.db"
 
@@ -86,6 +87,8 @@ class Site:
 
 
 SITES = (
+    Site("clubwptgold", clubwptgold, names=True, reveals=False, rake=True,
+         places=(), about="ClubWPT Gold -- complete reviewed native tracker JSONL; USD only"),
     Site("ignition", ignition, names=False, reveals=True, rake=False,
          places=(r"%USERPROFILE%\Ignition Casino Poker\Hand History",
                  r"%USERPROFILE%\Bovada Poker\Hand History"),

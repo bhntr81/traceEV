@@ -866,7 +866,7 @@ class ImportMixin:
     def import_file(self):
         files = filedialog.askopenfilenames(
             title="hand history files",
-            filetypes=[("hand histories", "*.txt"), ("all files", "*.*")])
+            filetypes=[("hand histories", "*.txt *.jsonl"), ("all files", "*.*")])
         if files:
             self._run_import("importing",
                              lambda say: self._do_load(list(files), say))
@@ -939,6 +939,8 @@ class App(ImportMixin, ttk.Frame):
                       "street_pot", "fish_left_seats", "fish_right_seats")}
         self.options = {"sites": [], "stakes": [], "players": []}
         self.cohort_spec = None
+        self.player_note_overlays = {}
+        self.report_clicks_enabled = False
 
         self.results = queue.Queue()
         # Requests go through one queue to one worker, and a request that
@@ -1343,6 +1345,10 @@ class App(ImportMixin, ttk.Frame):
         self.tree["sessions"].bind("<Return>", self._open_session)
         self.tree["hands"].bind("<Double-1>", self._open_hand)
         self.tree["hands"].bind("<Return>", self._open_hand)
+        self.tree["report"].bind("<ButtonRelease-1>",
+                                  self._open_player_report)
+        self.tree["report"].bind(
+            "<Return>", lambda _event: self._open_player_report())
 
     def _table(self, parent):
         wrap = ttk.Frame(parent)
@@ -1678,6 +1684,10 @@ class App(ImportMixin, ttk.Frame):
 
     def refresh(self):
         view = self.nb.tab(self.nb.select(), "text") if self.tabs else "stats"
+        if view == "report":
+            # The old rows stay visible while an asynchronous report runs.
+            # Do not let one resolve against the new filter in that interval.
+            self.report_clicks_enabled = False
         if view in ("report", "results"):
             self.by_label.pack(side="left", padx=(0, 6))
             self.by.pack(side="left")
@@ -1816,6 +1826,80 @@ class App(ImportMixin, ttk.Frame):
         tv = self.tree["stats"]
         tv.delete(*tv.get_children())
         self._render_stats(tv, shown)
+
+    def _open_player_report(self, _event=None):
+        """Open the named player clicked in a report split by player."""
+        if (not self.report_clicks_enabled or self.by.get() != "player"
+                or self.nb.tab(self.nb.select(), "text") != "report"):
+            return
+        tv = self.tree["report"]
+        if _event is not None and hasattr(_event, "x"):
+            if (tv.identify_region(_event.x, _event.y) != "cell"
+                    or tv.identify_column(_event.x) != "#1"):
+                return
+            iid = tv.identify_row(_event.y)
+            if not iid:
+                return
+        else:
+            chosen = tv.selection()
+            if not chosen:
+                return
+            iid = chosen[0]
+        if iid == "player-help":
+            return
+        values = tv.item(iid, "values")
+        if not values:
+            return
+        player = str(values[0]).strip()
+        if not player or player.lower() in (
+                "none", "null", "nothing matches"):
+            return
+
+        site, needs_site = self._site_for_player_report(player)
+        if not needs_site:
+            return
+        if site is None:
+            messagebox.showinfo(
+                "Choose a site",
+                "This name appears on multiple sites in the displayed report. "
+                "Filter to one named site, then select the player again so "
+                "the note is attached to the right person.",
+                parent=self.master)
+            return
+
+        self.apply_argv(["--site", site, "--player", player, "--stats"])
+        self._show_player_note(site, player)
+
+    def _site_for_player_report(self, player):
+        """Resolve the clicked row within the report's current filter."""
+        if not getattr(self, "last", None):
+            return None, False
+        where = self.last[0]
+        rows = self.con.execute(
+            f"SELECT DISTINCT site FROM decisions WHERE ({where}) "
+            "AND player=?", (player,)).fetchall()
+        matches = {row[0] for row in rows}
+        named = set(sites.named())
+        if not matches or not matches.intersection(named):
+            return None, False
+        selected = self.vals["site"].get().strip()
+        if selected and not selected.startswith("any "):
+            return ((selected, False) if selected in named
+                    and matches == {selected} else (None, True))
+        if len(matches) != 1:
+            return None, True
+        site = next(iter(matches))
+        return (site, False) if site in named else (None, False)
+
+    def _show_player_note(self, site, player):
+        """Raise the existing note editor for this exact site/player pair."""
+        key = (site, player)
+        current = self.player_note_overlays.get(key)
+        if current is not None and current.winfo_exists():
+            current.lift()
+            current.focus_force()
+            return
+        self.player_note_overlays[key] = PlayerNoteOverlay(self, site, player)
 
     def _picked_stat(self, _event=None):
         chosen = self.tree["stats"].selection()
@@ -2328,6 +2412,8 @@ class App(ImportMixin, ttk.Frame):
             "", "", "", ""))
 
     def _render_report(self, tv, out):
+        if tv is self.tree["report"]:
+            self.report_clicks_enabled = out.get("dim") == "player"
         cols = ["by"] + [BY_KEY[c].label for c in out["cols"]] + ["n"]
         self._cols(tv, tuple(cols), [130] + [95] * len(out["cols"]) + [80],
                    {"by": "w"})
@@ -2339,6 +2425,10 @@ class App(ImportMixin, ttk.Frame):
                           values=[out["why"]] + [""] * len(cols[1:]),
                           tags=("note",))
             return
+        if out.get("dim") == "player":
+            tv.insert("", "end", iid="player-help", tags=("note",),
+                      values=["Click a player name to open stats and notes"]
+                             + [""] * len(cols[1:]))
         for k in out["keys"]:
             row = [str(k)]
             thin = False
@@ -2474,7 +2564,7 @@ class App(ImportMixin, ttk.Frame):
         out = filedialog.asksaveasfilename(
             parent=self.master, defaultextension=".txt",
             initialfile="traceev-hands.txt", title="Export these hands",
-            filetypes=[("hand histories", "*.txt")])
+            filetypes=[("hand histories", "*.txt *.jsonl")])
         if not out:
             return
 
@@ -2950,6 +3040,66 @@ class App(ImportMixin, ttk.Frame):
         if cohort_spec is not None:
             label += ", player cohort"
         return "all hands" if label == "everything" else label
+
+
+class PlayerNoteOverlay(tk.Toplevel):
+    """Edit one named player's note without blocking the stats window."""
+
+    def __init__(self, app, site, player):
+        super().__init__(app.master)
+        import notes
+
+        self.app = app
+        self.site = site
+        self.player = player
+        self.title(f"Player notes · {player}")
+        self.configure(background=BG)
+        self.geometry(f"{px(380)}x{px(250)}")
+        self.minsize(px(300), px(190))
+        self.transient(app.master)
+
+        ttk.Label(self, text=player, style="Title.TLabel").pack(
+            anchor="w", padx=14, pady=(12, 2))
+        ttk.Label(self, text=f"{site} · notes for this player only",
+                  style="Dim.TLabel").pack(anchor="w", padx=14, pady=(0, 8))
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=14)
+        self.text = tk.Text(body, height=6, wrap="word", background=BG,
+                            foreground=INK, insertbackground=INK,
+                            font=(UI, 10), borderwidth=1)
+        scroll = ttk.Scrollbar(body, orient="vertical",
+                               command=self.text.yview)
+        self.text.configure(yscrollcommand=scroll.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.text.insert("1.0", notes.note_of(app.con, site, player))
+
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", padx=14, pady=12)
+        ttk.Button(foot, text="CANCEL", command=self.cancel).pack(side="right")
+        ttk.Button(foot, text="SAVE", style="Accent.TButton",
+                   command=self.save).pack(side="right", padx=(0, 8))
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Escape>", lambda _e: self.cancel())
+        self.bind("<Control-Return>", lambda _e: self.save())
+        self.text.focus_set()
+        self.lift()
+
+    def save(self):
+        import notes
+        try:
+            notes.note(self.app.con, self.site, self.player,
+                       self.text.get("1.0", "end-1c"))
+        except sqlite3.Error as error:
+            messagebox.showerror("Player note not saved", str(error),
+                                 parent=self)
+            return
+        self.destroy()
+
+    def cancel(self):
+        """Closing the overlay leaves its unsaved edits alone."""
+        self.destroy()
 
 
 class CohortDialog(tk.Toplevel):

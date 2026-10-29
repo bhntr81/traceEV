@@ -4,6 +4,18 @@ Every command, what it does, and how to read what comes back.
 
 ---
 
+## Player notes in the window
+
+In **Reports**, set **split by** to **player** and click a player row. TraceEV
+opens that player's full Stats view for the resolved site and a small notes
+window. This resets the report's other filters. **Save** stores the note for
+that site and player in the existing database; **Cancel**, Escape, or closing
+the window discards unsaved edits. If a name resolves to more than one site
+in the displayed report, filter to one site first so the note is saved to the
+right identity.
+
+---
+
 ## Feedback and feature requests
 
 **✉ Feedback**, on the bar beside **Chat with AI** (and in the Help menu), opens a

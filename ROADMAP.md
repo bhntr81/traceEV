@@ -994,6 +994,43 @@ importer's check proves the round trip. What remains of the manual's
 list: table composition, configurable hand categories, expression
 stats, bet size relative to the previous bet. Then goal 5.
 
+## 15 Oct 2026 — correctness audit while recordings are pending
+
+**Goal, set beforehand:** resume the correctness audit, reproduce suspected
+errors before changing them, and verify fixes independently of recordings.
+
+**Scope and evidence:** the working checkout is `master` at `7701a85`.
+The 22 unexamined leads mentioned in Run 32 are not individually listed in
+this checkout or its tracked audit files, so this pass cannot claim to
+close that list. It reviews the chip arithmetic in `decisions` and `bets`.
+There was no local `hands.db` or FPDB corpus. Three new invented histories
+give hand-worked expectations; they are test inputs, not observed play.
+
+**Two confirmed defects, corrected.** Raise fractions used the street's
+raise-to total less the call, counting earlier contributions again. A flop
+re-raise at 37.5% pot printed as 50% and selected the wrong sized line.
+Both derivations now use the amount added less the call. Effective stack
+used the opponent's chips behind alone: facing a shove to $0.90 with $0.30
+already in showed zero chips at risk rather than $0.60. The cap now counts
+the opponent's current bet and subtracts the acting player's contribution
+on this street, excluding money banked on earlier streets.
+
+**Verification:** `test_raise_sizing.py` is part of `check.py`. Its nine
+checks cover blinds, re-raises, ordinary bets, all-in forms, money and
+position proofs, size/depth filters, action lines, and actual incremental
+updates as well as rebuilds. Restoring the old raise formula made six of
+the first seven checks fail; the two effective-stack checks failed before
+their fix. All nine pass with the corrections.
+
+The full suite was attempted on the synthetic database. Its failures on
+`players`, `query`, `diag`, `app`, `test_range_compare`, `test_stat_dialog`,
+`gui` and `ask` already occurred before the changes: there is no Ignition
+or large-sample corpus, and Tk cannot reach a display. Xvfb cannot bind
+its sockets in this environment; fetching the pinned FPDB corpus also
+fails because GitHub DNS is unavailable. This is **not a full-suite pass**
+or a completed audit of the historical 22 leads. Existing real databases
+need `python importer.py --rebuild` before the corrections affect old hands.
+
 ## Run 32 — an audit for wrong numbers, and the hands the board makes (24 Sep 2026)
 
 **Goal:** find figures that are wrong and plausible, which is the failure this
@@ -1664,3 +1701,93 @@ Its foundation is incremental import. Every import today re-derives every
 table, three quarters of a minute at twelve thousand hands, and a HUD needs a
 new hand counted in a second or two. Nothing is built until the design is
 signed off.
+
+
+## ClubWPT native source reconciliation — 15 Oct 2026
+
+Retrieved the Windows snapshot package for `ceb1b422` on
+`windows/source-snapshot-2026-10-14`. ZIP SHA-256 and CRC passed; patch applied
+in a separate exact-base worktree and all 27 committed file hashes match the
+Windows manifest. The branch is still absent from GitHub. Full report, source
+reconstruction, before-change backups and logs:
+`/home/kali/Downloads/clubwpt-reconciliation-20261015/RECONCILIATION.md`.
+
+Integrated the native `clubwptgold` parser/site, JSONL discovery/re-export,
+reviewed tracker exporter and desktop file filters into the newer Linux source.
+Preserved shallow Desktop/Downloads discovery and existing uncommitted changes.
+Unrelated Windows Results/playback/recovery UI work remains separately preserved
+for later reconciliation; it was not used to replace newer Linux UI code.
+
+Fresh Linux checks: 21 importer/raise-sizing tests passed (12 native plus 9
+existing raise-sizing); 4 exporter tests passed; tracker suite 598 run, 559 passed,
+39 skipped. A fully synthetic hand passed tracker SQLite -> JSONL -> reviewed
+native export -> TraceEV import/rebuild/deduplication/integrity/site accounting.
+This does not establish real recorded-hand acceptance. Both contract copies match.
+The initial aggregate TraceEV check failed due to this checkout having no populated
+hands.db. An isolated synthetic aggregate completed with 16 module passes and 9
+failures. It exposed a mixed-site export self-check assumption; after correcting
+that check to round-trip each site separately, importer.py --check passes. Remaining
+failures require richer corpus examples or a working GUI/environment. The full
+aggregate is not all-pass; see RECONCILIATION.md and its logs for exact limits.
+
+Version 1 requires independently verified USD NLHE cash, complete reviewed actions
+and settlement. Existing CHIPS/BB evidence cannot be relabeled to pass it. All-ins,
+side pots and incomplete hands remain rejected. Existing reserved 4h/Qc recognition
+failure, calibration/complete-history evidence gaps, fresh Windows capture and
+runtime checks remain open. No live database import, GitHub push, Windows install
+or executable rebuild was performed. Source integration is local and uncommitted.
+
+## Latest: before/after checks and partial name calibration — 2026-10-15 (Codex)
+
+All 24 common TraceEV checks have identical baseline/current outcomes on
+byte-identical disposable five-hand databases: 16 pass, eight fail in both.
+The new native importer check passes. Under a directly started Xvfb, diag,
+range-compare and stat-dialog pass in both; app times out at 40s in both after
+the same successful checks. Other failures need corpus examples/cohorts. No
+new integration regression was reproduced; the full aggregate is not all-pass.
+
+The next development failure was absent player-name ROIs. Broad crops and a
+four-seat candidate accepted wrong text and were withheld. A separate final
+candidate configures only seats 2/5/8: 78 existing development captures yield
+225 correct name readings, 9 unknown and 0 accepted wrong out of 234. Repeated
+pixels and same-recording development do not establish independent accuracy.
+Other seats remain unknown; active profiles/templates were not changed.
+
+The complete 471-observation development replay stays in separate 347/124
+before/after-holdout segments. Five hand records remain, three now carrying the
+three names. All non-name fields match baseline after normalizing random IDs
+and name-related raw evidence/errors. No reserved 385–465 frames were used;
+the failed 4h/Qc result remains failed. CHIPS/BB are unchanged.
+
+Fresh checks: tracker 598 run / 559 passed / 39 skipped; exporter 4 passed;
+native importer and existing raise-sizing 21 passed. See
+`/home/kali/Downloads/clubwpt-followup-20261015/REPORT.md`, comparison JSON/logs,
+and `name-development/v3/`. Source-only Windows staging package and exact
+commands are in `clubwpt-windows-source-20261015.zip` / `windows-handoff/` there.
+The package must be staged in a fresh folder and reconciled with the independently
+changed Windows source; it is not an in-place installer. Windows runtime/live
+capture, complete identities/chronology/settlement, actual USD eligibility and
+independent acceptance remain open. No push or EXE rebuild was performed.
+
+## Latest: fresh ZIP workflow exercised; Windows endpoint offline — 2026-10-15
+
+Freshly extracted the original ZIP into a new staging directory, installed its
+requirements into a new environment and verified source/module origins. All 32
+previously skipped optional Tk cases pass with POKER_TK_SMOKE=1; seven Windows-only
+cases remain skipped. The earlier recorder test failure was an import-path invocation
+error; discovery's existing 37-test result remains valid.
+
+Packaged validation CLI read 347 original development images using real Tesseract,
+stored/exported three needs_review hands. 2s/9s cards/board match the client reference,
+but one of 12 actions is missing, order is uncertain and contributions are unknown.
+Native exporter rejects all three; BB/CHIPS are not relabeled USD. A separate existing
+synthetic USD fixture passes actual storage/export/import CLI content/accounting and
+dedup checks. No production fix or package replacement was justified by this run.
+
+RustDesk connection to existing Windows ID 1259170029 reported target offline or
+nonexistent. No Windows runtime/capture was reached. Next action: wake Windows,
+open RustDesk, leave it online and return its displayed ID/online status. Details:
+`/home/kali/Downloads/clubwpt-acceptance-20261015/REPORT.md`. Original profiles/evidence and the ZIP remain unchanged.
+
+
+2026-10-15 ClubWPT acceptance guard: native contract now rejects unresolved action_candidates even if review flags are cleared. Tracker and TraceEV copies identical;13focused native tests pass on disposableDBs, including existing content/deduplication. Full aggregate not rerun; previous failures not claimed resolved. No realhand/BB/CHIPS/spectator support accepted. See /home/kali/Downloads/clubwpt-next-session-results/astra/REPORT.md.
