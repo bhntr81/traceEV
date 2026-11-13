@@ -44,6 +44,7 @@ import ignition
 import partypoker
 import pokerstars
 import clubwptgold
+import clubwptocr
 
 DB = Path(__file__).parent / "hands.db"
 
@@ -98,6 +99,12 @@ class Site:
 SITES = (
     Site("clubwptgold", clubwptgold, names=True, reveals=False, rake=True,
          places=(), about="ClubWPT Gold -- complete reviewed native tracker JSONL; USD only"),
+    # The same room read off the screen. Its own site because its hands are
+    # the tracker's reading and not the client's word: a pool of them is
+    # kept apart from the reviewed ones until somebody decides otherwise.
+    Site("clubwptocr", clubwptocr, names=True, reveals=False, rake=True,
+         places=(), about="ClubWPT Gold as the tracker's OCR read it -- only "
+                          "hands whose money adds up; the table's own unit"),
     Site("ignition", ignition, names=False, reveals=True, rake=False,
          ends="*** SUMMARY ***",
          places=(r"%USERPROFILE%\Ignition Casino Poker\Hand History",

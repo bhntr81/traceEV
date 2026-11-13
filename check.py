@@ -42,6 +42,7 @@ CHECKS = [
     ("importer", "the site detector, against hands already loaded"),
     ("test_watcher", "importing while open: only changed, settled, finished hands"),
     ("test_clubwptgold", "native reviewed ClubWPT Gold: actions, settlement and file round trips"),
+    ("test_clubwptocr", "ClubWPT Gold OCR records: stored only when their own money adds up"),
     ("equity", "the hand evaluator, against published equities"),
     ("query", "the filter surface: every filter runs, and every one narrows"),
     ("test_spot_frequency", "spot frequency per 1000 hands: the same games, counted by hand"),
