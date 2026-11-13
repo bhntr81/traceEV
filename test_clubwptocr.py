@@ -116,6 +116,29 @@ class Proves(unittest.TestCase):
         self.assertEqual(labels[4], "~HL6333#4")
         self.assertEqual(labels[1], "plsfoldy")
 
+    def test_a_new_players_post_is_money_in_and_the_hand_not_standard(self):
+        # stream5 17:20:44: seat 8 posts 1 BB out of turn and checks its option.
+        rec = record()
+        rec["players"].append({"seat": 5, "name": "NewGuy", "starting_stack": "100", "stack": None,
+                               "bet": None, "in_hand": None})
+        rec["actions"].insert(2, act(3, "preflop", 5, "post_unknown", "1"))
+        rec["actions"].insert(6, act(6, "preflop", 5, "fold"))
+        for n, a in enumerate(rec["actions"], 1):
+            a["sequence"] = n
+        rec["settlement"]["pot"], rec["settlement"]["collected"][0]["amount"] = "6.5", "6"
+        got = parse(rec)
+        self.assertEqual(got["hand"]["standard"], 0)
+        self.assertAlmostEqual({s["seat"]: s for s in got["seats"]}[5]["posted"], 0.02)
+        self.assertEqual(clubwptocr.UNKNOWN.get("post_unknown"), None)
+
+    def test_an_unread_post_is_money_of_unknown_size(self):
+        rec = record()
+        rec["actions"].insert(2, act(3, "preflop", 3, "post_unknown"))
+        for n, a in enumerate(rec["actions"], 1):
+            a["sequence"] = n
+        self.assertIsNone(parse(rec))
+        self.assertIn("unresolved post", clubwptocr.REJECTED)
+
     def test_a_capture_that_stopped_is_half_a_hand(self):
         rec = record()
         rec["end_reason"] = "tracking_stopped"

@@ -227,7 +227,16 @@ def _parse(record, source):
         total, amount = _dec(action.get("street_total")), _dec(action.get("amount"))
         price, prior = max(commit.values()), commit[seat]
 
-        if verb in POSTS:
+        if verb == "post_unknown":
+            # A POST badge on a seat that is neither blind, its box read: a
+            # new or returning player's post (all five on stream5 were 1 BB,
+            # and the poster checked when the limps came round, as a live
+            # post does). The tracker leaves its kind open on purpose; for
+            # tracking the kind does not matter, only that the money went in
+            # before the action -- what the Ignition parser does with a dead
+            # post. Unread, it is money of unknown size and the hand goes.
+            need(total is not None or amount is not None, "unresolved post")
+        if verb in POSTS or verb == "post_unknown":
             if total is None and amount is None:
                 total = sb if verb == "post_small_blind" else bb
             new = total if total is not None else prior + amount
@@ -243,12 +252,10 @@ def _parse(record, source):
             rows.append((street, seat, LETTER[verb], None, None, 0))
             continue
         if verb not in ("call", "bet", "raise", "all_in"):
-            # `post_unknown` and whatever the tracker learns to write next.
-            # Money of an unknown kind: the hand goes, and the verb is kept.
-            if verb != "post_unknown":
-                UNKNOWN[str(verb)] += 1
-            raise Reject("unresolved post" if verb == "post_unknown"
-                         else "action of an unknown kind")
+            # Whatever the tracker learns to write next. Money of an unknown
+            # kind: the hand goes, and the verb is kept for fixtures.py.
+            UNKNOWN[str(verb)] += 1
+            raise Reject("action of an unknown kind")
 
         need(total is not None or amount is not None, "amount unread")
         new = total if total is not None else prior + amount
@@ -312,9 +319,12 @@ def _parse(record, source):
     need(put_in == pot, "pot is not what went in")
     need(won + rake == pot and won > 0, "pot is not what came out")
 
+    # Standard is the two blinds and nothing else, as on the other sites; a
+    # hand with a third post keeps its money but stays out of the checks and
+    # stats that assume two.
     blinds = {where[seat] for verb, seat in posts}
     standard = int(len(posts) == 2 and blinds == {"SB", "BB"} and
-                   posts[0][0] != posts[1][0])
+                   {verb for verb, _ in posts} == set(POSTS))
     stamp = started.strftime("%Y%m%dT%H%M%S")
     for player in seats.values():
         for key in ("stack", "won", "posted", "invested"):
