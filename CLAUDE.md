@@ -427,5 +427,5 @@ Match the surrounding code — it is consistent, and it is the spec.
 | `USAGE.md` | every command, and how to read its output |
 | `CONTRIBUTING.md` | the rules, and the failure behind each |
 | `CHANGELOG.md` | what changed, and why |
-| `ROADMAP.md` | goals and the run log |
+| `ROADMAP.md` | goals and the run log (117 KB: do NOT read at startup; `grep -n '^## ' ROADMAP.md` for the index, then read only the Run or section the task names; Milestones at line ~64) |
 | `the-augster.xml` | the operating framework |

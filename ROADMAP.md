@@ -1840,6 +1840,60 @@ under the minimum sample stay blank rather than read 0%.
 3. The HUD itself — phase 4 above.
 
 
+## 13 Nov 2026 — Hand2Note itself, installed: first pass (bundled config only; the live walk is blocked)
+
+**Goal, the user's:** run the real Hand2Note free trial here under Wine, walk
+every feature, and list what TraceEV lacks. Earlier audits read the manual;
+this one reads the program.
+
+**State.** Hand2Note 3 (files dated 1 Jun 2025) is installed in
+`~/.wine-hand2note`. Hand2Note 4's installer was run and did not finish (it
+stops at its WebView2 prerequisite); nothing of it is in `Program Files`.
+Launched on a private Xvfb display, Hand2Note 3 dies in `App.OnStartup`:
+`GC.RegisterForFullGCNotification` -- "This API is not available when the
+concurrent GC is enabled". Wine's bundled Mono does not implement that call;
+`MONO_GC_PARAMS=major=marksweep` did not change it. It needs Microsoft's
+.NET Framework 4.8 in the prefix (winetricks `dotnet48`). **Not done:**
+fetching winetricks was refused by the session's permission check, and the
+disk had 1.7 GB free, too little to install it safely. **No screen of the
+program has been seen yet; nothing below comes from the running program.**
+
+**What was read instead:** `Program Files/Hand2Note/Config`, the defaults
+the program ships. Names and formulas only -- the files are binary
+(protobuf), the definitions inside them were not decoded. "Not found" below
+is a grep of TraceEV's `*.py` for the name, not a proof that a line pattern
+cannot ask the same question.
+
+| Hand2Note ships | TraceEV | gap |
+|---|---|---|
+| 1,037 stat definitions (`Filters/*.filter2`), 656 of them "H2N Official" | 42 built-in stats (`stats.STATS`) plus line patterns and `--define` | **no shipped library.** Most are askable as a line pattern; none is a named stat a HUD or popup can show without the user writing it |
+| 252 expression stats (`.exst`), written with `Cases`, `Opps`, `Value`, `WonHandCases`, `WentToSDCases`, `WonHandAtSDCases` | 6 expressions; the same functions and four more exist in `stats.FUNCTIONS` | language is there, the library is not |
+| Preflop tree to the 6-bet: 5Bet, 5Bet-Fold, 6Bet, Push on 3bet, Open 4Bet, Squeeze-Call / -Fold / -Raise | stops at `fourbet`, `cold_fourbet`, `fold_to_4bet`; "5bet" appears in `stats.py` only | **5-bet, 6-bet, squeeze then facing a raise** not stats |
+| "Raise limpers" family: 3Bet vs Raise Limpers, Call / Fold to 3bet after Raise Limpers, 4Bet and 5Bet after | `iso` only | **reactions after an iso-raise** not stats |
+| Limp Multipot, Limp-Call, Limp-Fold, Limp-Raise | `limp` only; no limp-raise found | **limp then the reaction** |
+| Every preflop stat per position and per opponent position: `[UTG]`…`[BB]`, `[CO IP]`, `[vs UTG]`, `[CO-BTN vs MP]`, `[BB vs SB]` | `by_position`; position filters | have the split; **position-versus-position as a named stat** not found |
+| `[Straddle Game]` variants for SB, BB, BTN and the straddle seat | `--straddle` filter | have the filter; no straddle-seat stat. Matters: ClubWPT Gold is a straddle game |
+| Named bet sizes with their own stats on each street: Micro, Mini, Small, Standart, Overbet; Min Raise | `overbet`, `small_bet`, `faces_overbet`; `--by size` | **micro / mini / standard / min-raise** as named classes not found |
+| Every postflop action in three strength cuts: Strong, Weak, Bluff (Bet Flop Bluff, Check River Weak, Bet-Raise Turn Strong) | `strength.WEAK/STRONG`, `--by hand` | **a stat cut by showdown strength as a stat in its own right** not found |
+| "& Faced Action" twins of each line (the next player's reaction to it), and "& Won" | `--actions` view | have as a view, not as stats |
+| Same-street combinations as stats: Bet-Call, Bet-Fold, Bet-Raise, Check-Call, Check-Fold, Check-Raise-Fold, per street | line patterns | askable; not named |
+| Postflop trees by how the pot was made: Raised 1st, Called Raise, Did 3Bet, Called 3Bet, Did 4Bet, Called 4Bet, each `[IP; HU; BSS]` / `[OOP; HU; BSS]` / `[3+ players]` | `--pfa`, `--ip`, players filters | askable; not named. **BSS (a stack-size class) as a named condition** not found |
+| 64 hand-strength groups, per street: TPTK, TPGK, TPWK, LP, MP, Low PP, Overpair, Set, trips+, 2pairs, 2pair+, A-high, AK/AQ/AJ, KQ/KJ/QJ overs, Gutshot, Draw, Combo Draw, Pair + Draw, Trash; river only: Bluff Catch, Missed Draw, Missed Overs, Missed Trash | `strength.py` groups, top pair by kicker, pair + draw, combo draw | **TPTK apart from TPGK; the river "missed" groups; bluff catch** not found as groups |
+| Omaha groups (Draw omaha, Top Pair omaha, Weak Pair omaha, Trash omaha) | Omaha is named in the parsers; no Omaha strength groups | **Omaha stats** -- say whether Omaha is in scope before building |
+| HUD profiles (`default`, `PokerMaster Default HUD`) with tabs and colours; a HUD editor behind them | `hud.py` fixed layout H2 | **HUD profiles and an editor; colour ranges on values** (already listed open) |
+| Popup profiles (`default`, `PokerMaster Default Popup`): tabs General / Pre-flop / Postflop, rows such as Steal, Squeeze, Call 4-Bet, Missed Continuation Bet, vs. Missed Continuation Bet, In Position / Out of Position, Notes | none on the HUD | **the popup and a popup editor** (already listed open) |
+| HUD templates: 26 backgrounds, 2 borders, 102 fonts | none | cosmetic; with the HUD editor |
+| Replayer themes (`Nova [PS]`, `Grinder`) | text replayer; drawn table chosen 29 Oct, not built | **drawn replayer**, then themes |
+| Bundled PostgreSQL (`pgsql`), `SwitchDatabase.exe` | one SQLite `hands.db` | **more than one database** (item 15 below) |
+| `h2nServer.Client.dll`, a config repository under `Config/drop` that tracks `origin/master` and `origin/release` | `update.py` updates the program | **stat and HUD packs delivered and updated from a server**; an "H2N Pro" pack sits in `drop` |
+| `Hand2NoteLive.dll` | -- | not identified; look at it in the running program |
+
+**Still to do, and only possible in the running program:** every menu,
+dialog and report walked and listed -- Reports, Sessions, the filter dialog,
+Range Research, Decision Analysis, the stat editor, the HUD and popup
+editors, the replayer, notes and labels, import and database settings, and
+the emulator (item 16 below, still unidentified).
+
 ## 29 Oct 2026 — the gaps the 16 Sep audit left, and what the user chose
 
 The 16 Sep page-by-page audit below has been closed almost entirely by Runs
