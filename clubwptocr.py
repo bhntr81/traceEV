@@ -37,6 +37,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+from pathlib import Path
 import re
 import sys
 
@@ -322,6 +323,21 @@ def _parse(record, source):
     need(put_in == pot, "pot is not what went in")
     need(won + rake == pot and won > 0, "pot is not what came out")
 
+    # A starting stack the screen never showed, worked back from the closing
+    # stack the tracker settled this hand on: start = close + posted + put in
+    # - collected, the tracker's own settlement read the other way. Only on a
+    # hand the tracker settled from the stacks, whose closing stacks are the
+    # ones that settlement used; a stack that would come out negative is
+    # left unknown rather than trusted. PokerStars text needs every stack,
+    # and 17 of 54 hands of 28-29 Oct had one missing.
+    if settlement and settlement.get("source") == "stacks":
+        for seat, player in seats.items():
+            closing = _dec(listed[seat].get("stack"))
+            if player["stack"] is None and closing is not None:
+                start = closing * scale + player["posted"] + player["invested"] - player["won"]
+                if start > 0:
+                    player["stack"] = start
+
     # Standard is the two blinds and nothing else, as on the other sites; a
     # hand with a third post keeps its money but stays out of the checks and
     # stats that assume two.
@@ -352,15 +368,45 @@ def _parse(record, source):
                     for n, (st, seat, letter, a, t, shove) in enumerate(rows, 1)]}
 
 
-def report(paths):
-    """What would load from these files, and why the rest would not."""
+def _slug(reason):
+    return re.sub(r"[^a-z0-9]+", "-", reason.lower()).strip("-")[:60] or "unknown"
+
+
+def report(paths, doubt_dir=None):
+    """What would load from these files, and why the rest would not.
+
+    With `doubt_dir`, every refused record is also kept there, one JSONL
+    file per reason, exactly as the tracker wrote it. Those are the cases
+    the reader still gets wrong, so they are the test set that makes it get
+    them right: a fix is measured by how many of them it turns into hands
+    that prove themselves, and the clean histories are never touched. A
+    record already kept (the same line) is not kept twice.
+    """
     REJECTED.clear()
     good = total = 0
+    kept = {}
+    if doubt_dir is not None:
+        doubt_dir = Path(doubt_dir)
+        doubt_dir.mkdir(parents=True, exist_ok=True)
     for path in paths:
         with open(path, encoding="utf-8-sig") as fh:
             for block in split_hands(fh.read()):
                 total += 1
-                good += parse_hand(block, source=str(path)) is not None
+                before = Counter(REJECTED)
+                if parse_hand(block, source=str(path)) is not None:
+                    good += 1
+                    continue
+                if doubt_dir is None:
+                    continue
+                reason = next(iter(REJECTED - before), "unknown")
+                target = doubt_dir / (_slug(reason) + ".jsonl")
+                if target not in kept:
+                    kept[target] = set(target.read_text(encoding="utf-8").splitlines()) \
+                        if target.exists() else set()
+                if block not in kept[target]:
+                    kept[target].add(block)
+                    with open(target, "a", encoding="utf-8") as out:
+                        out.write(block + "\n")
     print(f"{good} of {total} hands prove themselves and would load")
     for reason, n in REJECTED.most_common():
         print(f"  {n:4d}  {reason}")
@@ -368,6 +414,15 @@ def report(paths):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit(__doc__)
-    report(sys.argv[1:])
+    import argparse
+    parser = argparse.ArgumentParser(description="What would load from tracker JSONL, and why not.")
+    parser.add_argument("files", nargs="+")
+    parser.add_argument("--doubt", help="keep every refused record here, one file per reason")
+    parser.add_argument("--pokerstars", help="also write the hands that load as PokerStars text here")
+    args = parser.parse_args()
+    report(args.files, args.doubt)
+    if args.pokerstars:
+        import clubwptocr_ps
+        written, skipped = clubwptocr_ps.export(args.files, args.pokerstars)
+        print(f"{written} hands written as PokerStars text to {args.pokerstars}"
+              + (f"; {skipped} not written (see clubwptocr_ps.SKIPPED)" if skipped else ""))

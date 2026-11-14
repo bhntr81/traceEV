@@ -145,6 +145,48 @@ class Proves(unittest.TestCase):
         self.assertIsNone(parse(rec))
 
 
+class PokerStarsText(unittest.TestCase):
+    def test_a_hand_is_written_as_pokerstars_and_reads_back_the_same(self):
+        import clubwptocr_ps
+        import pokerstars
+        parsed = parse(record())
+        text = clubwptocr_ps.write_hand(parsed)
+        self.assertTrue(text.startswith('PokerStars Hand #'))
+        self.assertIn("Table 'ClubWPT HL6333' 8-max Seat #4 is the button", text)
+        self.assertIn('BruteAlien: raises $0.03 to $0.05', text)
+        self.assertIn('Uncalled bet ($0.06) returned to BruteAlien', text)
+        self.assertIn('Total pot $0.11 | Rake $0.01', text)
+        self.assertIsNone(clubwptocr_ps._same(parsed, pokerstars.parse_hand(text)))
+
+    def test_the_hand_number_is_stable_and_all_digits(self):
+        import clubwptocr_ps
+        one = clubwptocr_ps.hand_number('cwo-HL6333-20261029T094526')
+        self.assertEqual(one, clubwptocr_ps.hand_number('cwo-HL6333-20261029T094526'))
+        self.assertTrue(0 <= one < 10 ** 12)
+
+    def test_a_missing_start_is_worked_back_from_the_settled_close(self):
+        rec = record()
+        rec['players'][3]['starting_stack'] = None   # BruteAlien, who won
+        rec['players'][3]['stack'] = '102.5'          # 100 - 2.5 - 3 + 3 back + 5 won... settled close
+        got = {s['seat']: s for s in parse(rec)['seats']}
+        # close 102.5 + put in 2.5 (the 3 bet came back) - won 5 = 100, in the table's unit.
+        self.assertAlmostEqual(got[4]['stack'], 2.0)
+
+    def test_refused_records_are_kept_by_reason_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'h.jsonl'
+            bad = record()
+            bad['end_reason'] = 'tracking_stopped'
+            path.write_text(json.dumps(bad, sort_keys=True) + '\n' + json.dumps(record(), sort_keys=True) + '\n',
+                            encoding='utf-8')
+            doubt = Path(folder) / 'doubt'
+            clubwptocr.report([str(path)], doubt)
+            clubwptocr.report([str(path)], doubt)
+            kept = (doubt / 'capture-ended-mid-hand.jsonl').read_text(encoding='utf-8').splitlines()
+            self.assertEqual(len(kept), 1)
+            self.assertEqual(json.loads(kept[0])['end_reason'], 'tracking_stopped')
+
+
 class Loads(unittest.TestCase):
     def test_tracker_output_is_sniffed_loaded_and_read_again_as_known(self):
         with tempfile.TemporaryDirectory() as folder:
