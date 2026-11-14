@@ -47,10 +47,13 @@ CARD = re.compile(r"[2-9TJQKA][cdhs]\Z")
 POSTS = ("post_small_blind", "post_big_blind")
 LETTER = {"fold": "F", "check": "X"}
 
-# A raw tracker line begins with its first key, and the tracker writes keys
-# in order, so that is one of two. The sniffer reads 4 KB and a record is
-# eighty, which is why this cannot simply parse the line and look.
-RAW = re.compile(r'\{"(?:action_candidates|actions)":\s*\[')
+# A raw tracker line is known by how it begins, because the sniffer reads
+# 4 KB and a record is eighty: it cannot parse the line and look. The tracker
+# writes one record two ways -- the session database's hand histories with
+# sorted keys, so `action_candidates` or `actions` first, and `--export` in
+# the record's own order, `schema_version` then `id` -- and a folder of the
+# second was 19 files "unrecognised" until both were known.
+RAW = re.compile(r'\{"(?:(?:action_candidates|actions)":\s*\[|schema_version":\s*1,\s*"id":)')
 # " Ring Game (NLHE) | 0.10/0.20/0.40 (0.10) CHIPS | HL7638": small blind,
 # big blind, a straddle when there is one, the ante in brackets likewise.
 TITLE = re.compile(r"\|\s*([0-9.]+)/([0-9.]+)(?:/([0-9.]+))?\s*(?:\(([0-9.]+)\))?"

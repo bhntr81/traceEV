@@ -164,6 +164,12 @@ class Loads(unittest.TestCase):
                 site, = con.execute("SELECT site FROM hands").fetchone()
             self.assertEqual(site, "clubwptocr")
 
+    def test_both_ways_the_tracker_writes_a_record_are_recognised(self):
+        rec = record()
+        self.assertTrue(clubwptocr.HEADER(json.dumps(rec, sort_keys=True)))      # hand histories
+        self.assertTrue(clubwptocr.HEADER(json.dumps(rec, separators=(",", ":"))))  # --export
+        self.assertFalse(clubwptocr.HEADER('{"record": {}, "review": {}}'))
+
     def test_reviewed_histories_still_go_to_their_own_parser(self):
         self.assertFalse(clubwptocr.HEADER('{"format":"clubwptgold","version":1}'))
         self.assertIs(sites.BY_KEY["clubwptocr"].module, clubwptocr)
