@@ -145,6 +145,41 @@ class Proves(unittest.TestCase):
         self.assertIsNone(parse(rec))
 
 
+class Antes(unittest.TestCase):
+    def ante_record(self):
+        # 0.05/0.10 (0.05): half a big blind each, in the pot before any frame.
+        rec = record()
+        rec['table_title'] = ' Ring Game (NLHE) | 0.05/0.10 (0.05) CHIPS | HL2644'
+        # Four dealt seats, 0.5 BB each: the settled pot holds 2 BB of antes.
+        rec['settlement']['pot'] = '7.5'
+        rec['settlement']['collected'][0]['amount'] = '7'
+        return rec
+
+    def test_every_dealt_seat_posts_the_ante_and_the_money_adds_up(self):
+        got = parse(self.ante_record())
+        self.assertIsNotNone(got, clubwptocr.REJECTED)
+        seats = {s['seat']: s for s in got['seats']}
+        self.assertEqual(sorted(s['ante'] for s in seats.values()), [0.05] * 4)
+        self.assertAlmostEqual(seats[3]['posted'], 0.05)         # folded, posted only the ante
+        self.assertAlmostEqual(seats[1]['posted'], 0.10)         # small blind 0.05 + ante
+        self.assertAlmostEqual(got['hand']['pot'], 0.75)
+        self.assertAlmostEqual(got['hand']['ante'], 0.05)
+
+    def test_without_the_antes_in_the_settled_pot_the_hand_is_refused(self):
+        rec = self.ante_record()
+        rec['settlement']['pot'], rec['settlement']['collected'][0]['amount'] = '5.5', '5'
+        self.assertIsNone(parse(rec))
+
+    def test_ante_hands_are_written_with_ante_lines_and_read_back_the_same(self):
+        import clubwptocr_ps
+        import pokerstars
+        parsed = parse(self.ante_record())
+        text = clubwptocr_ps.write_hand(parsed)
+        self.assertEqual(text.count('posts the ante $0.05'), 4)
+        self.assertIn('plsfoldy: posts small blind $0.05', text)
+        self.assertIsNone(clubwptocr_ps._same(parsed, pokerstars.parse_hand(text)))
+
+
 class PokerStarsText(unittest.TestCase):
     def test_a_hand_is_written_as_pokerstars_and_reads_back_the_same(self):
         import clubwptocr_ps

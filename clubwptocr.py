@@ -210,11 +210,15 @@ def _parse(record, source):
             name = f"~{table}#{seat}"
         taken.add(name)
         stack = _dec(player.get("starting_stack"))
+        # The ante comes off every dealt seat before the first frame, so no
+        # badge shows it; the table's title is the evidence. It is posted
+        # money, like a blind, and the tracker's settlement counts it in the pot.
+        paid_ante = ante if ante is not None else Decimal(0)
         seats[seat] = {"seat": seat, "label": name, "position": where[seat],
                        "stack": stack * scale if stack is not None else None,
                        "cards": " ".join(hole) if hole and seat == hero else None,
                        "is_hero": seat == hero, "won": Decimal(0),
-                       "posted": Decimal(0), "invested": Decimal(0)}
+                       "posted": paid_ante, "invested": Decimal(0), "ante": paid_ante}
 
     street, commit = "preflop", {s: Decimal(0) for s in ring}
     folded, allin, rows, posts = set(), set(), [], []
@@ -240,7 +244,12 @@ def _parse(record, source):
             # before the action -- what the Ignition parser does with a dead
             # post. Unread, it is money of unknown size and the hand goes.
             need(total is not None or amount is not None, "unresolved post")
-        if verb in POSTS or verb == "post_unknown":
+        if verb == "post_straddle" and total is None and amount is None:
+            # The straddle's size is the table's own, in its title (0.20 at
+            # 0.05/0.10/0.20), as a blind's is; in the record's big blinds.
+            need(straddle is not None, "unresolved post")
+            total = straddle / scale
+        if verb in POSTS or verb in ("post_unknown", "post_straddle"):
             if total is None and amount is None:
                 total = sb if verb == "post_small_blind" else bb
             new = total if total is not None else prior + amount
@@ -346,7 +355,7 @@ def _parse(record, source):
                    {verb for verb, _ in posts} == set(POSTS))
     stamp = started.strftime("%Y%m%dT%H%M%S")
     for player in seats.values():
-        for key in ("stack", "won", "posted", "invested"):
+        for key in ("stack", "won", "posted", "invested", "ante"):
             player[key] = float(player[key]) if player[key] is not None else None
     return {
         # The table and the second the deal was first seen: the same for a

@@ -53,9 +53,11 @@ def _button(seats):
 
 def _post_lines(hand, seats):
     """The posts, blinds first: small blind, big blind, then any other post."""
-    lines = []
+    # The antes first, every dealt seat, as PokerStars writes them.
+    lines = ["%s: posts the ante %s" % (s["label"], money(s["ante"])) for s in seats if s.get("ante")]
     order = {"SB": 0, "BB": 1}
-    for s in sorted((s for s in seats if s["posted"]), key=lambda s: order.get(s["position"], 2)):
+    blinds = [dict(s, posted=s["posted"] - (s.get("ante") or 0)) for s in seats]
+    for s in sorted((s for s in blinds if s["posted"] > 1e-9), key=lambda s: order.get(s["position"], 2)):
         if s["position"] == "SB":
             verb = "posts small blind"
         elif s["position"] == "BB":
@@ -94,7 +96,8 @@ def write_hand(parsed):
     board = hand["board"].split() if hand["board"] else []
     commit = defaultdict(Decimal)
     for s in seats:
-        commit[s["seat"]] = Decimal(str(s["posted"]))
+        # An ante is dead money: it counts toward no bet, so the street starts at the blinds.
+        commit[s["seat"]] = Decimal(str(s["posted"])) - Decimal(str(s.get("ante") or 0))
     street = "preflop"
     for action in actions:
         if action["street"] != street:
